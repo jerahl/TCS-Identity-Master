@@ -1,0 +1,9 @@
+name,ps_school_id,ad_ou,google_ou,status
+Central High School,4010,OU=CHS,/Staff/CHS,active
+Northridge High School,4020,OU=NHS,/Staff/NHS,active
+Paul W. Bryant High School,4030,OU=PWB,/Staff/PWB,active
+Tuscaloosa Magnet School,4040,OU=TMS,/Staff/TMS,active
+Eastwood Middle School,3050,OU=EMS,/Staff/EMS,active
+Westlawn Middle School,3060,OU=WMS,/Staff/WMS,active
+University Place Elementary,2100,OU=UPE,/Staff/UPE,active
+District Office,0010,OU=Central,/Staff/Central,active

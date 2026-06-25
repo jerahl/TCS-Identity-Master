@@ -1,0 +1,22 @@
+# Secrets / local config — never commit
+.env
+.env.*
+!.env.example
+
+# Dependencies
+/vendor/
+
+# PHPUnit
+/.phpunit.result.cache
+/.phpunit.cache/
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Logs and local data drops
+/var/
+/storage/logs/
+*.log
