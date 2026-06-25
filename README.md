@@ -11,10 +11,10 @@ See `docs/` for the full design:
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
 
-> **Status:** Milestone 2 — Person service + People list + Person detail
-> (read-only) + audit infrastructure, served as PHP pages matching the design
-> mockup. Importers, matcher, review queue, OneSync write-back, the home
-> dashboard, and SAML/RBAC arrive in later milestones.
+> **Status:** Milestone 3 — ingestion pipeline + matcher + staging (with
+> `--dry-run` and a thorough matcher test suite). Builds on M2 (read-only
+> dashboard). The review queue UI, OneSync write-back, the home dashboard, and
+> SAML/RBAC arrive in later milestones.
 >
 > ⚠️ **No authentication yet.** SAML SSO + RBAC land in Milestone 7. Until then
 > the web pages are read-only and for the **dev network only** — do not expose
@@ -98,6 +98,43 @@ follow the manual steps below.
    php bin/seed_demo.php --dry-run       # preview
    ```
    Idempotent; refuses to run when `APP_ENV=production` (use `--force` to override).
+
+## Ingestion & matching (Milestone 3)
+
+Load a NextGen export or PowerSchool extract into `import_batch` + `staging_record`,
+normalize it (school code → `school_id`, ethnicity → ALSDE code; unmapped values
+are logged as warnings on the staged row), then match each row to a person and
+apply the result.
+
+```sh
+php bin/import_nextgen.php --file=db/seeds/feeds/nextgen_sample.csv --dry-run
+php bin/import_nextgen.php --file=/var/idm/feeds/nextgen/staff.csv
+php bin/import_powerschool.php --file=db/seeds/feeds/powerschool_sample.csv
+```
+
+With no `--file`, the importer uses the newest `*.csv` in the configured feed
+directory (`FEED_NEXTGEN_DIR` / `FEED_POWERSCHOOL_DIR`). `--dry-run` reads and
+matches but writes nothing.
+
+**Matcher tiers** (strongest key first; first hit wins):
+
+| Tier | Key | Result |
+|------|-----|--------|
+| 1 | existing `person_source_id` (system, source_key) | **auto** (exact) |
+| 2 | `employee_id` | **auto** |
+| 3 | name + DOB | score; **auto** if ≥ `MATCH_AUTO_THRESHOLD` (default 90) and unambiguous, else **review** |
+| 4 | name only (no corroborating DOB) | **review** — *never* auto-linked |
+| — | no candidate | **new** pending person |
+
+Auto-matches attach the incoming source id to the crosswalk, refresh HR fields,
+and upsert the assignment (one primary). Review rows create `match_candidate`
+entries for the queue (Milestone 4). The importers are **idempotent** — a re-run
+re-matches previously created rows via their now-existing source id (tier 1), so
+no duplicates appear. Importers never set username/email — that's OneSync's job.
+
+**Column maps.** `src/Import/ColumnMap.php` maps each feed's CSV headers to the
+logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
+the maps to match the district's real export headers.
 
 ## Least-privilege DB users
 

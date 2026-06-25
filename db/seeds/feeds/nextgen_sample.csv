@@ -1,0 +1,4 @@
+EmployeeID,FirstName,MiddleName,LastName,PreferredName,DOB,Gender,Ethnicity,HomeSchoolCode,PersonType,JobTitle,JobCode,FTE,HireDate,EndDate,Primary
+15241,Jennifer,Sue,Marsh,Jen,1986-04-12,Female,White,401,Faculty,Teacher Mathematics,TCH,1.0,2014-08-18,,Y
+16100,Brandon,T,Nguyen,,1995-03-22,Male,Asian,402,Faculty,Teacher Science,TCH,1.0,2026-08-10,,Y
+16200,Dana,,Reed,,1990-05-05,Female,Caucasian,999,Staff,Instructional Aide,AIDE,0.5,2026-08-01,,Y
