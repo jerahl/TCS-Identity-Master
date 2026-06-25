@@ -2,8 +2,8 @@
 #
 # TCS Identity Master — dev server provisioning for Debian 12 (Bookworm).
 #
-# Installs PHP 8.2 + extensions, Composer, and MySQL 8 (Oracle APT repo, to honor
-# the "MySQL 8+" requirement — Debian ships MariaDB by default), then:
+# Installs PHP 8.2 + extensions, Composer, and MariaDB (Debian 12 ships MariaDB
+# 10.11 natively — a drop-in for the app's MySQL usage), then:
 #   - generates .env with random per-role passwords (never overwrites an existing .env)
 #   - creates the database + the four least-privilege users with the documented GRANTs
 #   - runs `composer install`, `bin/migrate.php`, and `bin/seed.php`
@@ -28,8 +28,6 @@ INSTALL_WEBSERVER="${INSTALL_WEBSERVER:-1}"  # 1 = nginx + php-fpm site, 0 = ski
 SERVER_NAME="${SERVER_NAME:-identity.dev.local}"
 RUN_MIGRATE="${RUN_MIGRATE:-1}"
 RUN_SEED="${RUN_SEED:-1}"
-
-ROOT_CNF="/root/.idm-mysql-root.cnf"         # root creds for non-interactive admin
 
 # Resolve repo root = parent of this script's dir.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,7 +70,9 @@ set_env() {
 # Read a value back from .env.
 get_env() { grep -E "^$1=" "${REPO_DIR}/.env" | head -n1 | cut -d= -f2-; }
 
-mysql_admin() { mysql --defaults-extra-file="${ROOT_CNF}" "$@"; }
+# Admin to MariaDB as root. On Debian, root@localhost uses the unix_socket auth
+# plugin, so running the client as the root user connects with no password.
+mysql_admin() { mariadb "$@"; }
 
 # ----------------------------------------------------------------------------
 log "Installing base packages"
@@ -110,51 +110,17 @@ fi
 composer --version
 
 # ----------------------------------------------------------------------------
-log "Installing MySQL 8 (Oracle APT repo)"
+log "Installing MariaDB"
 # ----------------------------------------------------------------------------
-if ! command -v mysql >/dev/null 2>&1; then
-    # Add MySQL's signing key + apt source for this Debian codename.
-    CODENAME="$(lsb_release -cs)"
-    install -d -m 0755 /etc/apt/keyrings
-    curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2023 \
-        | gpg --dearmor -o /etc/apt/keyrings/mysql.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian/ ${CODENAME} mysql-8.0" \
-        > /etc/apt/sources.list.d/mysql.list
-    apt-get update -y
+# Debian 12 ships MariaDB 10.11 in the base repos — no extra apt source needed.
+apt-get install -y --no-install-recommends mariadb-server mariadb-client
 
-    # Generate + stash a root password so re-runs can administer non-interactively.
-    MYSQL_ROOT_PASS="$(gen_pass)"
-    debconf-set-selections <<EOF
-mysql-community-server mysql-community-server/root-pass password ${MYSQL_ROOT_PASS}
-mysql-community-server mysql-community-server/re-root-pass password ${MYSQL_ROOT_PASS}
-mysql-community-server mysql-server/default-auth-override select Use Strong Password Encryption (RECOMMENDED)
-EOF
-    apt-get install -y mysql-community-server mysql-community-client
+systemctl enable --now mariadb 2>/dev/null || systemctl enable --now mysql 2>/dev/null || true
 
-    umask 077
-    cat > "${ROOT_CNF}" <<EOF
-[client]
-user=root
-password=${MYSQL_ROOT_PASS}
-host=127.0.0.1
-EOF
-    chmod 600 "${ROOT_CNF}"
-else
-    warn "MySQL already installed — skipping install."
-    [ -f "${ROOT_CNF}" ] || warn "No ${ROOT_CNF}; will try socket auth for admin steps."
-fi
-
-systemctl enable --now mysql 2>/dev/null || systemctl enable --now mysqld 2>/dev/null || true
-
-# Pick how we talk to MySQL as admin.
-if [ -f "${ROOT_CNF}" ] && mysql_admin -e 'SELECT 1' >/dev/null 2>&1; then
-    : # ROOT_CNF works
-elif mysql -e 'SELECT 1' >/dev/null 2>&1; then
-    mysql_admin() { mysql "$@"; }   # local socket as root (some setups)
-    warn "Using local socket for MySQL admin (no ${ROOT_CNF})."
-else
-    die "Cannot connect to MySQL as admin. Provide ${ROOT_CNF} ([client] user/password) and re-run."
-fi
+# On Debian, root@localhost uses the unix_socket auth plugin: running the client
+# as the OS root user (this script) connects with no password. Re-runs Just Work.
+mysql_admin -e 'SELECT 1' >/dev/null 2>&1 \
+    || die "Cannot connect to MariaDB as root via socket. Is the service running? (systemctl status mariadb)"
 
 # ----------------------------------------------------------------------------
 log "Generating .env (if missing) with random role passwords"
@@ -287,7 +253,7 @@ cat <<SUMMARY
   Repo:        ${REPO_DIR}
   Database:    ${DB_NAME} on 127.0.0.1:3306
   Env file:    ${REPO_DIR}/.env  (generated passwords; gitignored)
-  MySQL root:  ${ROOT_CNF}  (root-only)
+  DB admin:    MariaDB root via unix_socket — run 'sudo mariadb' for a root shell
   Users:       ${APP_USER_DB} (app), ${MIG_USER} (migrate),
                ${WB_USER} (writeback), ${OS_USER} (onesync, read-only view)
 $( [ "${INSTALL_WEBSERVER}" = "1" ] && echo "  Web:         http://${SERVER_NAME}/  -> ${REPO_DIR}/public (php-fpm ${PHP_VERSION})" )
