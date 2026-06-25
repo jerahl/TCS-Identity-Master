@@ -170,8 +170,8 @@ final class AuthService
         $role = self::isValidRole($role) ? $role : 'readonly';
         $name = ($name !== null && trim($name) !== '') ? trim($name) : $email;
 
-        $existing = $this->db->prepare('SELECT user_id FROM app_user WHERE email = :e OR saml_name_id = :e');
-        $existing->execute([':e' => $email]);
+        $existing = $this->db->prepare('SELECT user_id FROM app_user WHERE email = :email OR saml_name_id = :nid');
+        $existing->execute([':email' => $email, ':nid' => $email]);
         $id = $existing->fetchColumn();
 
         if ($id !== false) {
