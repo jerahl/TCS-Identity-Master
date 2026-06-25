@@ -11,10 +11,10 @@ See `docs/` for the full design:
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
 
-> **Status:** Milestone 3 — ingestion pipeline + matcher + staging (with
-> `--dry-run` and a thorough matcher test suite). Builds on M2 (read-only
-> dashboard). The review queue UI, OneSync write-back, the home dashboard, and
-> SAML/RBAC arrive in later milestones.
+> **Status:** Milestone 4 — the Review queue: side-by-side confirm/reject that
+> links an incoming record to an existing person (the intern→employee link) or
+> spawns a new one. First write path, so CSRF + flash are now in place. OneSync
+> write-back, the home dashboard, and SAML/RBAC arrive in later milestones.
 >
 > ⚠️ **No authentication yet.** SAML SSO + RBAC land in Milestone 7. Until then
 > the web pages are read-only and for the **dev network only** — do not expose
@@ -135,6 +135,25 @@ no duplicates appear. Importers never set username/email — that's OneSync's jo
 **Column maps.** `src/Import/ColumnMap.php` maps each feed's CSV headers to the
 logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
 the maps to match the district's real export headers.
+
+## Review queue (Milestone 4)
+
+When the matcher can't safely auto-link (name+DOB below threshold, or name-only),
+it files a `match_candidate` for human review. Work the queue at **/review**:
+
+- **Same person — link & reuse account** → attaches the incoming source id(s) to
+  the existing person and folds in HR fields/assignment. This is the
+  intern→employee link: no duplicate account is created downstream.
+- **Different people — create new** → creates a new pending person from the
+  staged row and keeps the two separate.
+
+The comparison card highlights each field (match / differs / info) and shows a
+loud warning on weak (name-only) matches. Every decision is audited
+(`audit_log` + a `lifecycle_event` on the person), and resolving a case clears
+its sibling candidates. Forms are CSRF-protected; actions use Post/Redirect/Get.
+
+> Try it: import the samples (so a couple of rows land in review), then open
+> `/review`. RBAC (editor/admin only) is enforced in Milestone 7.
 
 ## Least-privilege DB users
 

@@ -37,9 +37,30 @@ abstract class Controller
             'queueCount'  => $this->safeQueueCount(),
             'searchQuery' => (string) ($_GET['q'] ?? ''),
             'currentUser' => $this->currentUser(),
+            'flash'       => $this->takeFlash(),
         ];
 
         return View::page($template, $vars, $layout);
+    }
+
+    /** Store a one-shot message shown as a toast after the next render. */
+    protected function flash(string $message): void
+    {
+        $_SESSION['flash'] = $message;
+    }
+
+    private function takeFlash(): ?string
+    {
+        $msg = $_SESSION['flash'] ?? null;
+        unset($_SESSION['flash']);
+        return $msg;
+    }
+
+    /** Post/Redirect/Get helper. Returns '' so callers can `return $this->redirect(...)`. */
+    protected function redirect(string $to): string
+    {
+        header('Location: ' . $to, true, 303);
+        return '';
     }
 
     private function safeQueueCount(): int

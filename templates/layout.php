@@ -93,6 +93,12 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
     </header>
 
     <main class="main">
+<?php if (!empty($flash)): ?>
+      <div class="toast" role="status">
+        <span class="dot dot--ok"></span>
+        <span><?= e($flash) ?></span>
+      </div>
+<?php endif; ?>
 <?= $content ?>
     </main>
   </div>
