@@ -29,6 +29,11 @@ final class PageController extends Controller
         ], '', 'Not found', 'Not found — TCS Identity Master');
     }
 
+    public function forbidden(): string
+    {
+        return $this->render('pages/forbidden', [], '', 'Forbidden', 'Forbidden — TCS Identity Master');
+    }
+
     /** Minimal error page (no layout/DB dependency — may be why we're here). */
     public function error(?Throwable $e): string
     {

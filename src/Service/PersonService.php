@@ -106,6 +106,14 @@ final class PersonService
         return $this->db()->query($sql)->fetchAll();
     }
 
+    /** All active schools (for the manual-add form). */
+    public function allSchools(): array
+    {
+        return $this->db()->query(
+            "SELECT school_id, name FROM school WHERE status = 'active' ORDER BY name"
+        )->fetchAll();
+    }
+
     /** Count of pending match candidates (the review-queue badge). */
     public function pendingReviewCount(): int
     {

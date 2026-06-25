@@ -45,11 +45,13 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor"><rect x="2" y="3" width="14" height="2.4" rx="1.2"/><rect x="2" y="8" width="14" height="2.4" rx="1.2"/><rect x="2" y="13" width="14" height="2.4" rx="1.2"/></svg>
         <span>People</span>
       </a>
+<?php if (!empty($canEdit)): ?>
       <a class="nav-item<?= $nav('add') ?>" href="<?= e(url('/add')) ?>">
         <span class="nav-item__bar"></span>
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="6" r="3.3"/><path d="M1.8 15.5c.4-2.7 2.4-4.3 5.2-4.3" stroke-linecap="round"/><path d="M13.5 9.2v5M11 11.7h5" stroke-linecap="round"/></svg>
         <span>Add person</span>
       </a>
+<?php endif; ?>
 
       <div class="nav__section">Configuration</div>
       <a class="nav-item<?= $nav('ref') ?>" href="<?= e(url('/reference')) ?>">
@@ -62,6 +64,13 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v8M5.5 7L9 10.5 12.5 7"/><path d="M2.5 12.5v2a1 1 0 001 1h11a1 1 0 001-1v-2"/></svg>
         <span>Import / feeds</span>
       </a>
+<?php if (!empty($canAdmin)): ?>
+      <a class="nav-item<?= $nav('users') ?>" href="<?= e(url('/users')) ?>">
+        <span class="nav-item__bar"></span>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="6.5" cy="6" r="2.6"/><circle cx="12.5" cy="7" r="2.1"/><path d="M2 15c.4-2.6 2.2-4 4.5-4s4.1 1.4 4.5 4M11 15c.3-1.8 1.4-2.8 3-2.8" stroke-linecap="round"/></svg>
+        <span>Users</span>
+      </a>
+<?php endif; ?>
     </nav>
 
     <div class="sidebar__status">
@@ -89,6 +98,9 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
           <div class="user__name"><?= e($currentUser['name']) ?></div>
           <div class="user__role"><?= e($currentUser['role']) ?></div>
         </div>
+        <a class="user__logout" href="<?= e(url('/logout')) ?>" title="Sign out" aria-label="Sign out">
+          <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 15H3.5a1 1 0 01-1-1V4a1 1 0 011-1H7"/><path d="M11.5 12.5L15 9l-3.5-3.5M15 9H6.5"/></svg>
+        </a>
       </div>
     </header>
 

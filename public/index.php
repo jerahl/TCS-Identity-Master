@@ -3,25 +3,34 @@
 declare(strict_types=1);
 
 /**
- * Front controller / web entry point. nginx rewrites all non-file requests here
- * (try_files ... /index.php). Routes are declared below.
+ * Front controller / web entry point. nginx rewrites all non-file requests here.
  *
- * NOTE: SAML SSO + RBAC arrive in Milestone 7. Until then these pages are
- * read-only and intended for the dev network only — do not expose publicly.
+ * Pipeline: enforce HTTPS (prod) -> security headers -> session -> auth gate +
+ * per-route RBAC -> dispatch. No app route is reachable unauthenticated; write
+ * routes require the matching capability (server-side, not just hidden in the UI).
  */
 
+use App\Controller\AuthController;
+use App\Controller\DashboardController;
+use App\Controller\ImportController;
 use App\Controller\PageController;
 use App\Controller\PersonController;
+use App\Controller\ReferenceController;
 use App\Controller\ReviewController;
+use App\Controller\UserController;
 use App\Http\Router;
+use App\Http\Security;
+use App\Service\AuthService;
 
 require dirname(__DIR__) . '/src/bootstrap.php';
 
-// Secure-ish session defaults (full hardening + SAML in M7).
+Security::enforceHttps();
+Security::sendHeaders();
+
 session_set_cookie_params([
     'httponly' => true,
     'samesite' => 'Lax',
-    'secure'   => (($_SERVER['HTTPS'] ?? '') !== '') || (($_SERVER['REQUEST_SCHEME'] ?? '') === 'https'),
+    'secure'   => Security::isHttps(),
 ]);
 session_start();
 
@@ -30,29 +39,60 @@ $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $page = new PageController();
 
 try {
-    // Controllers are built here (not at top level) so a DB failure in a service
-    // constructor surfaces as the error page rather than an uncaught fatal.
+    $auth = new AuthService();
+
+    // Gate a handler behind authentication + a capability. Unauthenticated users
+    // are redirected to /login; authenticated-but-unauthorized get 403.
+    $guard = static function (string $capability, callable $handler) use ($auth, $page): callable {
+        return static function (array $params = []) use ($auth, $capability, $handler, $page) {
+            if (!$auth->isAuthenticated()) {
+                header('Location: ' . url('/login'), true, 302);
+                return '';
+            }
+            if (!$auth->can($capability)) {
+                http_response_code(403);
+                return $page->forbidden();
+            }
+            return $handler($params);
+        };
+    };
+
     $person = new PersonController();
     $review = new ReviewController();
-    $dashboard = new \App\Controller\DashboardController();
-    $reference = new \App\Controller\ReferenceController();
-    $import = new \App\Controller\ImportController();
+    $dashboard = new DashboardController();
+    $reference = new ReferenceController();
+    $import = new ImportController();
+    $users = new UserController();
+    $authCtl = new AuthController();
 
     $router = new Router();
-    $router->get('/', static fn() => $dashboard->index());
-    $router->get('/dashboard', static fn() => $dashboard->index());
-    $router->get('/people', static fn() => $person->index());
-    $router->get('/people/{id}', static fn(array $p) => $person->show($p));
 
-    $router->get('/review', static fn() => $review->index());
-    $router->post('/review/confirm', static fn() => $review->confirm());
-    $router->post('/review/reject', static fn() => $review->reject());
+    // ---- Public (no auth) ----
+    $router->get('/login', static fn() => $authCtl->loginPage());
+    $router->get('/saml/login', static fn() => $authCtl->samlLogin());
+    $router->post('/saml/acs', static fn() => $authCtl->acs());
+    $router->get('/saml/metadata', static fn() => $authCtl->metadata());
+    $router->post('/dev-login', static fn() => $authCtl->devLogin());
+    $router->get('/logout', static fn() => $authCtl->logout());
 
-    $router->get('/reference', static fn() => $reference->index());
-    $router->get('/import', static fn() => $import->index());
+    // ---- View (any authenticated role) ----
+    $router->get('/', $guard('view', static fn() => $dashboard->index()));
+    $router->get('/dashboard', $guard('view', static fn() => $dashboard->index()));
+    $router->get('/people', $guard('view', static fn() => $person->index()));
+    $router->get('/people/{id}', $guard('view', static fn(array $p) => $person->show($p)));
+    $router->get('/review', $guard('view', static fn() => $review->index()));
+    $router->get('/reference', $guard('view', static fn() => $reference->index()));
+    $router->get('/import', $guard('view', static fn() => $import->index()));
 
-    // Manual add lands in a later milestone — coherent placeholder for now.
-    $router->get('/add', static fn() => $page->placeholder('Add person', 'add', 'People  /  Add person', 'Manual add', 7));
+    // ---- Edit (editor / admin) ----
+    $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
+    $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
+    $router->get('/add', $guard('edit', static fn() => $person->addForm()));
+    $router->post('/add', $guard('edit', static fn() => $person->create()));
+
+    // ---- Admin only ----
+    $router->get('/users', $guard('admin', static fn() => $users->index()));
+    $router->post('/users/role', $guard('admin', static fn() => $users->updateRole()));
 
     $router->setNotFound(static fn() => $page->notFound());
 

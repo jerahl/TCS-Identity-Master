@@ -95,6 +95,9 @@ $strength = static function (float $s): array {
       </div>
 
       <div class="compare__actions">
+        <?php if (empty($canEdit)): ?>
+          <div class="notice notice--info" style="width:100%;">You have read-only access. Confirming or rejecting a match requires an editor role.</div>
+        <?php else: ?>
         <form method="post" action="<?= e(url('/review/confirm')) ?>">
           <input type="hidden" name="_csrf" value="<?= e($csrf) ?>">
           <input type="hidden" name="staging_id" value="<?= e($detail['staging_id']) ?>">
@@ -113,6 +116,7 @@ $strength = static function (float $s): array {
           </button>
         </form>
         <div class="compare__hint">Linking reuses the existing person's account — no duplicate is created in AD or Google.</div>
+        <?php endif; ?>
       </div>
     <?php endif; ?>
   </div>

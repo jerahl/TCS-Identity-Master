@@ -4,8 +4,14 @@ declare(strict_types=1);
 
 namespace App\Controller;
 
+use App\Db;
+use App\Import\NormalizedRow;
+use App\Import\PersonWriter;
+use App\Service\AuditService;
+use App\Support\Csrf;
+
 /**
- * People list + person detail (read-only in Milestone 2).
+ * People list + person detail (read), and manual Add person (editor+).
  */
 final class PersonController extends Controller
 {
@@ -50,5 +56,78 @@ final class PersonController extends Controller
             'syncStatus' => $this->people->syncStatus($id),
             'timeline'   => $this->people->timeline($id),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
+    }
+
+    /** Manual add form (for subs/contractors not in HR). */
+    public function addForm(array $old = [], string $error = ''): string
+    {
+        return $this->render('people/add', [
+            'schools' => $this->people->allSchools(),
+            'old'     => $old,
+            'error'   => $error,
+            'csrf'    => Csrf::token(),
+        ], 'add', 'People  /  Add person', 'Add person — TCS Identity Master');
+    }
+
+    /** Create a manual pending person. */
+    public function create(): string
+    {
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            return $this->addForm($_POST, 'Invalid session token — please retry.');
+        }
+
+        $first = trim((string) ($_POST['first_name'] ?? ''));
+        $last = trim((string) ($_POST['last_name'] ?? ''));
+        $type = (string) ($_POST['person_type'] ?? 'sub');
+        $validTypes = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
+
+        if ($first === '' || $last === '') {
+            return $this->addForm($_POST, 'First and last name are required.');
+        }
+        if (!in_array($type, $validTypes, true)) {
+            return $this->addForm($_POST, 'Invalid person type.');
+        }
+        $dob = trim((string) ($_POST['dob'] ?? ''));
+        if ($dob !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob)) {
+            return $this->addForm($_POST, 'Date of birth must be YYYY-MM-DD.');
+        }
+        $schoolId = ($_POST['school_id'] ?? '') !== '' ? (int) $_POST['school_id'] : null;
+
+        $row = new NormalizedRow(
+            system: 'manual',
+            sourceKey: '',
+            firstName: $first,
+            lastName: $last,
+            middleName: trim((string) ($_POST['middle_name'] ?? '')) ?: null,
+            preferredName: trim((string) ($_POST['preferred_name'] ?? '')) ?: null,
+            dob: $dob ?: null,
+            gender: trim((string) ($_POST['gender'] ?? '')) ?: null,
+            schoolId: $schoolId,
+            personType: $type,
+            title: trim((string) ($_POST['title'] ?? '')) ?: null,
+            fte: trim((string) ($_POST['fte'] ?? '')) ?: null,
+            isPrimary: true,
+        );
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $writer = new PersonWriter($db, new AuditService($db));
+            $actor = $this->currentUser()['name'];
+
+            $db->beginTransaction();
+            $pid = $writer->createPerson($row, $actor);
+            $writer->attachSourceId($pid, 'manual', (string) $pid, $actor);
+            $writer->upsertAssignment($pid, $row, $actor);
+            $db->commit();
+
+            $this->flash("{$first} {$last} created — pending activation. OneSync will mint the username.");
+            return $this->redirect(url('/people/' . $pid));
+        } catch (\Throwable $e) {
+            if (isset($db) && $db->inTransaction()) {
+                $db->rollBack();
+            }
+            error_log('[idm] manual add: ' . $e->getMessage());
+            return $this->addForm($_POST, 'Could not create the record.');
+        }
     }
 }

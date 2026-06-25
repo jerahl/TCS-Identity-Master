@@ -11,14 +11,10 @@ See `docs/` for the full design:
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
 
-> **Status:** Milestone 6 — home/health dashboard (KPIs, recent activity, feeds,
-> failed-sync rollup), reference-data admin (school + ethnicity maps with
-> unmapped-value surfacing), and import/feed status (batches + staged-row
-> drill-in). Remaining: manual Add person, and the M7 hardening (SAML SSO + RBAC).
->
-> ⚠️ **No authentication yet.** SAML SSO + RBAC land in Milestone 7. Until then
-> the web pages are read-only and for the **dev network only** — do not expose
-> them publicly.
+> **Status:** Milestone 7 (final) — SAML SSO + server-side RBAC, admin Users
+> screen, manual Add person, security headers + HTTPS enforcement, and
+> login/logout auditing. All seven milestones are in place; the app is
+> feature-complete per the build plan.
 
 ## Stack
 
@@ -163,6 +159,40 @@ its sibling candidates. Forms are CSRF-protected; actions use Post/Redirect/Get.
 > **Reject** the second "Marcus Okafor" (a coincidental same-name → new person).
 > Note: `nextgen_sample.csv` produces no review cases by design (its rows
 > auto-match or are brand new). RBAC (editor/admin only) is enforced in M7.
+
+## Security & access (Milestone 7)
+
+Authentication is **SAML SSO** against the district IdP; access is **role-based,
+enforced server-side on every route** (not just hidden in the UI). No app page is
+reachable unauthenticated.
+
+**Roles & capabilities**
+
+| Role | Can |
+|------|-----|
+| `readonly` | View everything (no write route reachable) |
+| `editor` | + work the review queue, manual Add person |
+| `admin` | + manage users (roles), reference data, override decisions |
+
+**Configure SSO.** Set the `SAML_*` values in `.env` (SP entityId/ACS/SLS, IdP
+entityId/SSO URL/x509 cert, and SP key/cert file paths). SP metadata for the IdP
+admin is served at `/saml/metadata`. On first login a user is created `readonly`;
+emails listed in `ADMIN_EMAILS` are granted `admin` automatically.
+
+**Bootstrap an admin** (or change any role) from a trusted shell:
+```sh
+php bin/set_role.php --email=you@tuscaloosacityschools.com --role=admin
+```
+
+**Dev login.** When SAML isn't configured **and** `APP_ENV` isn't `production`,
+the login page offers a dev sign-in that lets you pick a role to exercise RBAC.
+It is disabled automatically once SAML is configured or in production.
+
+**Hardening.** HTTPS is enforced in production (with HSTS); every response sends
+a strict CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and
+`Referrer-Policy`. Sessions are HttpOnly/SameSite (Secure over HTTPS) and
+regenerated on login. Every form is CSRF-protected. Logins, logouts, role
+changes, and all data mutations are written to `audit_log`.
 
 ## Dashboard, reference data & import status (Milestone 6)
 

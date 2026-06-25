@@ -24,10 +24,12 @@ $typeOpts = ['all' => 'All types', 'faculty' => 'Faculty', 'staff' => 'Staff', '
     <h1>People</h1>
     <p><?= e($shown) ?> of <?= e($total) ?> records</p>
   </div>
+  <?php if (!empty($canEdit)): ?>
   <a class="btn btn--primary" href="<?= e(url('/add')) ?>">
     <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 4v10M4 9h10"/></svg>
     Add person
   </a>
+  <?php endif; ?>
 </div>
 
 <form class="filters" method="get" action="<?= e(url('/people')) ?>">

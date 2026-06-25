@@ -4,25 +4,32 @@ declare(strict_types=1);
 
 namespace App\Controller;
 
+use App\Service\AuthService;
 use App\Service\PersonService;
 use App\View\View;
 
 /**
- * Base controller: assembles the shared layout data (active nav, breadcrumb,
- * review-queue badge, signed-in user) every page needs, then renders.
+ * Base controller: assembles shared layout data (active nav, breadcrumb,
+ * review-queue badge, signed-in user, capability flags) and renders. Capability
+ * flags (canEdit/canAdmin) are merged into BOTH the page vars and the layout so
+ * templates can hide actions the user can't perform (server-side RBAC still
+ * enforces it — hiding is courtesy, not security).
  */
 abstract class Controller
 {
     protected PersonService $people;
+    private ?AuthService $authService = null;
 
     public function __construct(?PersonService $people = null)
     {
         $this->people = $people ?? new PersonService();
     }
 
-    /**
-     * Render a template inside the layout with shared chrome data merged in.
-     */
+    protected function auth(): AuthService
+    {
+        return $this->authService ??= new AuthService();
+    }
+
     protected function render(
         string $template,
         array $vars,
@@ -30,17 +37,48 @@ abstract class Controller
         string $crumb,
         string $title
     ): string {
-        $layout = [
+        $shared = [
+            'canEdit'     => $this->auth()->can('edit'),
+            'canAdmin'    => $this->auth()->can('admin'),
+            'currentUser' => $this->currentUser(),
+        ];
+        $layout = $shared + [
             'title'       => $title,
             'activeNav'   => $activeNav,
             'crumb'       => $crumb,
             'queueCount'  => $this->safeQueueCount(),
             'searchQuery' => (string) ($_GET['q'] ?? ''),
-            'currentUser' => $this->currentUser(),
             'flash'       => $this->takeFlash(),
         ];
 
-        return View::page($template, $vars, $layout);
+        return View::page($template, $vars + $shared, $layout);
+    }
+
+    private function safeQueueCount(): int
+    {
+        try {
+            return $this->people->pendingReviewCount();
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
+    /** Display identity for the top bar, derived from the session user. */
+    protected function currentUser(): array
+    {
+        $u = $this->auth()->user();
+        if ($u === null) {
+            return ['name' => 'Guest', 'role' => '—', 'initials' => '?'];
+        }
+        $name = (string) ($u['display_name'] ?: $u['email']);
+        $parts = preg_split('/\s+/', trim($name)) ?: [];
+        $first = $parts[0] ?? '';
+        $last = count($parts) > 1 ? (string) end($parts) : '';
+        $initials = strtoupper(mb_substr($first, 0, 1) . mb_substr($last, 0, 1));
+        if ($initials === '') {
+            $initials = strtoupper(mb_substr((string) $u['email'], 0, 2));
+        }
+        return ['name' => $name, 'role' => ucfirst((string) $u['role']), 'initials' => $initials];
     }
 
     /** Store a one-shot message shown as a toast after the next render. */
@@ -56,32 +94,10 @@ abstract class Controller
         return $msg;
     }
 
-    /** Post/Redirect/Get helper. Returns '' so callers can `return $this->redirect(...)`. */
+    /** Post/Redirect/Get helper. */
     protected function redirect(string $to): string
     {
         header('Location: ' . $to, true, 303);
         return '';
-    }
-
-    private function safeQueueCount(): int
-    {
-        try {
-            return $this->people->pendingReviewCount();
-        } catch (\Throwable) {
-            return 0;
-        }
-    }
-
-    /**
-     * Placeholder identity until SAML SSO lands in Milestone 7. Reflected in the
-     * top bar so it's clear no real auth is in force yet.
-     */
-    protected function currentUser(): array
-    {
-        return [
-            'name'     => 'Dev session',
-            'role'     => 'No SSO yet (M7)',
-            'initials' => 'DS',
-        ];
     }
 }
