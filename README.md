@@ -11,10 +11,10 @@ See `docs/` for the full design:
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
 
-> **Status:** Milestone 5 — the OneSync interface: read-only `v_onesync_source`
-> consumer (preview tool), the username write-back importer (sets + locks
-> username/email), and the account-status write-back importer (per-destination
-> provisioning state). The home dashboard and SAML/RBAC arrive in later milestones.
+> **Status:** Milestone 6 — home/health dashboard (KPIs, recent activity, feeds,
+> failed-sync rollup), reference-data admin (school + ethnicity maps with
+> unmapped-value surfacing), and import/feed status (batches + staged-row
+> drill-in). Remaining: manual Add person, and the M7 hardening (SAML SSO + RBAC).
 >
 > ⚠️ **No authentication yet.** SAML SSO + RBAC land in Milestone 7. Until then
 > the web pages are read-only and for the **dev network only** — do not expose
@@ -163,6 +163,19 @@ its sibling candidates. Forms are CSRF-protected; actions use Post/Redirect/Get.
 > **Reject** the second "Marcus Okafor" (a coincidental same-name → new person).
 > Note: `nextgen_sample.csv` produces no review cases by design (its rows
 > auto-match or are brand new). RBAC (editor/admin only) is enforced in M7.
+
+## Dashboard, reference data & import status (Milestone 6)
+
+- **Home / health** (`/`): KPI cards (pending review, pending activation, missing
+  username, unmapped values, **failed syncs**, last feed) that link to the
+  filtered views; recent activity; last feed per source; and the failed-sync
+  rollup (accounts whose last OneSync sync failed).
+- **Reference data** (`/reference`): the school map (codes + AD/Google OUs) and
+  ethnicity map, with **unmapped values surfaced** — ethnicity values seen on
+  records and school codes seen in feeds that have no mapping (they block clean
+  provisioning). Read-only in M6; editing + RBAC in M7.
+- **Import / feeds** (`/import`): batch history with a drill-in to each batch's
+  staged rows and how each one matched (auto / new / review / skipped).
 
 ## OneSync interface (Milestone 5)
 

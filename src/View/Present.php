@@ -72,4 +72,28 @@ final class Present
     {
         return strtoupper(mb_substr($first, 0, 1) . mb_substr($last, 0, 1));
     }
+
+    /** Modifier class for an import_batch status badge. */
+    public static function importMod(?string $status): string
+    {
+        return match ($status) {
+            'complete' => 'ok',
+            'running'  => 'run',
+            'failed'   => 'fail',
+            default    => 'muted',
+        };
+    }
+
+    /** Label + modifier for a staging_record.match_status outcome. */
+    public static function matchOutcome(string $status): array
+    {
+        return match ($status) {
+            'auto_matched' => ['Matched existing', 'ok'],
+            'merged'       => ['Linked (review)', 'ok'],
+            'new'          => ['New record', 'info'],
+            'needs_review' => ['Needs review', 'warn'],
+            'skipped'      => ['Skipped', 'muted'],
+            default        => [ucfirst($status), 'muted'],
+        };
+    }
 }

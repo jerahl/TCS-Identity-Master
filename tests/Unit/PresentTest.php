@@ -37,4 +37,21 @@ final class PresentTest extends TestCase
         self::assertSame('JM', Present::initials('Jennifer', 'Marsh'));
         self::assertSame('TH', Present::initials('Tomás', 'Herrera'));
     }
+
+    public function testImportMod(): void
+    {
+        self::assertSame('ok', Present::importMod('complete'));
+        self::assertSame('run', Present::importMod('running'));
+        self::assertSame('fail', Present::importMod('failed'));
+        self::assertSame('muted', Present::importMod(null));
+    }
+
+    public function testMatchOutcome(): void
+    {
+        self::assertSame(['Matched existing', 'ok'], Present::matchOutcome('auto_matched'));
+        self::assertSame(['Linked (review)', 'ok'], Present::matchOutcome('merged'));
+        self::assertSame(['New record', 'info'], Present::matchOutcome('new'));
+        self::assertSame(['Needs review', 'warn'], Present::matchOutcome('needs_review'));
+        self::assertSame(['Skipped', 'muted'], Present::matchOutcome('skipped'));
+    }
 }
