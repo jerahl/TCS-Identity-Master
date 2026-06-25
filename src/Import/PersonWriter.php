@@ -35,7 +35,7 @@ final class PersonWriter
              VALUES
                (:uuid, :type, :status, :first, :middle, :last, :preferred,
                 :dob, :gender, :eth_src, :eth_code, :emp, :school_id,
-                :hire, :end, :sor, :actor, :actor)'
+                :hire, :end, :sor, :created_by, :updated_by)'
         );
         $stmt->execute([
             ':uuid' => $uuid,
@@ -54,7 +54,8 @@ final class PersonWriter
             ':hire' => $row->hireDate,
             ':end' => $row->endDate,
             ':sor' => self::sourceOfRecord($row->system),
-            ':actor' => $actor,
+            ':created_by' => $actor,
+            ':updated_by' => $actor,
         ]);
         $personId = (int) $this->db->lastInsertId();
 
