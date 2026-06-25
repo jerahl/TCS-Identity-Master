@@ -1,0 +1,5 @@
+uniqueId,username,destination,action,actionStatus,message,timestamp,destType
+9e3c1f70-9f4a-11ee-8c2a-000000000005,swhitfield,Active Directory,Add,Success,,2026-06-26 06:02:00,ActiveDirectory
+9e3c1f70-9f4a-11ee-8c2a-000000000005,swhitfield,Google Workspace,Add,Success,,2026-06-26 06:02:00,GSuite
+5fb27c08-9f4a-11ee-8c2a-000000000009,pnair,Active Directory,Add,Fail,Account creation failed: target OU not found,2026-06-26 06:02:00,ActiveDirectory
+2f9a4c11-9f4a-11ee-8c2a-000000000001,jmarsh,Google Workspace,Edit,Success,,2026-06-26 06:02:00,GSuite

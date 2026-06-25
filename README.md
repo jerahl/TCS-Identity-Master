@@ -11,10 +11,10 @@ See `docs/` for the full design:
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
 
-> **Status:** Milestone 4 — the Review queue: side-by-side confirm/reject that
-> links an incoming record to an existing person (the intern→employee link) or
-> spawns a new one. First write path, so CSRF + flash are now in place. OneSync
-> write-back, the home dashboard, and SAML/RBAC arrive in later milestones.
+> **Status:** Milestone 5 — the OneSync interface: read-only `v_onesync_source`
+> consumer (preview tool), the username write-back importer (sets + locks
+> username/email), and the account-status write-back importer (per-destination
+> provisioning state). The home dashboard and SAML/RBAC arrive in later milestones.
 >
 > ⚠️ **No authentication yet.** SAML SSO + RBAC land in Milestone 7. Until then
 > the web pages are read-only and for the **dev network only** — do not expose
@@ -164,6 +164,38 @@ its sibling candidates. Forms are CSRF-protected; actions use Post/Redirect/Get.
 > Note: `nextgen_sample.csv` produces no review cases by design (its rows
 > auto-match or are brand new). RBAC (editor/admin only) is enforced in M7.
 
+## OneSync interface (Milestone 5)
+
+OneSync reads exactly one source (`v_onesync_source`, one row per person) and
+writes back what it mints. Three tools:
+
+```sh
+# What OneSync sees (connects as the READ-ONLY onesync_ro role):
+php bin/onesync_preview.php --limit=20
+
+# Username write-back: apply OneSync's usernames file, set + LOCK username/email.
+php bin/import_writeback.php --file=db/seeds/feeds/onesync_usernames_sample.csv --dry-run
+php bin/import_writeback.php --file=db/seeds/feeds/onesync_usernames_sample.csv
+
+# Account-status write-back: per-destination provisioning state (AD/Google/…).
+php bin/import_sync_status.php --file=db/seeds/feeds/onesync_export_log_sample.csv
+```
+
+With no `--file`, the write-back importers use `ONESYNC_WRITEBACK_FILE` /
+`ONESYNC_EXPORT_LOG`. Both run as the limited write-back role and are idempotent.
+
+- **Username immutability:** once `username_locked`, the importer never
+  overwrites with a different value (logged as `conflict`); re-runs are `noop`.
+  The app never mints usernames — this only records OneSync's decision.
+- **Account status:** upserts one current row per `(person, destination)` into
+  `account_sync_status` (shown on the person's Provisioning panel) and appends to
+  the capped `account_sync_event` history (`ACCOUNT_SYNC_EVENT_CAP`). Failed
+  syncs surface per-person now and on the health dashboard in M6.
+
+> The file formats above are **assumptions** (documented in `ColumnMap`/importer
+> defaults) — confirm OneSync's real usernames-file and export-log columns and
+> adjust the maps. The sample files are keyed to the demo people's UUIDs.
+
 ## Least-privilege DB users
 
 One database, four roles — never shared or reused. Replace passwords and host
@@ -200,11 +232,14 @@ FLUSH PRIVILEGES;
 
 ```sql
 -- 3) Write-back importer — limited writer for the OneSync write-back jobs only.
-GRANT INSERT, UPDATE, SELECT ON tcs_identity.onesync_writeback    TO 'idm_writeback'@'%';
-GRANT INSERT, UPDATE, SELECT ON tcs_identity.account_sync_status  TO 'idm_writeback'@'%';
-GRANT INSERT, UPDATE, SELECT ON tcs_identity.account_sync_event   TO 'idm_writeback'@'%';
--- Needs to apply usernames to the golden record (set + lock):
+GRANT INSERT, UPDATE, SELECT ON tcs_identity.onesync_writeback           TO 'idm_writeback'@'%';
+GRANT INSERT, UPDATE, SELECT ON tcs_identity.account_sync_status         TO 'idm_writeback'@'%';
+GRANT INSERT, SELECT, DELETE ON tcs_identity.account_sync_event          TO 'idm_writeback'@'%'; -- append + prune
+-- Apply usernames to the golden record (set + lock):
 GRANT SELECT, UPDATE ON tcs_identity.person TO 'idm_writeback'@'%';
+-- Audit its own writes:
+GRANT INSERT ON tcs_identity.audit_log       TO 'idm_writeback'@'%';
+GRANT INSERT ON tcs_identity.lifecycle_event TO 'idm_writeback'@'%';
 
 -- 4) OneSync reader — READ-ONLY on the single view, nothing else.
 GRANT SELECT ON tcs_identity.v_onesync_source TO 'onesync_ro'@'%';

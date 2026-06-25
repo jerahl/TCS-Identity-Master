@@ -207,8 +207,10 @@ if [ "${RUN_MIGRATE}" = "1" ]; then
 -- 3) Write-back importer — limited writer for the OneSync write-back jobs.
 GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.onesync_writeback   TO '${WB_USER}'@'${DB_HOST_GRANT}';
 GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.account_sync_status TO '${WB_USER}'@'${DB_HOST_GRANT}';
-GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.account_sync_event  TO '${WB_USER}'@'${DB_HOST_GRANT}';
+GRANT INSERT, SELECT, DELETE ON \`${DB_NAME}\`.account_sync_event  TO '${WB_USER}'@'${DB_HOST_GRANT}';
 GRANT SELECT, UPDATE ON \`${DB_NAME}\`.person TO '${WB_USER}'@'${DB_HOST_GRANT}';
+GRANT INSERT ON \`${DB_NAME}\`.audit_log       TO '${WB_USER}'@'${DB_HOST_GRANT}';
+GRANT INSERT ON \`${DB_NAME}\`.lifecycle_event TO '${WB_USER}'@'${DB_HOST_GRANT}';
 
 -- 4) OneSync reader — READ-ONLY on the single view, nothing else.
 GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source TO '${OS_USER}'@'${DB_HOST_GRANT}';
