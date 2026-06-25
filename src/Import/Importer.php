@@ -40,7 +40,7 @@ final class Importer
      * @param array<string,string>|null $map  override the system's default column map
      * @return array<string,mixed> summary (counts + per-row outcomes)
      */
-    public function run(string $system, string $file, ?array $map = null, bool $dryRun = false, ?string $actor = null): array
+    public function run(string $system, string $file, ?array $map = null, bool $dryRun = false, ?string $actor = null, ?string $originalName = null): array
     {
         $actor ??= 'system:import_' . $system;
         $map ??= ColumnMap::for($system);
@@ -67,7 +67,7 @@ final class Importer
             $stmt = $this->db->prepare(
                 "INSERT INTO import_batch (system, file_name, status) VALUES (:system, :file, 'running')"
             );
-            $stmt->execute([':system' => $system, ':file' => basename($file)]);
+            $stmt->execute([':system' => $system, ':file' => $originalName ?? basename($file)]);
             $batchId = (int) $this->db->lastInsertId();
         }
 

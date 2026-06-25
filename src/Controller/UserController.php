@@ -28,6 +28,36 @@ final class UserController extends Controller
         ], 'users', 'Administration  /  Users', 'Users — TCS Identity Master');
     }
 
+    /** Pre-provision an SSO user (so access is ready before first login). */
+    public function addUser(): string
+    {
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect(url('/users'));
+        }
+        $email = strtolower(trim((string) ($_POST['email'] ?? '')));
+        $role = (string) ($_POST['role'] ?? 'readonly');
+        $name = trim((string) ($_POST['display_name'] ?? '')) ?: null;
+
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $this->flash('Enter a valid email address.');
+            return $this->redirect(url('/users'));
+        }
+        if (!AuthService::isValidRole($role)) {
+            $this->flash('Invalid role.');
+            return $this->redirect(url('/users'));
+        }
+
+        try {
+            $user = $this->auth()->grantRole($email, $role, $name, $this->auth()->user()['email'] ?? 'admin');
+            $this->flash("User {$user['email']} added as {$user['role']}. They can sign in via district SSO.");
+        } catch (\Throwable $e) {
+            error_log('[idm] addUser: ' . $e->getMessage());
+            $this->flash('Could not add the user (is the email already present?).');
+        }
+        return $this->redirect(url('/users'));
+    }
+
     public function updateRole(): string
     {
         if (!Csrf::check($_POST['_csrf'] ?? null)) {

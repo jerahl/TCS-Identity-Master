@@ -205,7 +205,14 @@ changes, and all data mutations are written to `audit_log`.
   records and school codes seen in feeds that have no mapping (they block clean
   provisioning). Read-only in M6; editing + RBAC in M7.
 - **Import / feeds** (`/import`): batch history with a drill-in to each batch's
-  staged rows and how each one matched (auto / new / review / skipped).
+  staged rows and how each one matched (auto / new / review / skipped). Editors
+  can **upload a CSV** here (pick the source system, optional dry-run) to run the
+  importer from the browser — same pipeline as the CLI, idempotent, capability-
+  gated, CSRF-protected, with a configurable size cap (`UPLOAD_MAX_BYTES`).
+
+Admins can also **pre-provision SSO users** on the Users screen (`/users`):
+add an email + display name + role so access is ready before the person's first
+login (matched by email). Roles can be changed there at any time.
 
 ## OneSync interface (Milestone 5)
 

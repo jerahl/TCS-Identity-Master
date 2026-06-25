@@ -89,10 +89,12 @@ try {
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
     $router->get('/add', $guard('edit', static fn() => $person->addForm()));
     $router->post('/add', $guard('edit', static fn() => $person->create()));
+    $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
 
     // ---- Admin only ----
     $router->get('/users', $guard('admin', static fn() => $users->index()));
     $router->post('/users/role', $guard('admin', static fn() => $users->updateRole()));
+    $router->post('/users/add', $guard('admin', static fn() => $users->addUser()));
 
     $router->setNotFound(static fn() => $page->notFound());
 

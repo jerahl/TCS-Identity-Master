@@ -13,6 +13,33 @@ $badge = static fn(string $mod): string => match ($mod) {
       <p>Batches staged from each source system. Drill in to see staged rows and how each matched.</p>
     </div>
   </div>
+
+  <?php if (!empty($canEdit)): ?>
+  <div class="card card--pad" style="margin-bottom:18px;">
+    <div class="form-section" style="margin-top:0;">Upload &amp; import a feed</div>
+    <form method="post" action="<?= e(url('/import/upload')) ?>" enctype="multipart/form-data"
+          style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+      <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+      <div>
+        <label class="field-label">Source system</label>
+        <select class="field" name="system" style="min-width:160px;">
+          <option value="nextgen">NextGen (HR)</option>
+          <option value="powerschool">PowerSchool</option>
+        </select>
+      </div>
+      <div style="flex:1; min-width:240px;">
+        <label class="field-label">CSV file</label>
+        <input class="field" type="file" name="file" accept=".csv,text/csv" required>
+      </div>
+      <label style="display:flex; align-items:center; gap:7px; height:38px; font-size:13px; color:#3D5462;">
+        <input type="checkbox" name="dry_run" value="1"> Dry run
+      </label>
+      <button class="btn btn--primary" type="submit" style="height:38px;">Import</button>
+    </form>
+    <p class="muted" style="font-size:11.5px; margin:10px 0 0;">Columns must match the source's expected headers (see <code>src/Import/ColumnMap.php</code>). Re-uploads are idempotent — existing people re-match by source id.</p>
+  </div>
+  <?php endif; ?>
+
   <div class="card table-wrap">
     <table class="table">
       <thead><tr><th>System</th><th>File</th><th>Time</th><th style="text-align:right;">Rows</th><th style="text-align:right;">Matched</th><th>Status</th></tr></thead>

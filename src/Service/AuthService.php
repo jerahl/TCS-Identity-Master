@@ -156,11 +156,11 @@ final class AuthService
     }
 
     /** Set (or create) a user's role from a trusted context (CLI / admin UI). */
-    public function grantRole(string $email, string $role, string $actor = 'system:cli'): array
+    public function grantRole(string $email, string $role, ?string $name = null, string $actor = 'system:cli'): array
     {
-        $user = $this->upsertUser($email, $role, null);
+        $user = $this->upsertUser($email, $role, $name);
         $this->audit->log('user', (int) $user['user_id'], 'update', null,
-            ['email' => $user['email'], 'role' => $user['role']], $actor);
+            ['email' => $user['email'], 'role' => $user['role'], 'origin' => 'grant'], $actor);
         return $user;
     }
 
