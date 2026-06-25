@@ -87,21 +87,36 @@ One database, four roles — never shared or reused. Replace passwords and host
 masks (`'%'`) to match your deployment. The app **never** connects as the
 migrator or the OneSync reader.
 
+> **Ordering matters.** MariaDB (and modern MySQL) refuse a *table-level* GRANT
+> for a table that doesn't exist yet. So create the database + users + the
+> database-level grants **first**, run `bin/migrate.php`, **then** apply the
+> table/view-level grants for the write-back importer and the OneSync reader.
+> (The setup script does exactly this automatically.)
+
+**Step 1 — before migrating** (database-level; safe with no tables yet):
+
 ```sql
 -- 1) Application account — the dashboard/web app.
 CREATE USER 'idm_app'@'%' IDENTIFIED BY 'change-me-app';
 GRANT SELECT, INSERT, UPDATE ON tcs_identity.* TO 'idm_app'@'%';
 -- No DELETE (no hard deletes — status changes + audit instead), no DDL, no GRANT.
-REVOKE INSERT, UPDATE ON tcs_identity.v_onesync_source FROM 'idm_app'@'%'; -- view is read-only
 
 -- 2) Migrator / schema owner — used ONLY by bin/migrate.php, from a trusted shell.
 CREATE USER 'idm_migrate'@'%' IDENTIFIED BY 'change-me-migrate';
 GRANT ALL PRIVILEGES ON tcs_identity.* TO 'idm_migrate'@'%';
--- Needs CREATE DATABASE on first run:
-GRANT CREATE ON *.* TO 'idm_migrate'@'%';
+GRANT CREATE ON *.* TO 'idm_migrate'@'%';   -- needs CREATE DATABASE on first run
 
--- 3) Write-back importer — limited writer for the OneSync write-back jobs only.
+-- 3) + 4) Create the limited users now; grant their objects after migrating.
 CREATE USER 'idm_writeback'@'%' IDENTIFIED BY 'change-me-writeback';
+CREATE USER 'onesync_ro'@'%'    IDENTIFIED BY 'change-me-onesync';
+
+FLUSH PRIVILEGES;
+```
+
+**Step 2 — after `php bin/migrate.php`** (the tables + view now exist):
+
+```sql
+-- 3) Write-back importer — limited writer for the OneSync write-back jobs only.
 GRANT INSERT, UPDATE, SELECT ON tcs_identity.onesync_writeback    TO 'idm_writeback'@'%';
 GRANT INSERT, UPDATE, SELECT ON tcs_identity.account_sync_status  TO 'idm_writeback'@'%';
 GRANT INSERT, UPDATE, SELECT ON tcs_identity.account_sync_event   TO 'idm_writeback'@'%';
@@ -109,7 +124,6 @@ GRANT INSERT, UPDATE, SELECT ON tcs_identity.account_sync_event   TO 'idm_writeb
 GRANT SELECT, UPDATE ON tcs_identity.person TO 'idm_writeback'@'%';
 
 -- 4) OneSync reader — READ-ONLY on the single view, nothing else.
-CREATE USER 'onesync_ro'@'%' IDENTIFIED BY 'change-me-onesync';
 GRANT SELECT ON tcs_identity.v_onesync_source TO 'onesync_ro'@'%';
 -- Deliberately NO access to base tables: OneSync sees one row per person, period.
 

@@ -157,11 +157,14 @@ OS_USER="$(get_env DB_ONESYNC_USER)";       OS_PASS="$(get_env DB_ONESYNC_PASS)"
 DB_NAME="$(get_env DB_NAME)"
 
 # ----------------------------------------------------------------------------
-log "Creating database '${DB_NAME}' + least-privilege users"
+log "Creating database '${DB_NAME}' + users + database-level grants"
 # ----------------------------------------------------------------------------
 # DB name is operator config; validate before interpolating into DDL.
 [[ "${DB_NAME}" =~ ^[A-Za-z0-9_]+$ ]] || die "Unsafe DB_NAME: ${DB_NAME}"
 
+# Phase A — things that DON'T depend on tables existing yet. (MariaDB refuses a
+# table-level GRANT for a table that doesn't exist, so the writeback/view grants
+# wait until after migrations — Phase B below.)
 mysql_admin <<SQL
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -176,24 +179,16 @@ ALTER USER '${MIG_USER}'@'${DB_HOST_GRANT}' IDENTIFIED BY '${MIG_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${MIG_USER}'@'${DB_HOST_GRANT}';
 GRANT CREATE ON *.* TO '${MIG_USER}'@'${DB_HOST_GRANT}';
 
--- 3) Write-back importer — limited writer for the OneSync write-back jobs.
+-- 3) + 4) Create the limited-writer and OneSync-reader users now; their
+-- table/view grants are applied in Phase B, after migrations create the objects.
 CREATE USER IF NOT EXISTS '${WB_USER}'@'${DB_HOST_GRANT}' IDENTIFIED BY '${WB_PASS}';
 ALTER USER '${WB_USER}'@'${DB_HOST_GRANT}' IDENTIFIED BY '${WB_PASS}';
-GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.onesync_writeback   TO '${WB_USER}'@'${DB_HOST_GRANT}';
-GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.account_sync_status TO '${WB_USER}'@'${DB_HOST_GRANT}';
-GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.account_sync_event  TO '${WB_USER}'@'${DB_HOST_GRANT}';
-GRANT SELECT, UPDATE ON \`${DB_NAME}\`.person TO '${WB_USER}'@'${DB_HOST_GRANT}';
-
--- 4) OneSync reader — READ-ONLY on the single view, nothing else.
 CREATE USER IF NOT EXISTS '${OS_USER}'@'${DB_HOST_GRANT}' IDENTIFIED BY '${OS_PASS}';
 ALTER USER '${OS_USER}'@'${DB_HOST_GRANT}' IDENTIFIED BY '${OS_PASS}';
-GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source TO '${OS_USER}'@'${DB_HOST_GRANT}';
 
 FLUSH PRIVILEGES;
 SQL
-log "Database + users ready."
-# NOTE: the GRANT on v_onesync_source must be (re)run AFTER migrations create the
-# view; we re-issue it post-migrate below so the OneSync reader works on first run.
+log "Database + users ready (table-level grants applied after migration)."
 
 # ----------------------------------------------------------------------------
 log "composer install"
@@ -204,9 +199,24 @@ run_as_app composer install --no-interaction --prefer-dist
 if [ "${RUN_MIGRATE}" = "1" ]; then
     log "Running migrations"
     run_as_app php bin/migrate.php
-    # The view now exists — (re)grant the OneSync reader against it.
-    mysql_admin -e "GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source TO '${OS_USER}'@'${DB_HOST_GRANT}'; FLUSH PRIVILEGES;" || \
-        warn "Could not grant on v_onesync_source (will exist after first migrate)."
+
+    log "Applying table-level grants (writeback + OneSync reader)"
+    # Phase B — the tables and the view now exist.
+    mysql_admin <<SQL
+-- 3) Write-back importer — limited writer for the OneSync write-back jobs.
+GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.onesync_writeback   TO '${WB_USER}'@'${DB_HOST_GRANT}';
+GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.account_sync_status TO '${WB_USER}'@'${DB_HOST_GRANT}';
+GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.account_sync_event  TO '${WB_USER}'@'${DB_HOST_GRANT}';
+GRANT SELECT, UPDATE ON \`${DB_NAME}\`.person TO '${WB_USER}'@'${DB_HOST_GRANT}';
+
+-- 4) OneSync reader — READ-ONLY on the single view, nothing else.
+GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source TO '${OS_USER}'@'${DB_HOST_GRANT}';
+
+FLUSH PRIVILEGES;
+SQL
+else
+    warn "RUN_MIGRATE=0 — skipping migrations AND the writeback/OneSync table grants."
+    warn "Run 'php bin/migrate.php' then re-run this script (or apply those grants by hand)."
 fi
 
 if [ "${RUN_SEED}" = "1" ]; then
