@@ -30,4 +30,6 @@ if (is_file($composerAutoload)) {
     });
 }
 
+require $root . '/src/helpers.php';
+
 \App\Config::load($root . '/.env');

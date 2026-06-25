@@ -28,6 +28,7 @@ INSTALL_WEBSERVER="${INSTALL_WEBSERVER:-1}"  # 1 = nginx + php-fpm site, 0 = ski
 SERVER_NAME="${SERVER_NAME:-identity.dev.local}"
 RUN_MIGRATE="${RUN_MIGRATE:-1}"
 RUN_SEED="${RUN_SEED:-1}"
+SEED_DEMO="${SEED_DEMO:-0}"                   # 1 = load dev demo people (non-production)
 
 # Resolve repo root = parent of this script's dir.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -224,6 +225,11 @@ if [ "${RUN_SEED}" = "1" ]; then
     run_as_app php bin/seed.php
 fi
 
+if [ "${SEED_DEMO}" = "1" ]; then
+    log "Seeding DEV demo people (so the People list/detail render)"
+    run_as_app php bin/seed_demo.php
+fi
+
 # ----------------------------------------------------------------------------
 if [ "${INSTALL_WEBSERVER}" = "1" ]; then
     log "Configuring nginx + php-fpm site (web root: ${REPO_DIR}/public)"
@@ -260,8 +266,8 @@ NGINX
     fi
     systemctl enable --now "php${PHP_VERSION}-fpm"
     nginx -t && systemctl reload nginx
-    warn "public/ has no index.php until Milestone 2 — nginx will 404 until then."
-    warn "This dev site is HTTP only. Terminate TLS (or add certbot) before any real PII."
+    warn "This dev site is HTTP only and has NO authentication yet (SAML/RBAC = M7)."
+    warn "Keep it on the dev network; terminate TLS (or add certbot) before any real PII."
 fi
 
 # ----------------------------------------------------------------------------
@@ -275,10 +281,12 @@ cat <<SUMMARY
   DB admin:    MariaDB root via unix_socket — run 'sudo mariadb' for a root shell
   Users:       ${APP_USER_DB} (app), ${MIG_USER} (migrate),
                ${WB_USER} (writeback), ${OS_USER} (onesync, read-only view)
-$( [ "${INSTALL_WEBSERVER}" = "1" ] && echo "  Web:         http://${SERVER_NAME}/  -> ${REPO_DIR}/public (php-fpm ${PHP_VERSION})" )
+$( [ "${INSTALL_WEBSERVER}" = "1" ] && echo "  Web:         http://${SERVER_NAME}/people  -> ${REPO_DIR}/public (php-fpm ${PHP_VERSION})" )
 
   Verify:      php bin/migrate.php --status
   Re-seed:     php bin/seed.php          (after editing db/seeds/*.csv)
+  Demo data:   php bin/seed_demo.php     (dev only — sample people for the UI)
+  Local run:   php -S 127.0.0.1:8000 -t public   (then open /people)
   Tests:       composer test
 
   Reminders:

@@ -11,9 +11,14 @@ See `docs/` for the full design:
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
 
-> **Status:** Milestone 1 — scaffold, config, DB layer, migrations, reference
-> seeds. The dashboard, importers, matcher, review queue, OneSync write-back, and
-> SAML/RBAC arrive in later milestones.
+> **Status:** Milestone 2 — Person service + People list + Person detail
+> (read-only) + audit infrastructure, served as PHP pages matching the design
+> mockup. Importers, matcher, review queue, OneSync write-back, the home
+> dashboard, and SAML/RBAC arrive in later milestones.
+>
+> ⚠️ **No authentication yet.** SAML SSO + RBAC land in Milestone 7. Until then
+> the web pages are read-only and for the **dev network only** — do not expose
+> them publicly.
 
 ## Stack
 
@@ -80,6 +85,19 @@ follow the manual steps below.
 > Replace `school.csv`, `school_code_alias.csv`, and `ethnicity_map.csv` with the
 > district's real school map and ALSDE ethnicity codes, then re-run `seed.php`
 > (idempotent upserts on the natural keys).
+
+6. **Run the app.** With the nginx site from the setup script, browse to the
+   server. For a quick local run without a web server:
+   ```sh
+   php -S 127.0.0.1:8000 -t public      # then open http://127.0.0.1:8000/people
+   ```
+7. **(Optional) Load demo data** so the People list/detail render before the
+   real importers exist (Milestone 3). Dev/non-production only:
+   ```sh
+   php bin/seed_demo.php                 # sample faculty/staff from the mockup
+   php bin/seed_demo.php --dry-run       # preview
+   ```
+   Idempotent; refuses to run when `APP_ENV=production` (use `--force` to override).
 
 ## Least-privilege DB users
 
