@@ -32,7 +32,26 @@ docs/          specs
 tests/         PHPUnit (matcher suite lands in Milestone 3)
 ```
 
-## Setup
+## Quick start (Debian 12 dev server)
+
+One script provisions a fresh Debian 12 (Bookworm) box end-to-end — installs
+PHP 8.2 + extensions, Composer, and MySQL 8; generates `.env` with random
+per-role passwords; creates the database + the four least-privilege users with
+the documented GRANTs; runs `composer install`, the migrations, and the seeds;
+and (optionally) configures an nginx + php-fpm site for `public/`. It's
+idempotent — safe to re-run.
+
+```sh
+sudo bash scripts/setup-dev-debian12.sh
+# skip the web server, or change the DB name:
+sudo INSTALL_WEBSERVER=0 DB_NAME=tcs_identity bash scripts/setup-dev-debian12.sh
+```
+
+The generated MySQL root credentials are stashed root-only in
+`/root/.idm-mysql-root.cnf`. To wire things up by hand instead, follow the
+manual steps below.
+
+## Manual setup
 
 1. **Configure.** Copy `.env.example` to `.env` and fill in real values. `.env`
    is gitignored — never commit it. Secrets come only from the environment.
