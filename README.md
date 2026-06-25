@@ -152,8 +152,17 @@ loud warning on weak (name-only) matches. Every decision is audited
 (`audit_log` + a `lifecycle_event` on the person), and resolving a case clears
 its sibling candidates. Forms are CSRF-protected; actions use Post/Redirect/Get.
 
-> Try it: import the samples (so a couple of rows land in review), then open
-> `/review`. RBAC (editor/admin only) is enforced in Milestone 7.
+> Try it: seed demo people, then import the review-demo feed (its rows
+> name-match existing people but carry new ids and no DOB, so they land in
+> review — they never auto-link):
+> ```sh
+> php bin/seed_demo.php
+> php bin/import_nextgen.php --file=db/seeds/feeds/nextgen_review_demo.csv
+> ```
+> Then open `/review`: **Confirm** Elena Ruiz (the intern→employee link) and
+> **Reject** the second "Marcus Okafor" (a coincidental same-name → new person).
+> Note: `nextgen_sample.csv` produces no review cases by design (its rows
+> auto-match or are brand new). RBAC (editor/admin only) is enforced in M7.
 
 ## Least-privilege DB users
 
