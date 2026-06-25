@@ -78,6 +78,15 @@ mysql_admin() { mariadb "$@"; }
 log "Installing base packages"
 # ----------------------------------------------------------------------------
 export DEBIAN_FRONTEND=noninteractive
+
+# Self-heal: earlier versions of this script added the Oracle MySQL APT repo,
+# whose signing key has since expired (EXPKEYSIG ...). Leaving it on disk breaks
+# every `apt-get update`. We use MariaDB now, so remove those artifacts.
+if [ -f /etc/apt/sources.list.d/mysql.list ] || [ -f /etc/apt/keyrings/mysql.gpg ]; then
+    warn "Removing stale MySQL APT repo left by a previous run."
+    rm -f /etc/apt/sources.list.d/mysql.list /etc/apt/keyrings/mysql.gpg
+fi
+
 apt-get update -y
 apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg lsb-release apt-transport-https \
