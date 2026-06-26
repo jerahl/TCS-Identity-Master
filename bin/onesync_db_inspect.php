@@ -11,6 +11,8 @@ declare(strict_types=1);
  *   php bin/onesync_db_inspect.php --table=NAME    columns of one table
  *   php bin/onesync_db_inspect.php --table=NAME --sample=5   + sample rows
  *   php bin/onesync_db_inspect.php --search=user   find columns by name across tables
+ *   php bin/onesync_db_inspect.php --distinct=os_export_log.actionStatus
+ *                                                 value frequency of a column (decode enum ints)
  *
  * --sample prints real data (may include usernames/emails) — use on a trusted
  * terminal. Default is columns only.
@@ -54,6 +56,38 @@ try {
             printf("  %-32s %-26s %s\n", $r['table_name'], $r['column_name'], $r['column_type']);
         }
         echo '  (' . count($rows) . " match(es))\n";
+        exit(0);
+    }
+
+    // --- value frequency of a column (decode integer enums) ---
+    if (isset($opts['distinct'])) {
+        $parts = explode('.', (string) $opts['distinct'], 2);
+        if (count($parts) !== 2) {
+            fwrite(STDERR, "Use --distinct=table.column\n");
+            exit(2);
+        }
+        [$t, $col] = $parts;
+        if (!in_array($t, $tables, true)) {
+            fwrite(STDERR, "No such table '{$t}'.\n");
+            exit(2);
+        }
+        $valid = $db->prepare(
+            'SELECT 1 FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = :t AND column_name = :c'
+        );
+        $valid->execute([':t' => $t, ':c' => $col]);
+        if ($valid->fetchColumn() === false) {
+            fwrite(STDERR, "No such column '{$col}' on '{$t}'.\n");
+            exit(2);
+        }
+        // $t and $col are validated against information_schema (whitelist).
+        echo "Value frequency for {$t}.{$col} (top 50):\n";
+        $rows = $db->query(
+            "SELECT `{$col}` AS v, COUNT(*) AS n FROM `{$t}` GROUP BY `{$col}` ORDER BY n DESC LIMIT 50"
+        )->fetchAll();
+        foreach ($rows as $r) {
+            printf("  %-40s %10d\n", $r['v'] === null ? '(null)' : (string) $r['v'], (int) $r['n']);
+        }
         exit(0);
     }
 
