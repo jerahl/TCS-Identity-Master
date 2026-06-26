@@ -58,9 +58,15 @@ final class PersonController extends Controller
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
 
-    /** Manual add form (for subs/contractors not in HR). */
+    private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
+
+    /** Manual add form (for subs/contractors/interns not in HR). */
     public function addForm(array $old = [], string $error = ''): string
     {
+        // Pre-select a type when arriving via /add?type=intern (etc.).
+        if ($old === [] && isset($_GET['type']) && in_array($_GET['type'], self::PERSON_TYPES, true)) {
+            $old['person_type'] = (string) $_GET['type'];
+        }
         return $this->render('people/add', [
             'schools' => $this->people->allSchools(),
             'old'     => $old,
@@ -79,12 +85,11 @@ final class PersonController extends Controller
         $first = trim((string) ($_POST['first_name'] ?? ''));
         $last = trim((string) ($_POST['last_name'] ?? ''));
         $type = (string) ($_POST['person_type'] ?? 'sub');
-        $validTypes = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
 
         if ($first === '' || $last === '') {
             return $this->addForm($_POST, 'First and last name are required.');
         }
-        if (!in_array($type, $validTypes, true)) {
+        if (!in_array($type, self::PERSON_TYPES, true)) {
             return $this->addForm($_POST, 'Invalid person type.');
         }
         $dob = trim((string) ($_POST['dob'] ?? ''));

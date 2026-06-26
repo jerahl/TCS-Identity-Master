@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Service;
 
 use App\Db;
+use App\Import\ImportSource;
 use PDO;
 
 /**
@@ -69,18 +70,21 @@ final class DashboardService
         return $stmt->fetchAll();
     }
 
-    /** Most recent batch per source system. */
+    /** Most recent batch per import source (the per-source feed breakdown). */
     public function feeds(): array
     {
         $out = [];
         $stmt = $this->db->prepare(
-            'SELECT system, started_at, finished_at, row_count, status, message
-             FROM import_batch WHERE system = :sys ORDER BY started_at DESC, batch_id DESC LIMIT 1'
+            'SELECT system, started_at, finished_at, row_count, status, message,
+                    (SELECT COUNT(*) FROM staging_record s
+                     WHERE s.batch_id = b.batch_id AND s.match_status = \'needs_review\') AS review_count
+             FROM import_batch b WHERE system = :sys ORDER BY started_at DESC, batch_id DESC LIMIT 1'
         );
-        foreach (['nextgen', 'powerschool'] as $sys) {
-            $stmt->execute([':sys' => $sys]);
+        foreach (ImportSource::all() as $source) {
+            $stmt->execute([':sys' => $source->batchSystem]);
             $row = $stmt->fetch();
             if ($row !== false) {
+                $row['label'] = $source->label;
                 $out[] = $row;
             }
         }

@@ -57,17 +57,20 @@ $cards = [
   </div>
 
   <div class="panel">
-    <h2 class="panel__title" style="margin-bottom:14px;">Feeds</h2>
+    <h2 class="panel__title" style="margin-bottom:4px;">Feeds by source</h2>
+    <p class="panel__note" style="margin-bottom:14px;">Most recent import per source category.</p>
     <?php if ($feeds === []): ?>
       <p class="muted" style="font-size:12.5px;">No imports recorded yet.</p>
     <?php else: ?>
-      <?php foreach ($feeds as $f): ?>
+      <?php foreach ($feeds as $f): $mod = Present::importMod($f['status']); ?>
       <div class="feed">
         <div class="feed__head">
-          <span style="font-weight:600; font-size:13px;"><?= e(ucfirst($f['system'])) ?></span>
-          <span class="badge badge--<?= e(Present::importMod($f['status']) === 'ok' ? 'active' : (Present::importMod($f['status']) === 'fail' ? 'terminated' : 'pending')) ?>"><?= e($f['status']) ?></span>
+          <span style="font-weight:600; font-size:13px;"><?= e($f['label'] ?? ucfirst($f['system'])) ?></span>
+          <span class="badge badge--<?= e($mod === 'ok' ? 'active' : ($mod === 'fail' ? 'terminated' : 'pending')) ?>"><?= e($f['status']) ?></span>
         </div>
-        <div class="feed__meta mono"><?= e($f['started_at']) ?> · <?= e((int) $f['row_count']) ?> rows</div>
+        <div class="feed__meta mono">
+          <?= e($f['started_at']) ?> · <?= e((int) $f['row_count']) ?> rows<?php if ((int) $f['review_count'] > 0): ?> · <a href="<?= e(url('/review')) ?>" style="color:#B45309;"><?= e((int) $f['review_count']) ?> to review</a><?php endif; ?>
+        </div>
       </div>
       <?php endforeach; ?>
     <?php endif; ?>
