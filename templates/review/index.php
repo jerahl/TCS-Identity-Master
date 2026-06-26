@@ -79,7 +79,9 @@ $strength = static function (float $s): array {
       <div class="cmp-headers">
         <div></div>
         <div class="cmp-col"><span class="swatch swatch--in"></span> Incoming record <span class="muted"><?= e($detail['incoming']['source']) ?></span></div>
-        <div class="cmp-col"><span class="swatch swatch--ex"></span> Existing person <span class="muted mono"><?= e(substr($detail['candidate']['uuid'], 0, 8)) ?></span></div>
+        <div class="cmp-col"><span class="swatch swatch--ex"></span> Existing person
+          <a class="muted mono" href="<?= e(url('/people/' . $detail['candidate']['person_id'])) ?>" target="_blank" rel="noopener" title="Open person record"><?= e(substr($detail['candidate']['uuid'], 0, 8)) ?> ↗</a>
+        </div>
       </div>
       <div class="cmp-rows">
         <?php foreach ($detail['rows'] as $r): ?>

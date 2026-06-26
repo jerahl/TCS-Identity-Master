@@ -73,12 +73,20 @@ final class PersonService
 
         $q = trim((string) ($filters['q'] ?? ''));
         if ($q !== '') {
-            $where[] = '(p.first_name LIKE :q OR p.last_name LIKE :q OR p.username LIKE :q
-                        OR p.email LIKE :q OR p.employee_id LIKE :q OR p.person_uuid LIKE :q)';
-            $params[':q'] = '%' . $q . '%';
+            // Each LIKE needs its own placeholder — with emulated prepares off a
+            // named placeholder may appear only once (else HY093).
+            $cols = ['first_name', 'last_name', 'username', 'email', 'employee_id', 'person_uuid'];
+            $likes = [];
+            foreach ($cols as $i => $col) {
+                $ph = ':q' . $i;
+                $likes[] = "p.{$col} LIKE {$ph}";
+                $params[$ph] = '%' . $q . '%';
+            }
+            $where[] = '(' . implode(' OR ', $likes) . ')';
         }
 
         $whereSql = $where === [] ? '' : ' WHERE ' . implode(' AND ', $where);
+        $orderSql = self::orderBy((string) ($filters['sort'] ?? 'name'), (string) ($filters['dir'] ?? 'asc'));
 
         $sql = "SELECT p.person_id, p.person_uuid, p.first_name, p.middle_name, p.last_name,
                        p.person_type, p.status, p.username, p.email, p.employee_id,
@@ -86,7 +94,7 @@ final class PersonService
                 FROM person p
                 LEFT JOIN school s ON s.school_id = p.primary_school_id
                 {$whereSql}
-                ORDER BY p.last_name, p.first_name";
+                {$orderSql}";
 
         $stmt = $this->db()->prepare($sql);
         $stmt->execute($params);
@@ -95,6 +103,26 @@ final class PersonService
         $total = (int) $this->db()->query('SELECT COUNT(*) FROM person')->fetchColumn();
 
         return ['rows' => $rows, 'total' => $total];
+    }
+
+    /** Sort keys the people table allows (column whitelist — never interpolate user input). */
+    public const SORTS = ['name', 'employee_id'];
+
+    /**
+     * Build a safe ORDER BY from a whitelisted sort key + direction. Employee IDs
+     * sort numerically with nulls/blanks last; name sorts by last then first.
+     */
+    private static function orderBy(string $sort, string $dir): string
+    {
+        $dir = strtolower($dir) === 'desc' ? 'DESC' : 'ASC';
+        if (!in_array($sort, self::SORTS, true)) {
+            $sort = 'name';
+        }
+        return match ($sort) {
+            'employee_id' => "ORDER BY (p.employee_id IS NULL OR p.employee_id = ''),
+                              CAST(p.employee_id AS UNSIGNED) {$dir}, p.employee_id {$dir}",
+            default       => "ORDER BY p.last_name {$dir}, p.first_name {$dir}",
+        };
     }
 
     /** Distinct primary schools present, for the list's school filter. */

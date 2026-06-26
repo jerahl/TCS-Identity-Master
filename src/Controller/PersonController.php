@@ -27,6 +27,8 @@ final class PersonController extends Controller
             'missing' => isset($_GET['missing']) && $_GET['missing'] !== '0',
             'pending' => isset($_GET['pending']) && $_GET['pending'] !== '0',
             'q'       => (string) ($_GET['q'] ?? ''),
+            'sort'    => (string) ($_GET['sort'] ?? 'name'),
+            'dir'     => strtolower((string) ($_GET['dir'] ?? 'asc')) === 'desc' ? 'desc' : 'asc',
         ];
 
         $result = $this->people->list($filters);

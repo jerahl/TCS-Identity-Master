@@ -16,6 +16,18 @@ $toggle = static function (string $key) use ($base): string {
     $q[$key] = empty($base[$key]) ? 1 : null;
     return url('/people', array_filter($q, static fn($v) => $v !== null && $v !== ''));
 };
+
+// Sortable column header: link that preserves filters and toggles direction.
+$curSort = $filters['sort'] ?? 'name';
+$curDir = $filters['dir'] ?? 'asc';
+$sortHead = static function (string $key, string $label) use ($base, $curSort, $curDir): string {
+    $active = $curSort === $key;
+    $nextDir = ($active && $curDir === 'asc') ? 'desc' : 'asc';
+    $q = array_filter($base + ['sort' => $key, 'dir' => $nextDir], static fn($v) => $v !== null && $v !== '');
+    $arrow = $active ? ($curDir === 'asc' ? ' ▲' : ' ▼') : '';
+    $cls = 'th-sort' . ($active ? ' is-sorted' : '');
+    return '<a class="' . $cls . '" href="' . e(url('/people', $q)) . '">' . e($label) . $arrow . '</a>';
+};
 $statusOpts = ['all' => 'All statuses', 'active' => 'Active', 'pending' => 'Pending', 'disabled' => 'Disabled', 'terminated' => 'Terminated'];
 $typeOpts = ['all' => 'All types', 'faculty' => 'Faculty', 'staff' => 'Staff', 'contractor' => 'Contractor', 'sub' => 'Substitute', 'intern' => 'Intern'];
 ?>
@@ -64,8 +76,8 @@ $typeOpts = ['all' => 'All types', 'faculty' => 'Faculty', 'staff' => 'Staff', '
   <table class="table">
     <thead>
       <tr>
-        <th>Name</th><th>Type</th><th>Status</th><th>Primary school</th>
-        <th>Username</th><th>Email</th><th>Employee ID</th>
+        <th><?= $sortHead('name', 'Name') ?></th><th>Type</th><th>Status</th><th>Primary school</th>
+        <th>Username</th><th>Email</th><th><?= $sortHead('employee_id', 'Employee ID') ?></th>
       </tr>
     </thead>
     <tbody>
