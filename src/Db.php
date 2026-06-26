@@ -70,6 +70,36 @@ final class Db
         return $pdo;
     }
 
+    /**
+     * Connect to the EXTERNAL OneSync database — a separate MariaDB we pull
+     * provisioning results from (read-only intent). Configured via ONESYNC_DB_*,
+     * independent of our app DB. Grant the user SELECT only.
+     */
+    public static function connectOneSyncSource(): PDO
+    {
+        if (isset(self::$connections['onesync_source'])) {
+            return self::$connections['onesync_source'];
+        }
+
+        $host = Config::require('ONESYNC_DB_HOST');
+        $port = Config::get('ONESYNC_DB_PORT', '3306');
+        $name = Config::require('ONESYNC_DB_NAME');
+        $charset = Config::get('ONESYNC_DB_CHARSET', 'utf8mb4');
+        $user = Config::require('ONESYNC_DB_USER');
+        $pass = Config::get('ONESYNC_DB_PASS', '');
+
+        $dsn = sprintf('mysql:host=%s;port=%s;dbname=%s;charset=%s', $host, $port, $name, $charset);
+        $pdo = new PDO($dsn, $user, $pass, [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+            PDO::ATTR_STRINGIFY_FETCHES  => false,
+        ]);
+
+        self::$connections['onesync_source'] = $pdo;
+        return $pdo;
+    }
+
     /** Connect without selecting a database (for bootstrapping/creating the schema). */
     public static function connectServer(string $role = self::ROLE_MIGRATE): PDO
     {
