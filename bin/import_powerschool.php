@@ -31,6 +31,12 @@ foreach (array_slice($_SERVER['argv'] ?? [], 1) as $arg) {
 }
 $dryRun = isset($opts['dry-run']);
 
+/** Classify a CSV by a marker column unique to each export. */
+$classify = static function (string $file): ?string {
+    $rows = Csv::read($file);
+    return $rows === [] ? null : PowerSchoolBundle::classify($rows[0]);
+};
+
 try {
     $users = $opts['users'] ?? null;
     $teachers = $opts['teachers'] ?? null;
@@ -42,12 +48,16 @@ try {
             fwrite(STDERR, "Provide --dir=<folder> (or --users/--teachers/--schoolstaff), or set FEED_POWERSCHOOL_DIR.\n");
             exit(2);
         }
-        // Auto-detect by header, preferring canonical filenames (so an extra
-        // MultipleID.csv doesn't get picked over TeachersID.csv).
-        $picked = PowerSchoolBundle::selectFiles(glob(rtrim($dir, '/') . '/*.csv') ?: []);
-        $users ??= $picked['users'];
-        $teachers ??= $picked['teachers'];
-        $staff ??= $picked['schoolstaff'];
+        foreach (glob(rtrim($dir, '/') . '/*.csv') ?: [] as $f) {
+            $kind = $classify($f);
+            if ($kind === 'users' && $users === null) {
+                $users = $f;
+            } elseif ($kind === 'teachers' && $teachers === null) {
+                $teachers = $f;
+            } elseif ($kind === 'schoolstaff' && $staff === null) {
+                $staff = $f;
+            }
+        }
     }
 
     $missing = array_keys(array_filter(['users' => $users, 'teachers' => $teachers, 'schoolstaff' => $staff], static fn($v) => $v === null));

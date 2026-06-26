@@ -163,9 +163,17 @@ final class FeedSync
         if ($logIds === []) {
             return; // nothing new downloaded
         }
-        // Prefer canonical filenames so an extra file (e.g. MultipleID.csv that
-        // also has TEACHERS.* columns) doesn't get picked over TeachersID.csv.
-        $found = PowerSchoolBundle::selectFiles(glob(rtrim($localDir, '/') . '/*.csv') ?: []);
+        $found = ['users' => null, 'teachers' => null, 'schoolstaff' => null];
+        foreach (glob(rtrim($localDir, '/') . '/*.csv') ?: [] as $f) {
+            $rows = Csv::read($f);
+            if ($rows === []) {
+                continue;
+            }
+            $kind = PowerSchoolBundle::classify($rows[0]);
+            if ($kind !== null && $found[$kind] === null) {
+                $found[$kind] = $f;
+            }
+        }
         $missing = array_keys(array_filter($found, static fn($v) => $v === null));
         if ($missing !== []) {
             $reason = 'waiting for all 3 PowerSchool files; missing: ' . implode(', ', $missing);
