@@ -50,16 +50,16 @@ final class AdUsernameImporter
     }
 
     /**
-     * Derive the PowerSchool id from the AD uniqueId: strip a single leading
-     * "T"/"t". If there's no T prefix, return the value unchanged.
+     * Strip a single leading "T"/"t" prefix (both the AD uniqueId and the
+     * Employee ID carry it: T14774 -> 14774). Unchanged if there's no T prefix.
      */
-    public static function psIdFromUniqueId(string $uniqueId): string
+    public static function stripLeadingT(string $value): string
     {
-        $u = trim($uniqueId);
-        if ($u !== '' && ($u[0] === 'T' || $u[0] === 't')) {
-            return substr($u, 1);
+        $v = trim($value);
+        if ($v !== '' && ($v[0] === 'T' || $v[0] === 't')) {
+            return substr($v, 1);
         }
-        return $u;
+        return $v;
     }
 
     /** @return array<string,mixed> summary */
@@ -102,7 +102,8 @@ final class AdUsernameImporter
             return ['key' => 'skipped', 'detail' => 'blank sAMAccountName'];
         }
 
-        $psId = self::psIdFromUniqueId($uniqueId);
+        $psId = self::stripLeadingT($uniqueId);
+        $employeeId = self::stripLeadingT($employeeId);
         $person = $this->findPerson($psId, $employeeId);
         if ($person === null) {
             return ['key' => 'no_person', 'detail' => "no person for PS id '{$psId}'" . ($employeeId !== '' ? " / employee '{$employeeId}'" : '')];
