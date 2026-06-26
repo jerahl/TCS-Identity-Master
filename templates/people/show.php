@@ -140,26 +140,29 @@ $eventTitle = [
         </div>
       </div>
 
-      <!-- Provisioning status (per destination) -->
+      <!-- Provisioning status (one per destination) -->
       <div class="panel">
         <h2 class="panel__title">Provisioning status</h2>
         <p class="panel__note" style="margin:4px 0 14px;">Per-destination state from OneSync (AD · Google · Raptor · PowerSchool).</p>
-        <?php if ($syncStatus === []): ?>
-          <div class="muted" style="font-size:12.5px;">No provisioning status reported yet.</div>
-        <?php else: ?>
         <div class="sync-grid">
-          <?php foreach ($syncStatus as $sy): $mod = Present::syncMod($sy['last_status']); ?>
+          <?php foreach ($syncStatus as $sy):
+              $reported = !empty($sy['reported']);
+              $mod = $reported ? Present::syncMod($sy['last_status']) : 'muted';
+          ?>
           <div class="sync-card<?= $mod === 'fail' ? ' sync-card--fail' : '' ?>">
             <div class="sync-card__head">
-              <span class="sync-card__dest"><?= e($sy['destination']) ?></span>
-              <span class="sync-badge sync-badge--<?= e($mod) ?>"><?= e($dash($sy['last_status'])) ?></span>
+              <span class="sync-card__dest"><?= e($sy['label'] ?? $sy['destination']) ?></span>
+              <span class="sync-badge sync-badge--<?= e($mod) ?>"><?= e($reported ? $dash($sy['last_status']) : 'Not synced') ?></span>
             </div>
-            <div class="sync-card__meta"><?= e($dash($sy['last_action'])) ?> · <?= e($dash($sy['last_sync_at'])) ?></div>
-            <?php if ($mod === 'fail' && $sy['message']): ?><div class="sync-card__msg"><?= e($sy['message']) ?></div><?php endif; ?>
+            <?php if ($reported): ?>
+              <div class="sync-card__meta"><?= e($dash($sy['last_action'])) ?> · <?= e($dash($sy['last_sync_at'])) ?></div>
+              <?php if ($mod === 'fail' && $sy['message']): ?><div class="sync-card__msg"><?= e($sy['message']) ?></div><?php endif; ?>
+            <?php else: ?>
+              <div class="sync-card__meta">awaiting OneSync</div>
+            <?php endif; ?>
           </div>
           <?php endforeach; ?>
         </div>
-        <?php endif; ?>
       </div>
 
       <!-- Lifecycle & audit -->

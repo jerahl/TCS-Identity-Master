@@ -9,6 +9,7 @@ use App\Import\NormalizedRow;
 use App\Import\PersonWriter;
 use App\Service\AuditService;
 use App\Support\Csrf;
+use App\Sync\Destinations;
 
 /**
  * People list + person detail (read), and manual Add person (editor+).
@@ -53,7 +54,7 @@ final class PersonController extends Controller
             'p'          => $person,
             'sourceIds'  => $this->people->sourceIds($id),
             'assignments' => $this->people->assignments($id),
-            'syncStatus' => $this->people->syncStatus($id),
+            'syncStatus' => Destinations::merge($this->people->syncStatus($id)),
             'timeline'   => $this->people->timeline($id),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }

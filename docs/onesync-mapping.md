@@ -78,11 +78,26 @@ locked username with a different value** (logged as a conflict).
 
 ## 3. WRITE-BACK — provisioning status (success/failure + message): table `account_sync_status`
 
-OneSync **UPSERTs one current-status row per (person, destination)**. This is
-what shows on each person's Provisioning panel and rolls up to the health
-dashboard's failed-sync list.
+OneSync provisions to **multiple destinations**, so it writes **one row per
+destination per person** — i.e. for a fully-synced user OneSync upserts up to
+four rows (one each for AD, Google, Raptor, PowerSchool), each with its own
+action/status/message.
 
 Unique key: **(`person_uuid`, `destination`)** — upsert on it.
+
+**Canonical destinations.** Send these exact `destination` labels so the UI
+groups them consistently (the person's Provisioning panel always shows all four,
+marking any that haven't reported as *Not synced*):
+
+| `destination`      | `dest_type`       |
+|--------------------|-------------------|
+| `Active Directory` | `ActiveDirectory` |
+| `Google Workspace` | `GSuite`          |
+| `Raptor`           | `CSV`             |
+| `PowerSchool`      | `CSV`             |
+
+(If you split AD into `Faculty AD` / `Staff AD`, those still map to the Active
+Directory card automatically, and both rows are kept.)
 
 | Column         | OneSync sets | Type          | Allowed / notes |
 |----------------|:------------:|---------------|-----------------|
