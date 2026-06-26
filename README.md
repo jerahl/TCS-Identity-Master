@@ -373,6 +373,8 @@ Both write endpoints accept a single event **or** a JSON array (batch); a batch
 returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is the
 `v_onesync_source.uniqueId` (person UUID). Same guarantees as the CSV path below.
 
+Full reference: [`docs/onesync-api.md`](docs/onesync-api.md).
+
 *Debugging:* set `ONESYNC_API_DEBUG=true` to log every call (method, IP, which
 auth header carried the token + a masked preview, the body, and the response
 status/outcome) to `ONESYNC_API_LOG` (default `/var/idm/onesync/api_debug.log`),
