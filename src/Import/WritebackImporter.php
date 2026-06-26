@@ -118,6 +118,17 @@ final class WritebackImporter
             return ['key' => 'no_person', 'detail' => 'no person for uniqueId ' . $uuid];
         }
 
+        return $this->applyDecision($person, $username, $email, $upn, $wbId, $dryRun, $actor);
+    }
+
+    /**
+     * Apply a username/email to a person, honoring the immutability guardrail.
+     * Shared by the file importer and the direct-write (--pending) path.
+     *
+     * @return array{key:string,detail:string}
+     */
+    private function applyDecision(array $person, string $username, string $email, string $upn, ?int $wbId, bool $dryRun, string $actor): array
+    {
         $decision = self::decide($person['username'], (int) $person['username_locked'] === 1, $username);
 
         if ($decision === 'skip') {
@@ -128,7 +139,6 @@ final class WritebackImporter
         }
         if ($decision === 'noop') {
             if (!$dryRun) {
-                // Ensure it's locked even if a prior run left it unlocked, and mark applied.
                 if ((int) $person['username_locked'] !== 1) {
                     $this->db->prepare('UPDATE person SET username_locked = 1 WHERE person_id = :id')
                         ->execute([':id' => $person['person_id']]);
@@ -172,6 +182,46 @@ final class WritebackImporter
             }
             throw $e;
         }
+    }
+
+    /**
+     * Apply onesync_writeback rows OneSync wrote DIRECTLY to the DB (applied = 0).
+     * This is the direct-write counterpart to run() (which ingests a file).
+     *
+     * @return array<string,mixed> summary
+     */
+    public function runPending(bool $dryRun = false, ?string $actor = null): array
+    {
+        $actor ??= 'system:writeback_pending';
+        $rows = $this->db->query(
+            'SELECT id, person_uuid, username, email FROM onesync_writeback WHERE applied = 0 ORDER BY id'
+        )->fetchAll();
+
+        $counts = ['total' => 0, 'applied' => 0, 'noop' => 0, 'conflict' => 0, 'skipped' => 0, 'no_person' => 0, 'errors' => 0];
+        $outcomes = [];
+
+        foreach ($rows as $r) {
+            $counts['total']++;
+            $uuid = (string) $r['person_uuid'];
+            $username = (string) ($r['username'] ?? '');
+            try {
+                $person = $this->findPerson($uuid);
+                if ($person === null) {
+                    $counts['no_person']++;
+                    $outcomes[] = ['uuid' => $uuid, 'username' => $username, 'outcome' => 'no_person', 'detail' => 'no person for uniqueId'];
+                    continue;
+                }
+                $outcome = $this->applyDecision($person, $username, (string) ($r['email'] ?? ''), '', (int) $r['id'], $dryRun, $actor);
+            } catch (\Throwable $e) {
+                $counts['errors']++;
+                $outcomes[] = ['uuid' => $uuid, 'username' => $username, 'outcome' => 'error', 'detail' => $e->getMessage()];
+                continue;
+            }
+            $counts[$outcome['key']]++;
+            $outcomes[] = ['uuid' => $uuid, 'username' => $username, 'outcome' => $outcome['key'], 'detail' => $outcome['detail']];
+        }
+
+        return ['dry_run' => $dryRun, 'pending' => true, 'counts' => $counts, 'outcomes' => $outcomes];
     }
 
     private function findPerson(string $uuid): ?array

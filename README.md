@@ -256,6 +256,18 @@ php bin/import_sync_status.php --file=db/seeds/feeds/onesync_export_log_sample.c
 With no `--file`, the write-back importers use `ONESYNC_WRITEBACK_FILE` /
 `ONESYNC_EXPORT_LOG`. Both run as the limited write-back role and are idempotent.
 
+**Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
+back **straight to the DB** (no files): insert usernames into `onesync_writeback`
+and upsert per-user success/failure into `account_sync_status`. The exact table +
+column map (and the `onesync_writer` GRANT) is in
+[`docs/onesync-mapping.md`](docs/onesync-mapping.md). Migration `0004` adds a
+trigger that resolves `person_id` from the `uniqueId` OneSync writes, and the app
+applies directly-written usernames with:
+
+```sh
+php bin/import_writeback.php --pending     # apply onesync_writeback rows (applied=0)
+```
+
 - **Username immutability:** once `username_locked`, the importer never
   overwrites with a different value (logged as `conflict`); re-runs are `noop`.
   The app never mints usernames — this only records OneSync's decision.
