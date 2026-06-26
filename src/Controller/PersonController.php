@@ -78,6 +78,97 @@ final class PersonController extends Controller
         return $rows;
     }
 
+    private const STATUSES = ['pending', 'active', 'disabled', 'terminated'];
+
+    /** Edit form for the human-owned fields (editor+). */
+    public function editForm(array $params, array $old = [], string $error = ''): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            http_response_code(404);
+            return $this->render('pages/not_found', ['message' => 'No person with that id.'], 'people', 'People  /  Not found', 'Not found');
+        }
+
+        $values = $old !== [] ? $old : [
+            'person_type' => $person['person_type'], 'status' => $person['status'],
+            'first_name' => $person['first_name'], 'middle_name' => $person['middle_name'],
+            'last_name' => $person['last_name'], 'preferred_name' => $person['preferred_name'],
+            'dob' => $person['dob'], 'gender' => $person['gender'],
+            'ethnicity_source' => $person['ethnicity_source'], 'alsde_id' => $person['alsde_id'],
+            'employee_id' => $person['employee_id'], 'primary_school_id' => $person['primary_school_id'],
+            'notes' => $person['notes'],
+        ];
+
+        return $this->render('people/edit', [
+            'p'       => $person,
+            'values'  => $values,
+            'schools' => $this->people->allSchools(),
+            'error'   => $error,
+            'csrf'    => Csrf::token(),
+        ], 'people', 'People  /  Edit record', 'Edit person — TCS Identity Master');
+    }
+
+    /** Apply an edit to the human-owned fields. */
+    public function update(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            return $this->editForm(['id' => $id], $_POST, 'Invalid session token — please retry.');
+        }
+        if ($this->people->find($id) === null) {
+            http_response_code(404);
+            return $this->render('pages/not_found', ['message' => 'No person with that id.'], 'people', 'People  /  Not found', 'Not found');
+        }
+
+        $first = trim((string) ($_POST['first_name'] ?? ''));
+        $last = trim((string) ($_POST['last_name'] ?? ''));
+        $type = (string) ($_POST['person_type'] ?? '');
+        $status = (string) ($_POST['status'] ?? '');
+        $dob = trim((string) ($_POST['dob'] ?? ''));
+
+        if ($first === '' || $last === '') {
+            return $this->editForm(['id' => $id], $_POST, 'First and last name are required.');
+        }
+        if (!in_array($type, self::PERSON_TYPES, true)) {
+            return $this->editForm(['id' => $id], $_POST, 'Invalid person type.');
+        }
+        if (!in_array($status, self::STATUSES, true)) {
+            return $this->editForm(['id' => $id], $_POST, 'Invalid status.');
+        }
+        if ($dob !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob)) {
+            return $this->editForm(['id' => $id], $_POST, 'Date of birth must be YYYY-MM-DD.');
+        }
+
+        $ethSource = trim((string) ($_POST['ethnicity_source'] ?? ''));
+        $fields = [
+            'person_type'      => $type,
+            'status'           => $status,
+            'first_name'       => $first,
+            'middle_name'      => trim((string) ($_POST['middle_name'] ?? '')),
+            'last_name'        => $last,
+            'preferred_name'   => trim((string) ($_POST['preferred_name'] ?? '')),
+            'dob'              => $dob,
+            'gender'           => trim((string) ($_POST['gender'] ?? '')),
+            'ethnicity_source' => $ethSource,
+            'ethnicity_code'   => $ethSource === '' ? '' : ($this->people->ethnicityCodeFor($ethSource) ?? ''),
+            'alsde_id'         => trim((string) ($_POST['alsde_id'] ?? '')),
+            'employee_id'      => trim((string) ($_POST['employee_id'] ?? '')),
+            'primary_school_id' => ($_POST['primary_school_id'] ?? '') !== '' ? (int) $_POST['primary_school_id'] : '',
+            'notes'            => trim((string) ($_POST['notes'] ?? '')),
+        ];
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            (new PersonWriter($db, new AuditService($db)))->updateProfile($id, $fields, $this->currentUser()['name']);
+            $this->flash('Record saved — change written to the audit log.');
+            return $this->redirect(url('/people/' . $id));
+        } catch (\Throwable $e) {
+            error_log('[idm] person update: ' . $e->getMessage());
+            return $this->editForm(['id' => $id], $_POST, 'Could not save the record.');
+        }
+    }
+
     /** Manual add form (for subs/contractors/interns not in HR). */
     public function addForm(array $old = [], string $error = ''): string
     {

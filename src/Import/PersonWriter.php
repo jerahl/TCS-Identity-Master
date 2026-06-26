@@ -140,6 +140,80 @@ final class PersonWriter
     }
 
     /**
+     * Update human-owned profile fields from the dashboard's Edit form
+     * (demographics, primary location, status, notes). Never touches
+     * username/email/upn/username_locked — those belong to OneSync. Audits
+     * before/after and emits a lifecycle event (status-aware). Returns changed.
+     *
+     * @param array<string,?string> $fields whitelisted; only present keys are written
+     */
+    public function updateProfile(int $personId, array $fields, string $actor): bool
+    {
+        $before = $this->profileSnapshot($personId);
+        if ($before === null) {
+            return false;
+        }
+
+        $set = [];
+        $params = [];
+        foreach (array_keys($before) as $col) {
+            if (array_key_exists($col, $fields)) {
+                $set[] = "{$col} = :{$col}";
+                $params[":{$col}"] = ($fields[$col] === '' ? null : $fields[$col]);
+            }
+        }
+        if ($set === []) {
+            return false;
+        }
+        $params[':id'] = $personId;
+        $params[':actor'] = $actor;
+        $this->db->prepare('UPDATE person SET ' . implode(', ', $set) . ', updated_by = :actor WHERE person_id = :id')
+            ->execute($params);
+
+        $after = $this->profileSnapshot($personId);
+        $this->audit->log('person', $personId, 'update', $before, $after, $actor);
+
+        $newStatus = (string) ($fields['status'] ?? $before['status']);
+        $event = self::statusEventType((string) $before['status'], $newStatus);
+        $changed = [];
+        foreach ((array) $after as $k => $v) {
+            if ((string) ($before[$k] ?? '') !== (string) ($v ?? '')) {
+                $changed[] = $k;
+            }
+        }
+        $summary = $changed === [] ? 'Record edited' : 'Edited ' . implode(', ', $changed);
+        $this->audit->lifecycle($personId, $event, ['summary' => $summary], $actor);
+
+        return true;
+    }
+
+    /** Lifecycle event type for a status transition. */
+    public static function statusEventType(string $old, string $new): string
+    {
+        if ($old === $new) {
+            return 'update';
+        }
+        return match ($new) {
+            'disabled'   => 'disable',
+            'terminated' => 'terminate',
+            'active'     => 'enable',
+            default      => 'update',
+        };
+    }
+
+    private function profileSnapshot(int $personId): ?array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT person_type, status, first_name, middle_name, last_name, preferred_name, dob, gender,
+                    ethnicity_source, ethnicity_code, alsde_id, employee_id, primary_school_id, notes
+             FROM person WHERE person_id = :id'
+        );
+        $stmt->execute([':id' => $personId]);
+        $row = $stmt->fetch();
+        return $row === false ? null : $row;
+    }
+
+    /**
      * Insert or update the person's assignment for this row's school/source, and
      * keep exactly one primary. No-op if the row has no resolved school.
      */

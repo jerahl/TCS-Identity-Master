@@ -89,6 +89,8 @@ try {
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
     $router->get('/add', $guard('edit', static fn() => $person->addForm()));
     $router->post('/add', $guard('edit', static fn() => $person->create()));
+    $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
+    $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
 
     // ---- Admin only ----

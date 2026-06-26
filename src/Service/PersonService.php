@@ -106,12 +106,25 @@ final class PersonService
         return $this->db()->query($sql)->fetchAll();
     }
 
-    /** All active schools (for the manual-add form). */
+    /** All active schools (for the manual-add / edit forms). */
     public function allSchools(): array
     {
         return $this->db()->query(
             "SELECT school_id, name FROM school WHERE status = 'active' ORDER BY name"
         )->fetchAll();
+    }
+
+    /** Resolve an ethnicity source value to its ALSDE code, or null if unmapped. */
+    public function ethnicityCodeFor(string $raw): ?string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return null;
+        }
+        $stmt = $this->db()->prepare('SELECT alsde_code FROM ethnicity_map WHERE LOWER(source_value) = LOWER(:v)');
+        $stmt->execute([':v' => $raw]);
+        $code = $stmt->fetchColumn();
+        return $code === false ? null : (string) $code;
     }
 
     /** Count of pending match candidates (the review-queue badge). */

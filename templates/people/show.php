@@ -35,10 +35,12 @@ $eventTitle = [
           <span class="sep">·</span><span>updated <?= e($dash($p['updated_at'])) ?></span>
         </div>
       </div>
-      <button class="btn btn--ghost" disabled title="Editing arrives in a later milestone" style="opacity:.55; cursor:not-allowed;">
+      <?php if (!empty($canEdit)): ?>
+      <a class="btn btn--ghost" href="<?= e(url('/people/' . $p['person_id'] . '/edit')) ?>">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L6 12l-2.7.7L4 10z"/></svg>
         Edit record
-      </button>
+      </a>
+      <?php endif; ?>
     </div>
   </div>
 
