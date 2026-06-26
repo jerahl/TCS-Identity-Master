@@ -33,21 +33,17 @@ final class ColumnMap
             'hire_date'   => 'Hire Date',
             'end_date'    => 'Position End Date',
         ],
-        // PowerSchool extract (USERS view). source_key = dcid (stable PS id);
-        // TeacherNumber is the NextGen Employee Number, so PS rows auto-link to
-        // the same person as NextGen. LoginID/Email_Addr are NOT imported here —
-        // OneSync owns username/email.
+        // PowerSchool TEACHERS export. source_key = TEACHERS.ID — the stable PS
+        // identity that AD mirrors as its uniqueId ("T" + TEACHERS.ID), so AD
+        // accounts resolve to the same record. TeacherNumber is the NextGen
+        // Employee Number, so PS rows auto-link to the same person as NextGen.
+        // LoginID/Email_Addr are NOT imported — OneSync owns username/email.
+        // School/title come from NextGen (the HR source of record).
         'powerschool' => [
-            'source_key'  => 'USERS.dcid',
-            'employee_id' => 'USERS.TeacherNumber',
-            'first'       => 'USERS.First_Name',
-            'middle'      => 'USERS.Middle_Name',
-            'last'        => 'USERS.Last_Name',
-            'school_code' => 'USERS.HomeSchoolId',
-            'person_type' => 'U_DEF_EXT_USERS.staff_classification',
-            'title'       => 'USERS.Title',
-            'hire_date'   => 'S_USR_X.hiredate',
-            'end_date'    => 'S_AL_USR_X.exit_date',
+            'source_key'  => 'TEACHERS.ID',
+            'employee_id' => 'TEACHERS.TeacherNumber',
+            'first'       => 'TEACHERS.First_Name',
+            'last'        => 'TEACHERS.Last_Name',
         ],
         // Intern roster (e.g. university placements). No employee id; school code
         // is a PowerSchool SchoolID. person_type is forced to 'intern'.

@@ -5,15 +5,14 @@ declare(strict_types=1);
 /**
  * ONE-TIME: link existing AD usernames to the golden record.
  *
- *   php bin/import_ad_usernames.php --file=ad_export.csv --schoolstaff=SchoolStaff_export.csv --dry-run
- *   php bin/import_ad_usernames.php --file=ad_export.csv --schoolstaff=SchoolStaff_export.csv
+ *   php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv --dry-run
+ *   php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv
  *
- * The AD uniqueId is "T" + SCHOOLSTAFF.dcid, not our crosswalk key (USERS.dcid).
- * --schoolstaff loads the PowerSchool SchoolStaff export to translate
- * SCHOOLSTAFF.dcid -> Users_DCID (= USERS.dcid) so uniqueId resolves correctly.
- * Falls back to the Employee ID column (NextGen #, leading "T" stripped). Then
- * sets + LOCKS the person's sAMAccountName as username (and mail as email).
- * Idempotent; never overwrites a username already locked to a different value.
+ * The AD uniqueId is "T" + TEACHERS.ID, and TEACHERS.ID is our PowerSchool
+ * crosswalk key, so the stripped uniqueId matches directly. Falls back to the
+ * Employee ID column (NextGen #, leading "T" stripped). Then sets + LOCKS the
+ * person's sAMAccountName as username (and mail as email). Idempotent; never
+ * overwrites a username already locked to a different value.
  *
  * Expected headers (tab or comma; auto-detected):
  *   uniqueId  mail  surname  givenName  sAMAccountName  Employee ID  department  title  ADTitle
@@ -39,7 +38,7 @@ if ($file === null) {
 }
 
 try {
-    $result = (new AdUsernameImporter())->run($file, $dryRun, null, $opts['schoolstaff'] ?? null);
+    $result = (new AdUsernameImporter())->run($file, $dryRun);
 } catch (\Throwable $e) {
     fwrite(STDERR, 'AD username import failed: ' . $e->getMessage() . "\n");
     exit(1);

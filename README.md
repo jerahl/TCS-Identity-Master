@@ -162,7 +162,7 @@ that drives the person type and crosswalk provenance:
 | Source | CLI | person_type | crosswalk system |
 |--------|-----|-------------|------------------|
 | NextGen (HR) | `bin/import_nextgen.php` | from feed | `nextgen` |
-| PowerSchool | `bin/import_powerschool.php` | from feed | `powerschool` |
+| PowerSchool (TEACHERS export) | `bin/import_powerschool.php` | from feed | `powerschool` |
 | Intern | `bin/import_intern.php` | `intern` | `intern_csv` |
 | Long-term substitute | `bin/import_sub.php` | `sub` | `sub` |
 | Contract employee | `bin/import_contractor.php` | `contractor` | `contractor` |
@@ -357,8 +357,9 @@ wrong/missing token, 400 bad JSON, 422 unknown uniqueId). Turn it off once worki
 
 **One-time AD username link.** To adopt the usernames that already exist in AD
 (before OneSync was authoritative), import an AD export. Each row matches a person
-by the PowerSchool id embedded in `uniqueId` (leading `T` stripped: `T14774` →
-PS `14774`), falling back to the `Employee ID` column, then sets + **locks** the
+by the PowerSchool id embedded in `uniqueId` (leading `T` stripped: `T8422` →
+`TEACHERS.ID` 8422, our PS crosswalk key), falling back to the `Employee ID`
+column (`TEACHERS.TeacherNumber`, also `T`-prefixed), then sets + **locks** the
 `sAMAccountName` as the username (and `mail` as email) and records the AD id in the
 crosswalk (`person_source_id` system `ad`). Headers: `uniqueId, mail, surname,
 givenName, sAMAccountName, Employee ID, department, title, ADTitle`.
