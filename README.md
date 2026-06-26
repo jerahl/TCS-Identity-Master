@@ -181,9 +181,14 @@ SchoolID alias group. (Requires migration `0003`.)
 |------|-----|--------|
 | 1 | existing `person_source_id` (system, source_key) | **auto** (exact) |
 | 2 | `employee_id` | **auto** |
-| 3 | name + DOB | score; **auto** if ≥ `MATCH_AUTO_THRESHOLD` (default 90) and unambiguous, else **review** |
-| 4 | name only (no corroborating DOB) | **review** — *never* auto-linked |
+| 3 | full name + DOB | score; **auto** if ≥ `MATCH_AUTO_THRESHOLD` (default 90) and unambiguous, else **review** |
+| 4 | full name only (no corroborating DOB) | **review** — *never* auto-linked |
 | — | no candidate | **new** pending person |
+
+A name candidate requires **both first and last name to match exactly** — a
+shared last name or a first-initial match is *not* a candidate (so a district
+full of Smiths and Joneses doesn't flood the queue). A different first name with
+the same last name becomes a **new** person, not a review row.
 
 Auto-matches attach the incoming source id to the crosswalk, refresh HR fields,
 and upsert the assignment (one primary). Review rows create `match_candidate`
@@ -191,9 +196,28 @@ entries for the queue (Milestone 4). The importers are **idempotent** — a re-r
 re-matches previously created rows via their now-existing source id (tier 1), so
 no duplicates appear. Importers never set username/email — that's OneSync's job.
 
+**Skipping non-person accounts.** PowerSchool exports include system accounts
+(Admin, Lookup) that should never become people. The importer skips any row whose
+first *or* last name is in `IMPORT_EXCLUDE_NAMES` (comma-separated, default
+`admin,lookup`); skipped rows are recorded with a reason but create no person.
+
 **Column maps.** `src/Import/ColumnMap.php` maps each feed's CSV headers to the
 logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
 the maps to match the district's real export headers.
+
+**Reset for a clean import test.** To wipe imported person data (person, source
+ids, assignments, staging/batches, sync status, lifecycle/audit) while preserving
+reference data (schools, aliases, ethnicity) and app login accounts:
+
+```sh
+php bin/reset_people.php                      # show row counts, change nothing
+php bin/reset_people.php --yes                # TRUNCATE the person-data tables
+php bin/reset_people.php --yes --include-feed-log   # also re-arm SFTP re-download
+```
+
+Destructive — requires `--yes`. Runs as the MIGRATE role. Add
+`--include-feed-log` to also clear `feed_fetch_log` so the fetcher re-downloads
+feeds it already pulled.
 
 ## Review queue (Milestone 4)
 
