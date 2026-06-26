@@ -355,6 +355,23 @@ one JSON line per request — so you can see exactly why OneSync's calls fail (4
 wrong/missing token, 400 bad JSON, 422 unknown uniqueId). Turn it off once working.
 `tail -f /var/idm/onesync/api_debug.log` while OneSync runs.
 
+**One-time AD username link.** To adopt the usernames that already exist in AD
+(before OneSync was authoritative), import an AD export. Each row matches a person
+by the PowerSchool id embedded in `uniqueId` (leading `T` stripped: `T14774` →
+PS `14774`), falling back to the `Employee ID` column, then sets + **locks** the
+`sAMAccountName` as the username (and `mail` as email) and records the AD id in the
+crosswalk (`person_source_id` system `ad`). Headers: `uniqueId, mail, surname,
+givenName, sAMAccountName, Employee ID, department, title, ADTitle`.
+
+```sh
+php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv --dry-run
+php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv
+```
+
+Idempotent and safe: a username already locked to a different value is reported as
+`conflict` and left unchanged. Runs as the MIGRATE role (one-time ops). Run the
+PowerSchool/NextGen imports first so the people and their PS crosswalk ids exist.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 back **straight to the DB** (no files): insert usernames into `onesync_writeback`
 and upsert per-user success/failure into `account_sync_status`. The exact table +
