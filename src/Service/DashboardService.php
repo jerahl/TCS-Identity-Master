@@ -39,7 +39,11 @@ final class DashboardService
             "SELECT COUNT(*) FROM (
                 SELECT DISTINCT s.system, s.n_school_code FROM staging_record s
                 WHERE s.n_school_code IS NOT NULL AND s.n_school_code <> ''
-                  AND NOT EXISTS (SELECT 1 FROM school_code_alias a WHERE a.system = s.system AND a.code = s.n_school_code)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM school_code_alias a
+                      WHERE a.system = s.system
+                        AND TRIM(LEADING '0' FROM a.code) = TRIM(LEADING '0' FROM s.n_school_code)
+                  )
              ) t"
         );
 

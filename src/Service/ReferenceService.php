@@ -61,11 +61,17 @@ final class ReferenceService
     /** Distinct school codes seen in staged feeds with no alias mapping. */
     public function unmappedSchoolCodes(): array
     {
+        // Leading-zero tolerant, matching the Normalizer: a feed code "0075"
+        // counts as mapped if an alias "75" exists (and vice-versa).
         return $this->db->query(
             "SELECT s.system, s.n_school_code AS code, COUNT(*) AS n
              FROM staging_record s
              WHERE s.n_school_code IS NOT NULL AND s.n_school_code <> ''
-               AND NOT EXISTS (SELECT 1 FROM school_code_alias a WHERE a.system = s.system AND a.code = s.n_school_code)
+               AND NOT EXISTS (
+                   SELECT 1 FROM school_code_alias a
+                   WHERE a.system = s.system
+                     AND TRIM(LEADING '0' FROM a.code) = TRIM(LEADING '0' FROM s.n_school_code)
+               )
              GROUP BY s.system, s.n_school_code ORDER BY n DESC, s.system, s.n_school_code"
         )->fetchAll();
     }
