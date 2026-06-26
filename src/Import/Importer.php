@@ -55,11 +55,12 @@ final class Importer
             throw new RuntimeException("Cannot open feed file: {$file}");
         }
 
-        $header = fgetcsv($fh, 0, ',', '"', '\\');
-        if ($header === false) {
+        $firstLine = fgets($fh);
+        if ($firstLine === false) {
             throw new RuntimeException('Feed file is empty.');
         }
-        $header = array_map(static fn($h) => trim((string) $h), $header);
+        $delim = Csv::detectDelimiter($firstLine);
+        $header = array_map(static fn($h) => trim((string) $h), str_getcsv(Csv::stripBom($firstLine), $delim, '"', '\\'));
 
         $normalizer = Normalizer::fromDb($this->db);
         $lookup = new PdoMatchLookup($this->db);
