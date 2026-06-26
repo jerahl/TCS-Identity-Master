@@ -10,6 +10,7 @@ use App\Import\ImportSource;
 use App\Http\Upload;
 use App\Service\ImportService;
 use App\Support\Csrf;
+use App\Sync\FeedSync;
 
 /**
  * Import / feed status: batch history with a drill-in to a batch's staged rows
@@ -36,6 +37,7 @@ final class ImportController extends Controller
             'batch'   => $batch,
             'staged'  => $staged,
             'sources' => ImportSource::all(),
+            'sftpSources' => FeedSync::configuredSources(),
             'csrf'    => Csrf::token(),
         ], 'import', 'Configuration  /  Import & feeds', 'Import / feeds — TCS Identity Master');
     }
@@ -88,6 +90,29 @@ final class ImportController extends Controller
 
         if (!$dryRun && $result['batch_id']) {
             return $this->redirect(url('/import', ['batch' => $result['batch_id']]));
+        }
+        return $this->redirect(url('/import'));
+    }
+
+    /** Pull new feed files from SFTP and import them (editor+). */
+    public function fetch(): string
+    {
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect(url('/import'));
+        }
+        $sources = FeedSync::configuredSources();
+        if ($sources === []) {
+            $this->flash('No SFTP sources configured (set SFTP_HOST + SFTP_<source>_DIR).');
+            return $this->redirect(url('/import'));
+        }
+        try {
+            $r = FeedSync::fromConfig()->run($sources, false, true, $this->currentUser()['name']);
+            $t = $r['totals'];
+            $this->flash("SFTP pull: downloaded {$t['downloaded']}, imported {$t['imported']}, errors {$t['errors']}.");
+        } catch (\Throwable $e) {
+            error_log('[idm] sftp fetch: ' . $e->getMessage());
+            $this->flash('SFTP pull failed: ' . $e->getMessage());
         }
         return $this->redirect(url('/import'));
     }

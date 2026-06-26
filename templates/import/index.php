@@ -14,6 +14,19 @@ $badge = static fn(string $mod): string => match ($mod) {
     </div>
   </div>
 
+  <?php if (!empty($canEdit) && !empty($sftpSources)): ?>
+  <div class="card card--pad" style="margin-bottom:18px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:240px;">
+      <div style="font-weight:600; font-size:13.5px;">Pull from SFTP</div>
+      <div class="muted" style="font-size:12px;">Fetch new CSVs for: <?= e(implode(', ', $sftpSources)) ?>. Already-fetched files are skipped.</div>
+    </div>
+    <form method="post" action="<?= e(url('/import/fetch')) ?>">
+      <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+      <button class="btn btn--ghost" type="submit" style="height:38px;">Pull &amp; import now</button>
+    </form>
+  </div>
+  <?php endif; ?>
+
   <?php if (!empty($canEdit)): ?>
   <div class="card card--pad" style="margin-bottom:18px;">
     <div class="form-section" style="margin-top:0;">Upload &amp; import a feed</div>

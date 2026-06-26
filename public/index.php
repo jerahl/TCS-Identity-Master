@@ -93,6 +93,7 @@ try {
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
+    $router->post('/import/fetch', $guard('edit', static fn() => $import->fetch()));
 
     // ---- Admin only ----
     $router->get('/users', $guard('admin', static fn() => $users->index()));

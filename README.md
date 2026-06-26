@@ -112,6 +112,22 @@ With no `--file`, the importer uses the newest `*.csv` in the configured feed
 directory (`FEED_NEXTGEN_DIR` / `FEED_POWERSCHOOL_DIR`). `--dry-run` reads and
 matches but writes nothing.
 
+**Pull from SFTP.** The app can fetch feed CSVs straight from the district SFTP
+server (phpseclib — no PECL needed), then import them. Configure `SFTP_HOST` /
+`SFTP_USER`, a key (`SFTP_PRIVATE_KEY_FILE`) or `SFTP_PASS`, the host
+`SFTP_FINGERPRINT` (verified), and a remote dir per source (`SFTP_<SOURCE>_DIR`);
+files land in `FEED_<SOURCE>_DIR`. Already-fetched files are skipped via
+`feed_fetch_log` (requires migration `0005`).
+
+```sh
+php bin/fetch_feeds.php                 # fetch + import all configured sources
+php bin/fetch_feeds.php --source=intern --dry-run
+php bin/fetch_feeds.php --no-import     # download only
+```
+
+Run it from cron before the nightly OneSync run; editors can also trigger it
+from the **Pull from SFTP** button on `/import`.
+
 **Import source categories.** Each feed is a first-class source (`src/Import/ImportSource.php`)
 that drives the person type and crosswalk provenance:
 
