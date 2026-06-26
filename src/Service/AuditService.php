@@ -82,4 +82,50 @@ final class AuditService
     {
         return (string) json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
+
+    // ---- read side (audit log viewer) ----
+
+    /**
+     * @param array{entity?:string,action?:string,actor?:string} $filters
+     * @return array{where:string,params:array<string,string>}
+     */
+    private function buildWhere(array $filters): array
+    {
+        $where = [];
+        $params = [];
+        if (!empty($filters['entity']) && $filters['entity'] !== 'all') {
+            $where[] = 'entity = :entity';
+            $params[':entity'] = $filters['entity'];
+        }
+        if (!empty($filters['action']) && $filters['action'] !== 'all') {
+            $where[] = 'action = :action';
+            $params[':action'] = $filters['action'];
+        }
+        if (!empty($filters['actor'])) {
+            $where[] = 'actor LIKE :actor';
+            $params[':actor'] = '%' . trim($filters['actor']) . '%';
+        }
+        return ['where' => $where === [] ? '' : ' WHERE ' . implode(' AND ', $where), 'params' => $params];
+    }
+
+    public function count(array $filters = []): int
+    {
+        $w = $this->buildWhere($filters);
+        $stmt = $this->db()->prepare('SELECT COUNT(*) FROM audit_log' . $w['where']);
+        $stmt->execute($w['params']);
+        return (int) $stmt->fetchColumn();
+    }
+
+    /** Audit entries, newest first, paginated. */
+    public function list(array $filters = [], int $limit = 50, int $offset = 0): array
+    {
+        $w = $this->buildWhere($filters);
+        $sql = 'SELECT id, entity, entity_id, action, before_json, after_json, actor, at
+                FROM audit_log' . $w['where'] . '
+                ORDER BY id DESC
+                LIMIT ' . (int) $limit . ' OFFSET ' . (int) $offset;
+        $stmt = $this->db()->prepare($sql);
+        $stmt->execute($w['params']);
+        return $stmt->fetchAll();
+    }
 }

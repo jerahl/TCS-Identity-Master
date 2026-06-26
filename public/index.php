@@ -63,6 +63,7 @@ try {
     $reference = new ReferenceController();
     $import = new ImportController();
     $users = new UserController();
+    $audit = new \App\Controller\AuditController();
     $authCtl = new AuthController();
 
     $router = new Router();
@@ -97,6 +98,7 @@ try {
     $router->get('/users', $guard('admin', static fn() => $users->index()));
     $router->post('/users/role', $guard('admin', static fn() => $users->updateRole()));
     $router->post('/users/add', $guard('admin', static fn() => $users->addUser()));
+    $router->get('/audit', $guard('admin', static fn() => $audit->index()));
 
     $router->setNotFound(static fn() => $page->notFound());
 
