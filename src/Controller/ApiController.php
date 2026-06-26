@@ -29,6 +29,7 @@ use App\Support\ApiLog;
 final class ApiController
 {
     private ?string $rawBody = null;
+    private string $parseError = 'invalid or empty JSON body';
 
     /** Raw request body, read once (php://input isn't always re-readable). */
     private function rawBody(): string
@@ -134,8 +135,8 @@ final class ApiController
         }
         $events = $this->readEvents();
         if ($events === null) {
-            $this->logRequest('username', 400, ['reason' => 'invalid or empty JSON body']);
-            return $this->json(400, ['ok' => false, 'error' => 'Invalid or empty JSON body.']);
+            $this->logRequest('username', 400, ['reason' => $this->parseError]);
+            return $this->json(400, ['ok' => false, 'error' => $this->parseError]);
         }
 
         $importer = new WritebackImporter();
@@ -167,8 +168,8 @@ final class ApiController
         }
         $events = $this->readEvents();
         if ($events === null) {
-            $this->logRequest('sync-status', 400, ['reason' => 'invalid or empty JSON body']);
-            return $this->json(400, ['ok' => false, 'error' => 'Invalid or empty JSON body.']);
+            $this->logRequest('sync-status', 400, ['reason' => $this->parseError]);
+            return $this->json(400, ['ok' => false, 'error' => $this->parseError]);
         }
 
         $importer = new SyncStatusImporter();
@@ -205,10 +206,13 @@ final class ApiController
     {
         $body = $this->rawBody();
         if (trim($body) === '') {
+            $this->parseError = 'empty request body';
             return null;
         }
         $data = json_decode($body, true);
         if (!is_array($data)) {
+            $this->parseError = 'not valid JSON: ' . json_last_error_msg()
+                . '. Expected a JSON object with named keys, e.g. {"uniqueId":"...","destination":"..."}';
             return null;
         }
         // A single event is an associative array; a batch is a list.
