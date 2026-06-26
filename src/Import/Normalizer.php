@@ -20,14 +20,39 @@ use PDO;
  */
 final class Normalizer
 {
+    /** @var array<string,array<string,int>> [system][code] => school_id */
+    private readonly array $schoolAlias;
+    /** @var array<string,string> lower(source_value) => alsde_code */
+    private readonly array $ethnicityMap;
+    /** Same as $schoolAlias but keyed by zero-stripped code, for padding-tolerant lookup. */
+    private readonly array $schoolAliasNorm;
+
     /**
      * @param array<string,array<string,int>> $schoolAlias  [system][code] => school_id
      * @param array<string,string> $ethnicityMap            lower(source_value) => alsde_code
      */
-    public function __construct(
-        private readonly array $schoolAlias,
-        private readonly array $ethnicityMap,
-    ) {
+    public function __construct(array $schoolAlias, array $ethnicityMap)
+    {
+        $this->schoolAlias = $schoolAlias;
+        $this->ethnicityMap = $ethnicityMap;
+
+        // Build a leading-zero-insensitive index so a feed code like "0055" or
+        // "0106" resolves to the alias "55" / "106" (and vice-versa). Exact
+        // matches still win; this is only a fallback.
+        $norm = [];
+        foreach ($schoolAlias as $sys => $codes) {
+            foreach ($codes as $code => $id) {
+                $norm[$sys][self::normalizeSchoolCode((string) $code)] ??= $id;
+            }
+        }
+        $this->schoolAliasNorm = $norm;
+    }
+
+    /** Canonical school code for matching: drop leading zeros (keep at least "0"). */
+    public static function normalizeSchoolCode(string $code): string
+    {
+        $c = ltrim(trim($code), '0');
+        return $c === '' ? '0' : $c;
     }
 
     public static function fromDb(?PDO $db = null): self
@@ -76,7 +101,9 @@ final class Normalizer
         $schoolCode = $get('school_code');
         $schoolId = null;
         if ($schoolCode !== null) {
-            $schoolId = $this->schoolAlias[$aliasSystem][$schoolCode] ?? null;
+            $schoolId = $this->schoolAlias[$aliasSystem][$schoolCode]
+                ?? $this->schoolAliasNorm[$aliasSystem][self::normalizeSchoolCode($schoolCode)]
+                ?? null;
             if ($schoolId === null) {
                 $warnings[] = "Unmapped {$aliasSystem} school code '{$schoolCode}'.";
             }

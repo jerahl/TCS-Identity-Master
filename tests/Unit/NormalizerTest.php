@@ -75,6 +75,28 @@ final class NormalizerTest extends TestCase
         self::assertSame('Abraham', $row->lastName);
     }
 
+    public function testSchoolCodeMatchesIgnoringLeadingZeros(): void
+    {
+        // Alias seeded unpadded ("55"); feed sends zero-padded ("0055").
+        $norm = new Normalizer(['nextgen' => ['55' => 7, '106' => 9]], []);
+        $map = ColumnMap::for('nextgen');
+
+        $row = $norm->normalize(['Employee Number' => '1', 'First Name' => 'A', 'Last Name' => 'B', 'Location Code' => '0055'], 'nextgen', $map);
+        self::assertSame(7, $row->schoolId, '0055 should resolve to alias 55');
+        self::assertSame([], $row->warnings);
+
+        $row2 = $norm->normalize(['Employee Number' => '2', 'First Name' => 'C', 'Last Name' => 'D', 'Location Code' => '0106'], 'nextgen', $map);
+        self::assertSame(9, $row2->schoolId, '0106 should resolve to alias 106');
+    }
+
+    public function testNormalizeSchoolCodeKeepsZero(): void
+    {
+        self::assertSame('55', Normalizer::normalizeSchoolCode('0055'));
+        self::assertSame('106', Normalizer::normalizeSchoolCode('0106'));
+        self::assertSame('0', Normalizer::normalizeSchoolCode('0'), 'all-zero stays "0" (Central Office)');
+        self::assertSame('0', Normalizer::normalizeSchoolCode('000'));
+    }
+
     public function testDateParsingVariants(): void
     {
         self::assertSame('1990-05-05', Normalizer::parseDate('1990-05-05'));
