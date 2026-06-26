@@ -28,16 +28,17 @@ final class ImportSource
         public readonly string $aliasSystem,
         public readonly ?string $personType,
         public readonly string $columnMapKey,
+        public readonly bool $headerless = false,
     ) {
     }
 
-    /** @var array<string,array<string,?string>> */
+    /** @var array<string,array<string,mixed>> */
     private const DEFS = [
-        'nextgen'     => ['label' => 'NextGen (HR)',          'batch' => 'nextgen',     'crosswalk' => 'nextgen',     'alias' => 'nextgen',     'type' => null,        'map' => 'nextgen'],
-        'powerschool' => ['label' => 'PowerSchool',           'batch' => 'powerschool', 'crosswalk' => 'powerschool', 'alias' => 'powerschool', 'type' => null,        'map' => 'powerschool'],
-        'intern'      => ['label' => 'Intern',                'batch' => 'intern',      'crosswalk' => 'intern_csv',  'alias' => 'powerschool', 'type' => 'intern',     'map' => 'intern'],
-        'sub'         => ['label' => 'Long-term substitute',  'batch' => 'sub',         'crosswalk' => 'sub',         'alias' => 'powerschool', 'type' => 'sub',        'map' => 'sub'],
-        'contractor'  => ['label' => 'Contract employee',     'batch' => 'contractor',  'crosswalk' => 'contractor',  'alias' => 'powerschool', 'type' => 'contractor', 'map' => 'contractor'],
+        'nextgen'     => ['label' => 'NextGen (HR)',          'batch' => 'nextgen',     'crosswalk' => 'nextgen',     'alias' => 'nextgen',     'type' => null,        'map' => 'nextgen',     'headerless' => false],
+        'powerschool' => ['label' => 'PowerSchool',           'batch' => 'powerschool', 'crosswalk' => 'powerschool', 'alias' => 'powerschool', 'type' => null,        'map' => 'powerschool', 'headerless' => true],
+        'intern'      => ['label' => 'Intern',                'batch' => 'intern',      'crosswalk' => 'intern_csv',  'alias' => 'powerschool', 'type' => 'intern',     'map' => 'intern',      'headerless' => false],
+        'sub'         => ['label' => 'Long-term substitute',  'batch' => 'sub',         'crosswalk' => 'sub',         'alias' => 'powerschool', 'type' => 'sub',        'map' => 'sub',         'headerless' => false],
+        'contractor'  => ['label' => 'Contract employee',     'batch' => 'contractor',  'crosswalk' => 'contractor',  'alias' => 'powerschool', 'type' => 'contractor', 'map' => 'contractor',  'headerless' => false],
     ];
 
     public static function for(string $key): self
@@ -46,7 +47,7 @@ final class ImportSource
             throw new InvalidArgumentException("Unknown import source: {$key}");
         }
         $d = self::DEFS[$key];
-        return new self($key, $d['label'], $d['batch'], $d['crosswalk'], $d['alias'], $d['type'], $d['map']);
+        return new self($key, $d['label'], $d['batch'], $d['crosswalk'], $d['alias'], $d['type'], $d['map'], (bool) $d['headerless']);
     }
 
     public static function exists(string $key): bool

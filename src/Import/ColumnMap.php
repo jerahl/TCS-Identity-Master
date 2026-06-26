@@ -18,45 +18,28 @@ use InvalidArgumentException;
 final class ColumnMap
 {
     private const MAPS = [
-        // NextGen HR export. source_key == the HR id we crosswalk as 'nextgen'.
+        // NextGen HR export (ITExtract.csv) — real district headers.
+        // No DOB / middle / preferred / type columns in this feed.
         'nextgen' => [
-            'source_key'  => 'EmployeeID',
-            'employee_id' => 'EmployeeID',
-            'first'       => 'FirstName',
-            'middle'      => 'MiddleName',
-            'last'        => 'LastName',
-            'preferred'   => 'PreferredName',
-            'dob'         => 'DOB',
-            'gender'      => 'Gender',
-            'ethnicity'   => 'Ethnicity',
-            'school_code' => 'HomeSchoolCode',
-            'person_type' => 'PersonType',
-            'title'       => 'JobTitle',
-            'job_code'    => 'JobCode',
-            'fte'         => 'FTE',
-            'hire_date'   => 'HireDate',
-            'end_date'    => 'EndDate',
-            'is_primary'  => 'Primary',
+            'source_key'  => 'Employee Number',
+            'employee_id' => 'Employee Number',
+            'first'       => 'First Name',
+            'last'        => 'Last Name',
+            'gender'      => 'Gender Type',
+            'ethnicity'   => 'Ethnicity Description',
+            'school_code' => 'Location Code',
+            'title'       => 'Job Code Desc',
+            'job_code'    => 'JOB CODE',
+            'hire_date'   => 'Hire Date',
+            'end_date'    => 'Position End Date',
         ],
-        // PowerSchool staff extract. source_key == the PS person id (e.g. PST15241).
+        // PowerSchool extract is HEADERLESS — values are 0-based COLUMN INDEXES,
+        // not header names (see ImportSource: 'powerschool' is headerless).
+        // Discover the layout with:
+        //   php bin/feed_headers.php --system=powerschool --file=<file>
+        // then set the indexes below. PLACEHOLDER — confirm before relying on it.
         'powerschool' => [
-            'source_key'  => 'PSID',
-            'employee_id' => 'TeacherNumber',
-            'first'       => 'First_Name',
-            'middle'      => 'Middle_Name',
-            'last'        => 'Last_Name',
-            'preferred'   => 'Preferred_Name',
-            'dob'         => 'DOB',
-            'gender'      => 'Gender',
-            'ethnicity'   => 'Ethnicity',
-            'school_code' => 'SchoolID',
-            'person_type' => 'StaffType',
-            'title'       => 'Title',
-            'job_code'    => 'JobCode',
-            'fte'         => 'FTE',
-            'hire_date'   => 'HireDate',
-            'end_date'    => 'EndDate',
-            'is_primary'  => 'Primary',
+            'source_key'  => 0,
         ],
         // Intern roster (e.g. university placements). No employee id; school code
         // is a PowerSchool SchoolID. person_type is forced to 'intern'.

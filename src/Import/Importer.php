@@ -60,7 +60,14 @@ final class Importer
             throw new RuntimeException('Feed file is empty.');
         }
         $delim = Csv::detectDelimiter($firstLine);
-        $header = array_map(static fn($h) => trim((string) $h), str_getcsv(Csv::stripBom($firstLine), $delim, '"', '\\'));
+
+        if ($source->headerless) {
+            // No header row: columns are positional (the column map uses indexes).
+            $header = null;
+            rewind($fh); // the first line is data
+        } else {
+            $header = array_map(static fn($h) => trim((string) $h), str_getcsv(Csv::stripBom($firstLine), $delim, '"', '\\'));
+        }
 
         $normalizer = Normalizer::fromDb($this->db);
         $lookup = new PdoMatchLookup($this->db);
@@ -84,8 +91,15 @@ final class Importer
             $counts['total']++;
 
             $raw = [];
-            foreach ($header as $i => $key) {
-                $raw[$key] = $cols[$i] ?? null;
+            if ($header !== null) {
+                foreach ($header as $i => $key) {
+                    $raw[$key] = $cols[$i] ?? null;
+                }
+            } else {
+                // Headerless: key by 0-based index; strip a BOM off the first cell.
+                foreach ($cols as $i => $v) {
+                    $raw[$i] = $i === 0 ? Csv::stripBom((string) $v) : $v;
+                }
             }
 
             try {
