@@ -275,7 +275,7 @@ final class ReviewService
 
         if ($raw !== [] && $source !== null) {
             $this->normalizer ??= Normalizer::fromDb($this->db);
-            return $this->normalizer->normalize(
+            $norm = $this->normalizer->normalize(
                 $raw,
                 $source->batchSystem,
                 ColumnMap::for($source->columnMapKey),
@@ -283,6 +283,12 @@ final class ReviewService
                 $source->aliasSystem,
                 $source->personType
             );
+            // If the raw_json maps to a name, use it. Combined PowerSchool stages a
+            // summary raw_json (not the column headers), so re-normalizing yields
+            // blanks — in that case fall through to the staged n_* columns.
+            if (trim($norm->firstName) !== '' || trim($norm->lastName) !== '') {
+                return $norm;
+            }
         }
 
         // Fallback: build from the normalized staging columns.
