@@ -106,7 +106,7 @@ $eventTitle = [
           <span class="panel__note">— multi-location</span>
         </div>
         <table class="assign-table">
-          <thead><tr><th>School</th><th>Title</th><th>FTE</th><th>Dates</th></tr></thead>
+          <thead><tr><th>School</th><th>Title</th><th>Source</th><th>FTE</th><th>Dates</th></tr></thead>
           <tbody>
             <?php foreach ($assignments as $a): ?>
             <tr>
@@ -115,11 +115,12 @@ $eventTitle = [
                 <?php if ((int) $a['is_primary'] === 1): ?> <span class="pill-primary">PRIMARY</span><?php endif; ?>
               </td>
               <td><?= e($dash($a['title'])) ?></td>
+              <td><span class="src-tag"><?= e(\App\View\Present::sourceSystem((string) ($a['source'] ?? ''))) ?></span></td>
               <td class="mono"><?= e($dash($a['fte'])) ?></td>
               <td class="mono" style="font-size:11.5px; color:#7B8E9B;"><?= e($dash($a['effective_date'])) ?> → <?= e($a['end_date'] ?: 'present') ?></td>
             </tr>
             <?php endforeach; ?>
-            <?php if ($assignments === []): ?><tr><td colspan="4" class="muted" style="padding:12px 0;">No assignments on record.</td></tr><?php endif; ?>
+            <?php if ($assignments === []): ?><tr><td colspan="5" class="muted" style="padding:12px 0;">No assignments on record.</td></tr><?php endif; ?>
           </tbody>
         </table>
       </div>

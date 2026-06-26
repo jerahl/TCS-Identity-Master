@@ -129,7 +129,8 @@ php bin/fetch_feeds.php --no-import     # download only
 ```
 
 Run it from cron before the nightly OneSync run; editors can also trigger it
-from the **Pull from SFTP** button on `/import`.
+from the **Pull from SFTP** button on `/import`. Cron/systemd setup:
+[`docs/cron-feed-pull.md`](docs/cron-feed-pull.md).
 
 **Bootstrap key auth from your password (one time).** Instead of storing the
 SFTP password, run this once — it generates an Ed25519 key, installs the public
