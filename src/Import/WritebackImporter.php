@@ -163,6 +163,7 @@ final class WritebackImporter
                     $this->db->prepare('UPDATE person SET username_locked = 1 WHERE person_id = :id')
                         ->execute([':id' => $person['person_id']]);
                 }
+                $this->activateIfPending((int) $person['person_id'], (string) $person['status'], $actor);
                 $this->markApplied($wbId);
             }
             return ['key' => 'noop', 'detail' => 'already set'];
@@ -193,6 +194,7 @@ final class WritebackImporter
                 ['username' => $username, 'email' => $email ?: $person['email'], 'username_locked' => 1], $actor);
             $this->audit->lifecycle((int) $person['person_id'], 'username_assigned',
                 ['summary' => "Username {$username} written back from OneSync and locked."], $actor);
+            $this->activateIfPending((int) $person['person_id'], (string) $person['status'], $actor);
 
             return ['key' => 'applied', 'detail' => "username '{$username}' set + locked"];
         } catch (\PDOException $e) {
@@ -244,10 +246,26 @@ final class WritebackImporter
         return ['dry_run' => $dryRun, 'pending' => true, 'counts' => $counts, 'outcomes' => $outcomes];
     }
 
+    /**
+     * Flip a freshly-provisioned person from 'pending' to 'active'. A locked
+     * username means OneSync created the account, so the record is live. Only
+     * touches 'pending' — never overrides disabled/terminated.
+     */
+    private function activateIfPending(int $personId, string $currentStatus, string $actor): void
+    {
+        if ($currentStatus !== 'pending') {
+            return;
+        }
+        $this->db->prepare("UPDATE person SET status = 'active' WHERE person_id = :id AND status = 'pending'")
+            ->execute([':id' => $personId]);
+        $this->audit->log('person', $personId, 'update', ['status' => 'pending'], ['status' => 'active'], $actor);
+        $this->audit->lifecycle($personId, 'enable', ['summary' => 'Activated — account provisioned (username write-back).'], $actor);
+    }
+
     private function findPerson(string $uuid): ?array
     {
         $stmt = $this->db->prepare(
-            'SELECT person_id, username, email, username_locked FROM person WHERE person_uuid = :uuid'
+            'SELECT person_id, username, email, username_locked, status FROM person WHERE person_uuid = :uuid'
         );
         $stmt->execute([':uuid' => $uuid]);
         $row = $stmt->fetch();

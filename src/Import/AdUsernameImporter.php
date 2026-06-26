@@ -145,6 +145,7 @@ final class AdUsernameImporter
         if ($decision === 'noop') {
             if (!$dryRun) {
                 $this->recordAdSourceId((int) $person['person_id'], $adUniqueId, $actor);
+                $this->activateIfPending((int) $person['person_id'], (string) $person['status'], $actor);
             }
             return ['key' => 'noop', 'detail' => 'already set'];
         }
@@ -170,6 +171,7 @@ final class AdUsernameImporter
                 ['username' => $username, 'email' => $email ?: $person['email'], 'username_locked' => 1], $actor);
             $this->audit->lifecycle((int) $person['person_id'], 'username_assigned',
                 ['summary' => "Existing AD username {$username} linked (one-time import) and locked."], $actor);
+            $this->activateIfPending((int) $person['person_id'], (string) $person['status'], $actor);
 
             return ['key' => 'applied', 'detail' => "username '{$username}' set + locked"];
         } catch (\PDOException $e) {
@@ -185,7 +187,7 @@ final class AdUsernameImporter
     {
         if ($psId !== '') {
             $stmt = $this->db->prepare(
-                'SELECT p.person_id, p.username, p.email, p.username_locked
+                'SELECT p.person_id, p.username, p.email, p.username_locked, p.status
                  FROM person p JOIN person_source_id s ON s.person_id = p.person_id
                  WHERE s.system = \'powerschool\' AND s.source_key = :k LIMIT 1'
             );
@@ -197,7 +199,7 @@ final class AdUsernameImporter
         }
         if ($employeeId !== '') {
             $stmt = $this->db->prepare(
-                "SELECT person_id, username, email, username_locked
+                "SELECT person_id, username, email, username_locked, status
                  FROM person WHERE employee_id = :e AND employee_id <> '' LIMIT 1"
             );
             $stmt->execute([':e' => $employeeId]);
@@ -207,6 +209,18 @@ final class AdUsernameImporter
             }
         }
         return null;
+    }
+
+    /** Flip a provisioned person from 'pending' to 'active' (locked username = live). */
+    private function activateIfPending(int $personId, string $currentStatus, string $actor): void
+    {
+        if ($currentStatus !== 'pending') {
+            return;
+        }
+        $this->db->prepare("UPDATE person SET status = 'active' WHERE person_id = :id AND status = 'pending'")
+            ->execute([':id' => $personId]);
+        $this->audit->log('person', $personId, 'update', ['status' => 'pending'], ['status' => 'active'], $actor);
+        $this->audit->lifecycle($personId, 'enable', ['summary' => 'Activated — AD account linked (one-time import).'], $actor);
     }
 
     /** Record the AD uniqueId in the crosswalk (idempotent on system+source_key). */

@@ -80,6 +80,10 @@ Sets and **locks** the person's username (and email/UPN if supplied).
 > Username immutability: once locked, the app never overwrites it with a
 > different value. The app never *mints* usernames — this only records OneSync's
 > decision.
+>
+> Activation: applying (or confirming) a locked username flips a `pending`
+> person to `active` — a locked username means the account exists. `disabled` /
+> `terminated` are left untouched.
 
 ### `POST /api/onesync/sync-status`
 
