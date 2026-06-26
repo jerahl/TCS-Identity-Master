@@ -37,6 +37,18 @@ final class ImportSourceTest extends TestCase
         self::assertNull(ImportSource::fromBatchSystem('manual'));
     }
 
+    public function testWebUploadExcludesNextgenAndPowerschool(): void
+    {
+        self::assertFalse(ImportSource::allowsWebUpload('nextgen'));
+        self::assertFalse(ImportSource::allowsWebUpload('powerschool'));
+        self::assertTrue(ImportSource::allowsWebUpload('intern'));
+        self::assertTrue(ImportSource::allowsWebUpload('sub'));
+        self::assertTrue(ImportSource::allowsWebUpload('contractor'));
+
+        $keys = array_map(static fn($s) => $s->key, ImportSource::webUploadable());
+        self::assertSame(['intern', 'sub', 'contractor'], $keys);
+    }
+
     public function testEveryColumnMapResolves(): void
     {
         foreach (ImportSource::all() as $s) {

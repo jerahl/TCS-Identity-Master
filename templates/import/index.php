@@ -50,7 +50,7 @@ $badge = static fn(string $mod): string => match ($mod) {
       </label>
       <button class="btn btn--primary" type="submit" style="height:38px;">Import</button>
     </form>
-    <p class="muted" style="font-size:11.5px; margin:10px 0 0;">Columns must match the source's expected headers (see <code>src/Import/ColumnMap.php</code>). Re-uploads are idempotent — existing people re-match by source id.</p>
+    <p class="muted" style="font-size:11.5px; margin:10px 0 0;">Columns must match the source's expected headers (see <code>src/Import/ColumnMap.php</code>). Re-uploads are idempotent — existing people re-match by source id. <strong>NextGen and PowerSchool import from the SFTP feed</strong> (PowerSchool joins three files) and aren't single-file uploads.</p>
   </div>
   <?php endif; ?>
 

@@ -36,7 +36,7 @@ final class ImportController extends Controller
             'batches' => $batch === null ? $this->imports->batches() : [],
             'batch'   => $batch,
             'staged'  => $staged,
-            'sources' => ImportSource::all(),
+            'sources' => ImportSource::webUploadable(),
             'sftpSources' => FeedSync::configuredSources(),
             'csrf'    => Csrf::token(),
         ], 'import', 'Configuration  /  Import & feeds', 'Import / feeds — TCS Identity Master');
@@ -51,8 +51,8 @@ final class ImportController extends Controller
         }
 
         $system = (string) ($_POST['system'] ?? '');
-        if (!ImportSource::exists($system)) {
-            $this->flash('Choose a valid source system.');
+        if (!ImportSource::allowsWebUpload($system)) {
+            $this->flash('NextGen and PowerSchool import from the SFTP feed (PowerSchool needs all three files); single-file web upload is disabled for them.');
             return $this->redirect(url('/import'));
         }
         $dryRun = !empty($_POST['dry_run']);

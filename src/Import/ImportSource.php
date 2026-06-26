@@ -55,6 +55,24 @@ final class ImportSource
         return isset(self::DEFS[$key]);
     }
 
+    /**
+     * Sources that require SFTP / multi-file ingestion and are NOT offered as a
+     * single-file web upload: NextGen and PowerSchool (PowerSchool is 3 joined
+     * files; NextGen comes from the SFTP feed).
+     */
+    private const NO_WEB_UPLOAD = ['nextgen', 'powerschool'];
+
+    public static function allowsWebUpload(string $key): bool
+    {
+        return self::exists($key) && !in_array($key, self::NO_WEB_UPLOAD, true);
+    }
+
+    /** @return self[] sources offered in the single-file web upload dropdown */
+    public static function webUploadable(): array
+    {
+        return array_values(array_filter(self::all(), static fn(self $s) => self::allowsWebUpload($s->key)));
+    }
+
     /** @return string[] */
     public static function keys(): array
     {
