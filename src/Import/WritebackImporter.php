@@ -61,6 +61,26 @@ final class WritebackImporter
         return 'apply';
     }
 
+    /**
+     * Apply a single username write-back event (the API entry point). Accepts an
+     * associative event with uniqueId/username/email/upn keys; same guardrails and
+     * history row as the file importer.
+     *
+     * @param array<string,mixed> $event
+     * @return array{outcome:string,detail:string,uuid:string,username:string}
+     */
+    public function applyEvent(array $event, bool $dryRun = false, ?string $actor = null): array
+    {
+        $actor ??= 'system:onesync_api';
+        $uuid = trim((string) ($event['uniqueId'] ?? ''));
+        $username = trim((string) ($event['username'] ?? ''));
+        $email = trim((string) ($event['email'] ?? ''));
+        $upn = trim((string) ($event['upn'] ?? ''));
+
+        $outcome = $this->processRow($uuid, $username, $email, $upn, $dryRun, $actor);
+        return ['outcome' => $outcome['key'], 'detail' => $outcome['detail'], 'uuid' => $uuid, 'username' => $username];
+    }
+
     /** @return array<string,mixed> summary */
     public function run(?string $file = null, bool $dryRun = false, ?string $actor = null): array
     {

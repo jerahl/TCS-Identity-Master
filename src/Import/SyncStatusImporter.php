@@ -90,55 +90,11 @@ final class SyncStatusImporter
         $rows = Csv::read($file);
         $counts = ['total' => 0, 'upserted' => 0, 'events' => 0, 'no_person' => 0, 'skipped' => 0, 'errors' => 0];
 
-        $upsert = $this->db->prepare(
-            'INSERT INTO account_sync_status
-               (person_id, person_uuid, destination, dest_type, last_action, last_status, last_sync_at, message)
-             VALUES (:pid, :uuid, :dest, :dtype, :action, :status, :ts, :msg)
-             ON DUPLICATE KEY UPDATE person_id = VALUES(person_id), dest_type = VALUES(dest_type),
-               last_action = VALUES(last_action), last_status = VALUES(last_status),
-               last_sync_at = VALUES(last_sync_at), message = VALUES(message)'
-        );
-        $event = $this->db->prepare(
-            'INSERT INTO account_sync_event (person_uuid, destination, action, status, message, occurred_at)
-             VALUES (:uuid, :dest, :action, :status, :msg, :ts)'
-        );
-
         foreach ($rows as $raw) {
             $counts['total']++;
-            $uuid = trim((string) ($raw[self::MAP['uniqueId']] ?? ''));
-            $dest = trim((string) ($raw[self::MAP['destination']] ?? ''));
-            if ($uuid === '' || $dest === '') {
-                $counts['skipped']++;
-                continue;
-            }
-            $rawAction = (string) ($raw[self::MAP['action']] ?? '');
-            $rawStatus = (string) ($raw[self::MAP['status']] ?? '');
-            $action = self::normalizeAction($rawAction);
-            $status = self::normalizeStatus($rawStatus);
-            $msg = ($raw[self::MAP['message']] ?? '') !== '' ? mb_substr((string) $raw[self::MAP['message']], 0, 1000) : null;
-            $ts = Normalizer::parseDate($raw[self::MAP['timestamp']] ?? null);
-            $tsFull = self::parseTimestamp((string) ($raw[self::MAP['timestamp']] ?? '')) ?? ($ts ? $ts . ' 00:00:00' : null);
-            $dtype = self::deriveDestType($dest, $raw[self::MAP['dest_type']] ?? null);
-
-            try {
-                $pid = $this->resolvePersonId($uuid);
-                if ($pid === null) {
-                    $counts['no_person']++;
-                }
-                if (!$dryRun) {
-                    $upsert->execute([
-                        ':pid' => $pid, ':uuid' => $uuid, ':dest' => $dest, ':dtype' => $dtype,
-                        ':action' => $action, ':status' => $status, ':ts' => $tsFull, ':msg' => $msg,
-                    ]);
-                    $event->execute([
-                        ':uuid' => $uuid, ':dest' => $dest, ':action' => $rawAction ?: null,
-                        ':status' => $rawStatus ?: null, ':msg' => $msg, ':ts' => $tsFull,
-                    ]);
-                    $counts['events']++;
-                }
-                $counts['upserted']++;
-            } catch (\Throwable $e) {
-                $counts['errors']++;
+            $r = $this->applyEvent($raw, $dryRun);
+            foreach (['upserted', 'events', 'no_person', 'skipped', 'errors'] as $k) {
+                $counts[$k] += $r['counts'][$k];
             }
         }
 
@@ -147,6 +103,65 @@ final class SyncStatusImporter
         }
 
         return ['dry_run' => $dryRun, 'counts' => $counts];
+    }
+
+    /**
+     * Apply a single sync-status event (the API entry point and the per-row body
+     * of run()). Accepts an associative event keyed by the OneSync field names
+     * (uniqueId, destination, action, actionStatus|status, message, timestamp,
+     * destType). Upserts the current per-destination status and appends history.
+     *
+     * @param array<string,mixed> $event
+     * @return array{outcome:string,counts:array<string,int>}
+     */
+    public function applyEvent(array $event, bool $dryRun = false): array
+    {
+        $zero = ['upserted' => 0, 'events' => 0, 'no_person' => 0, 'skipped' => 0, 'errors' => 0];
+        $uuid = trim((string) ($event[self::MAP['uniqueId']] ?? ''));
+        $dest = trim((string) ($event[self::MAP['destination']] ?? ''));
+        if ($uuid === '' || $dest === '') {
+            return ['outcome' => 'skipped', 'counts' => ['skipped' => 1] + $zero];
+        }
+
+        $rawAction = (string) ($event[self::MAP['action']] ?? '');
+        // Accept either 'actionStatus' (CSV log) or 'status' (API) for the result.
+        $rawStatus = (string) ($event[self::MAP['status']] ?? ($event['status'] ?? ''));
+        $msg = ($event[self::MAP['message']] ?? '') !== '' ? mb_substr((string) $event[self::MAP['message']], 0, 1000) : null;
+        $ts = Normalizer::parseDate($event[self::MAP['timestamp']] ?? null);
+        $tsFull = self::parseTimestamp((string) ($event[self::MAP['timestamp']] ?? '')) ?? ($ts ? $ts . ' 00:00:00' : null);
+        $dtype = self::deriveDestType($dest, $event[self::MAP['dest_type']] ?? null);
+
+        try {
+            $pid = $this->resolvePersonId($uuid);
+            $counts = $zero;
+            $counts['no_person'] = $pid === null ? 1 : 0;
+            if (!$dryRun) {
+                $this->db->prepare(
+                    'INSERT INTO account_sync_status
+                       (person_id, person_uuid, destination, dest_type, last_action, last_status, last_sync_at, message)
+                     VALUES (:pid, :uuid, :dest, :dtype, :action, :status, :ts, :msg)
+                     ON DUPLICATE KEY UPDATE person_id = VALUES(person_id), dest_type = VALUES(dest_type),
+                       last_action = VALUES(last_action), last_status = VALUES(last_status),
+                       last_sync_at = VALUES(last_sync_at), message = VALUES(message)'
+                )->execute([
+                    ':pid' => $pid, ':uuid' => $uuid, ':dest' => $dest, ':dtype' => $dtype,
+                    ':action' => self::normalizeAction($rawAction), ':status' => self::normalizeStatus($rawStatus),
+                    ':ts' => $tsFull, ':msg' => $msg,
+                ]);
+                $this->db->prepare(
+                    'INSERT INTO account_sync_event (person_uuid, destination, action, status, message, occurred_at)
+                     VALUES (:uuid, :dest, :action, :status, :msg, :ts)'
+                )->execute([
+                    ':uuid' => $uuid, ':dest' => $dest, ':action' => $rawAction ?: null,
+                    ':status' => $rawStatus ?: null, ':msg' => $msg, ':ts' => $tsFull,
+                ]);
+                $counts['events'] = 1;
+            }
+            $counts['upserted'] = 1;
+            return ['outcome' => $pid === null ? 'no_person' : 'upserted', 'counts' => $counts];
+        } catch (\Throwable $e) {
+            return ['outcome' => 'error', 'counts' => ['errors' => 1] + $zero];
+        }
     }
 
     private function resolvePersonId(string $uuid): ?int

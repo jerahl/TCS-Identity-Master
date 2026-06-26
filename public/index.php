@@ -68,6 +68,12 @@ try {
 
     $router = new Router();
 
+    // ---- OneSync write-back API (machine-to-machine, token auth — not session) ----
+    $api = new \App\Controller\ApiController();
+    $router->get('/api/onesync/ping', static fn() => $api->ping());
+    $router->post('/api/onesync/username', static fn() => $api->username());
+    $router->post('/api/onesync/sync-status', static fn() => $api->syncStatus());
+
     // ---- Public (no auth) ----
     $router->get('/login', static fn() => $authCtl->loginPage());
     $router->get('/saml/login', static fn() => $authCtl->samlLogin());

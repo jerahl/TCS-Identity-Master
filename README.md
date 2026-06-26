@@ -324,6 +324,30 @@ php bin/import_sync_status.php --file=db/seeds/feeds/onesync_export_log_sample.c
 With no `--file`, the write-back importers use `ONESYNC_WRITEBACK_FILE` /
 `ONESYNC_EXPORT_LOG`. Both run as the limited write-back role and are idempotent.
 
+**Write-back API (events).** Instead of CSVs, OneSync can execute an API call on
+each event. Token-authenticated (no session/CSRF), JSON in/out, reusing the same
+importers and guardrails. Set `ONESYNC_API_KEY` to enable (blank = disabled, 503).
+OneSync sends it as `Authorization: Bearer <key>` (or `X-API-Key: <key>`).
+
+```sh
+# Health check (still requires the token)
+curl -H "Authorization: Bearer $KEY" https://idm.example.org/api/onesync/ping
+
+# Username minted -> set + LOCK username/email on the golden record
+curl -X POST https://idm.example.org/api/onesync/username \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"uniqueId":"<person_uuid>","username":"jdoe","email":"jdoe@tcs.k12.al.us"}'
+
+# Per-destination provisioning result
+curl -X POST https://idm.example.org/api/onesync/sync-status \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"uniqueId":"<person_uuid>","destination":"Active Directory","action":"Add","status":"Success"}'
+```
+
+Both write endpoints accept a single event **or** a JSON array (batch); a batch
+returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is the
+`v_onesync_source.uniqueId` (person UUID). Same guarantees as the CSV path below.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 back **straight to the DB** (no files): insert usernames into `onesync_writeback`
 and upsert per-user success/failure into `account_sync_status`. The exact table +
