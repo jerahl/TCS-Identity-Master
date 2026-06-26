@@ -35,6 +35,8 @@ final class AdUsernameImporter
 {
     private PDO $db;
     private AuditService $audit;
+    /** @var array<string,string> SCHOOLSTAFF.dcid => Users_DCID (= USERS.dcid = PS crosswalk key) */
+    private array $ssMap = [];
 
     private const MAP = [
         'uniqueId'    => 'uniqueId',
@@ -47,6 +49,28 @@ final class AdUsernameImporter
     {
         $this->db = $db ?? Db::connect(Db::ROLE_MIGRATE);
         $this->audit = new AuditService($this->db);
+    }
+
+    /**
+     * Load the PowerSchool SchoolStaff export to translate the AD uniqueId.
+     * AD uniqueId = "T" + SCHOOLSTAFF.dcid, but our crosswalk is keyed by
+     * USERS.dcid — SchoolStaff bridges them via SCHOOLSTAFF.Users_DCID. Build
+     * SCHOOLSTAFF.dcid => Users_DCID so a stripped uniqueId resolves to the
+     * USERS.dcid we matched on. (Many SchoolStaff rows -> one user, but each
+     * SchoolStaff.dcid maps to exactly one user, so the lookup is deterministic.)
+     */
+    public function loadSchoolStaff(string $file): void
+    {
+        if (!is_file($file) || !is_readable($file)) {
+            throw new RuntimeException("SchoolStaff export not found or unreadable: {$file}");
+        }
+        foreach (Csv::read($file) as $r) {
+            $dcid = trim((string) ($r['SCHOOLSTAFF.dcid'] ?? ''));
+            $usersDcid = trim((string) ($r['SCHOOLSTAFF.Users_DCID'] ?? ''));
+            if ($dcid !== '' && $usersDcid !== '') {
+                $this->ssMap[$dcid] = $usersDcid;
+            }
+        }
     }
 
     /**
@@ -63,11 +87,14 @@ final class AdUsernameImporter
     }
 
     /** @return array<string,mixed> summary */
-    public function run(string $file, bool $dryRun = false, ?string $actor = null): array
+    public function run(string $file, bool $dryRun = false, ?string $actor = null, ?string $schoolStaffFile = null): array
     {
         $actor ??= 'system:import_ad_usernames';
         if (!is_file($file) || !is_readable($file)) {
             throw new RuntimeException("AD export not found or unreadable: {$file}");
+        }
+        if ($schoolStaffFile !== null) {
+            $this->loadSchoolStaff($schoolStaffFile);
         }
 
         $rows = Csv::read($file);
@@ -95,6 +122,13 @@ final class AdUsernameImporter
         return ['dry_run' => $dryRun, 'counts' => $counts, 'outcomes' => $outcomes];
     }
 
+    /** Resolve an AD uniqueId to the PowerSchool crosswalk key (USERS.dcid). */
+    public function resolvePsId(string $uniqueId): string
+    {
+        $ss = self::stripLeadingT($uniqueId);
+        return $this->ssMap[$ss] ?? $ss;
+    }
+
     /** @return array{key:string,detail:string} */
     private function processRow(string $uniqueId, string $username, string $email, string $employeeId, bool $dryRun, string $actor): array
     {
@@ -102,11 +136,17 @@ final class AdUsernameImporter
             return ['key' => 'skipped', 'detail' => 'blank sAMAccountName'];
         }
 
-        $psId = self::stripLeadingT($uniqueId);
+        // AD uniqueId = "T" + SCHOOLSTAFF.dcid. Translate to USERS.dcid (our PS
+        // crosswalk key) via the SchoolStaff map when loaded; otherwise treat the
+        // stripped value as the PS key directly.
+        $ssDcid = self::stripLeadingT($uniqueId);
+        $psId = $this->resolvePsId($uniqueId);
         $employeeId = self::stripLeadingT($employeeId);
         $person = $this->findPerson($psId, $employeeId);
         if ($person === null) {
-            return ['key' => 'no_person', 'detail' => "no person for PS id '{$psId}'" . ($employeeId !== '' ? " / employee '{$employeeId}'" : '')];
+            return ['key' => 'no_person', 'detail' => "no person for PS dcid '{$psId}'"
+                . ($psId !== $ssDcid ? " (schoolstaff {$ssDcid})" : '')
+                . ($employeeId !== '' ? " / employee '{$employeeId}'" : '')];
         }
 
         $decision = WritebackImporter::decide($person['username'], (int) $person['username_locked'] === 1, $username);
