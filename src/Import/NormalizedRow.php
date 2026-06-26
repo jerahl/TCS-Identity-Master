@@ -14,10 +14,11 @@ final class NormalizedRow
 {
     /** @param string[] $warnings @param array<string,mixed> $raw */
     public function __construct(
-        public readonly string $system,        // 'nextgen' | 'powerschool' | 'manual'
+        public readonly string $system,        // batch system: nextgen|powerschool|manual|intern|sub|contractor
         public readonly string $sourceKey,     // this system's id for the row
         public readonly string $firstName,
         public readonly string $lastName,
+        public readonly ?string $crosswalkSystem = null, // person_source_id.system (defaults to $system)
         public readonly ?string $middleName = null,
         public readonly ?string $preferredName = null,
         public readonly ?string $dob = null,           // Y-m-d or null
@@ -37,6 +38,12 @@ final class NormalizedRow
         public readonly array $warnings = [],
         public readonly array $raw = [],
     ) {
+    }
+
+    /** The crosswalk system this row's source id belongs to (matcher + person_source_id). */
+    public function sourceSystem(): string
+    {
+        return $this->crosswalkSystem ?? $this->system;
     }
 
     /** Required fields present to attempt matching at all. */

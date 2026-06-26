@@ -112,6 +112,28 @@ With no `--file`, the importer uses the newest `*.csv` in the configured feed
 directory (`FEED_NEXTGEN_DIR` / `FEED_POWERSCHOOL_DIR`). `--dry-run` reads and
 matches but writes nothing.
 
+**Import source categories.** Each feed is a first-class source (`src/Import/ImportSource.php`)
+that drives the person type and crosswalk provenance:
+
+| Source | CLI | person_type | crosswalk system |
+|--------|-----|-------------|------------------|
+| NextGen (HR) | `bin/import_nextgen.php` | from feed | `nextgen` |
+| PowerSchool | `bin/import_powerschool.php` | from feed | `powerschool` |
+| Intern | `bin/import_intern.php` | `intern` | `intern_csv` |
+| Long-term substitute | `bin/import_sub.php` | `sub` | `sub` |
+| Contract employee | `bin/import_contractor.php` | `contractor` | `contractor` |
+
+```sh
+php bin/import_intern.php      --file=db/seeds/feeds/intern_sample.csv --dry-run
+php bin/import_sub.php         --file=db/seeds/feeds/sub_sample.csv
+php bin/import_contractor.php  --file=db/seeds/feeds/contractor_sample.csv
+```
+
+All five are also available in the web **upload** dropdown on `/import`. Each
+category has its own header map (`ColumnMap`) and feed directory (`FEED_*_DIR`);
+the intern/sub/contractor feeds resolve school codes against the PowerSchool
+SchoolID alias group. (Requires migration `0003`.)
+
 **Matcher tiers** (strongest key first; first hit wins):
 
 | Tier | Key | Result |

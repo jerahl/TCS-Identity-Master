@@ -47,10 +47,10 @@ final class Matcher
         }
 
         // Tier 1 — existing source id (exact).
-        $pid = $lookup->findPersonIdBySourceId($row->system, $row->sourceKey);
+        $pid = $lookup->findPersonIdBySourceId($row->sourceSystem(), $row->sourceKey);
         if ($pid !== null) {
             return new MatchDecision(MatchDecision::AUTO, $pid, 100.0, 'source_id',
-                "Exact match on existing {$row->system} source id {$row->sourceKey}.");
+                "Exact match on existing {$row->sourceSystem()} source id {$row->sourceKey}.");
         }
 
         // Tier 2 — employee id.

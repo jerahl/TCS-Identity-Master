@@ -48,9 +48,19 @@ final class Normalizer
     /**
      * @param array<string,mixed> $raw  the raw CSV row keyed by header
      * @param array<string,string> $map logical field => CSV header
+     * @param ?string $crosswalkSystem person_source_id.system (defaults to $system)
+     * @param ?string $aliasSystem school_code_alias group to resolve codes (defaults to $system)
+     * @param ?string $defaultType person_type when the feed doesn't specify one
      */
-    public function normalize(array $raw, string $system, array $map): NormalizedRow
-    {
+    public function normalize(
+        array $raw,
+        string $system,
+        array $map,
+        ?string $crosswalkSystem = null,
+        ?string $aliasSystem = null,
+        ?string $defaultType = null
+    ): NormalizedRow {
+        $aliasSystem ??= $system;
         $get = static function (string $field) use ($raw, $map): ?string {
             $header = $map[$field] ?? null;
             if ($header === null || !array_key_exists($header, $raw)) {
@@ -62,13 +72,13 @@ final class Normalizer
 
         $warnings = [];
 
-        // School code -> school_id.
+        // School code -> school_id (resolved against the alias group for this source).
         $schoolCode = $get('school_code');
         $schoolId = null;
         if ($schoolCode !== null) {
-            $schoolId = $this->schoolAlias[$system][$schoolCode] ?? null;
+            $schoolId = $this->schoolAlias[$aliasSystem][$schoolCode] ?? null;
             if ($schoolId === null) {
-                $warnings[] = "Unmapped {$system} school code '{$schoolCode}'.";
+                $warnings[] = "Unmapped {$aliasSystem} school code '{$schoolCode}'.";
             }
         }
 
@@ -90,6 +100,7 @@ final class Normalizer
         return new NormalizedRow(
             system: $system,
             sourceKey: (string) ($get('source_key') ?? ''),
+            crosswalkSystem: $crosswalkSystem ?? $system,
             firstName: (string) ($get('first') ?? ''),
             lastName: (string) ($get('last') ?? ''),
             middleName: $get('middle'),
@@ -101,7 +112,7 @@ final class Normalizer
             schoolId: $schoolId,
             ethnicitySource: $ethSource,
             ethnicityCode: $ethCode,
-            personType: self::normType($get('person_type')),
+            personType: self::normType($get('person_type')) ?? $defaultType,
             title: $get('title'),
             jobCode: $get('job_code'),
             fte: $get('fte'),

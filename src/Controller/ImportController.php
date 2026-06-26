@@ -6,6 +6,7 @@ namespace App\Controller;
 
 use App\Config;
 use App\Import\Importer;
+use App\Import\ImportSource;
 use App\Http\Upload;
 use App\Service\ImportService;
 use App\Support\Csrf;
@@ -34,6 +35,7 @@ final class ImportController extends Controller
             'batches' => $batch === null ? $this->imports->batches() : [],
             'batch'   => $batch,
             'staged'  => $staged,
+            'sources' => ImportSource::all(),
             'csrf'    => Csrf::token(),
         ], 'import', 'Configuration  /  Import & feeds', 'Import / feeds — TCS Identity Master');
     }
@@ -47,7 +49,7 @@ final class ImportController extends Controller
         }
 
         $system = (string) ($_POST['system'] ?? '');
-        if (!in_array($system, ['nextgen', 'powerschool'], true)) {
+        if (!ImportSource::exists($system)) {
             $this->flash('Choose a valid source system.');
             return $this->redirect(url('/import'));
         }

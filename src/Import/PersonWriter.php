@@ -223,13 +223,15 @@ final class PersonWriter
         return $row === false ? null : $row;
     }
 
+    private const FEED_SYSTEMS = ['nextgen', 'powerschool', 'intern', 'sub', 'contractor'];
+
     private static function sourceOfRecord(string $system): string
     {
-        return in_array($system, ['nextgen', 'powerschool'], true) ? $system : 'manual';
+        return in_array($system, self::FEED_SYSTEMS, true) ? $system : 'manual';
     }
 
     private static function assignmentSource(string $system): string
     {
-        return in_array($system, ['nextgen', 'powerschool'], true) ? $system : 'manual';
+        return in_array($system, self::FEED_SYSTEMS, true) ? $system : 'manual';
     }
 }

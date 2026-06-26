@@ -40,10 +40,12 @@ final class Importer
      * @param array<string,string>|null $map  override the system's default column map
      * @return array<string,mixed> summary (counts + per-row outcomes)
      */
-    public function run(string $system, string $file, ?array $map = null, bool $dryRun = false, ?string $actor = null, ?string $originalName = null): array
+    public function run(string $sourceKey, string $file, ?array $map = null, bool $dryRun = false, ?string $actor = null, ?string $originalName = null): array
     {
-        $actor ??= 'system:import_' . $system;
-        $map ??= ColumnMap::for($system);
+        $source = ImportSource::for($sourceKey);
+        $system = $source->batchSystem;
+        $actor ??= 'system:import_' . $sourceKey;
+        $map ??= ColumnMap::for($source->columnMapKey);
 
         if (!is_file($file) || !is_readable($file)) {
             throw new RuntimeException("Feed file not found or unreadable: {$file}");
@@ -86,12 +88,12 @@ final class Importer
             }
 
             try {
-                $row = $normalizer->normalize($raw, $system, $map);
+                $row = $normalizer->normalize($raw, $system, $map, $source->crosswalkSystem, $source->aliasSystem, $source->personType);
                 $counts['unmapped'] += count($row->warnings);
                 $decision = $this->matcher->match($row, $lookup);
 
                 if (!$dryRun) {
-                    $this->applyRow($batchId, $system, $row, $decision, $actor);
+                    $this->applyRow($batchId, $source, $row, $decision, $actor);
                 }
 
                 $counts[$decision->action]++;
@@ -123,24 +125,25 @@ final class Importer
     }
 
     /** Persist one staged row and apply its match decision (transactional). */
-    private function applyRow(?int $batchId, string $system, NormalizedRow $row, MatchDecision $decision, string $actor): void
+    private function applyRow(?int $batchId, ImportSource $source, NormalizedRow $row, MatchDecision $decision, string $actor): void
     {
+        $crosswalk = $row->sourceSystem();
         $this->db->beginTransaction();
         try {
-            $stagingId = $this->insertStaging($batchId, $system, $row, $decision);
+            $stagingId = $this->insertStaging($batchId, $source->batchSystem, $row, $decision);
 
             $matchedPersonId = null;
             switch ($decision->action) {
                 case MatchDecision::AUTO:
                     $matchedPersonId = $decision->personId;
-                    $this->writer->attachSourceId($matchedPersonId, $system, $row->sourceKey, $actor);
+                    $this->writer->attachSourceId($matchedPersonId, $crosswalk, $row->sourceKey, $actor);
                     $this->writer->updateHrFields($matchedPersonId, $row, $actor);
                     $this->writer->upsertAssignment($matchedPersonId, $row, $actor);
                     break;
 
                 case MatchDecision::NEW:
                     $matchedPersonId = $this->writer->createPerson($row, $actor);
-                    $this->writer->attachSourceId($matchedPersonId, $system, $row->sourceKey, $actor);
+                    $this->writer->attachSourceId($matchedPersonId, $crosswalk, $row->sourceKey, $actor);
                     $this->writer->upsertAssignment($matchedPersonId, $row, $actor);
                     break;
 

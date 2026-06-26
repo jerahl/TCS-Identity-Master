@@ -22,9 +22,10 @@ $badge = static fn(string $mod): string => match ($mod) {
       <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
       <div>
         <label class="field-label">Source system</label>
-        <select class="field" name="system" style="min-width:160px;">
-          <option value="nextgen">NextGen (HR)</option>
-          <option value="powerschool">PowerSchool</option>
+        <select class="field" name="system" style="min-width:180px;">
+          <?php foreach (($sources ?? []) as $s): ?>
+            <option value="<?= e($s->key) ?>"><?= e($s->label) ?></option>
+          <?php endforeach; ?>
         </select>
       </div>
       <div style="flex:1; min-width:240px;">

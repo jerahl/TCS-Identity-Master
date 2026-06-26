@@ -6,6 +6,7 @@ namespace App\Service;
 
 use App\Db;
 use App\Import\ColumnMap;
+use App\Import\ImportSource;
 use App\Import\NormalizedRow;
 use App\Import\Normalizer;
 use App\Import\PersonWriter;
@@ -183,7 +184,7 @@ final class ReviewService
 
         $this->db->beginTransaction();
         try {
-            $this->writer->attachSourceId($candidatePersonId, $row->system, $row->sourceKey, $actor);
+            $this->writer->attachSourceId($candidatePersonId, $row->sourceSystem(), $row->sourceKey, $actor);
             $this->writer->updateHrFields($candidatePersonId, $row, $actor);
             $this->writer->upsertAssignment($candidatePersonId, $row, $actor);
 
@@ -229,7 +230,7 @@ final class ReviewService
         $this->db->beginTransaction();
         try {
             $pid = $this->writer->createPerson($row, $actor);
-            $this->writer->attachSourceId($pid, $row->system, $row->sourceKey, $actor);
+            $this->writer->attachSourceId($pid, $row->sourceSystem(), $row->sourceKey, $actor);
             $this->writer->upsertAssignment($pid, $row, $actor);
 
             $this->db->prepare(
@@ -270,10 +271,18 @@ final class ReviewService
     {
         $system = (string) $staging['system'];
         $raw = $staging['raw_json'] ? (json_decode((string) $staging['raw_json'], true) ?: []) : [];
+        $source = ImportSource::fromBatchSystem($system);
 
-        if ($raw !== [] && in_array($system, ['nextgen', 'powerschool'], true)) {
+        if ($raw !== [] && $source !== null) {
             $this->normalizer ??= Normalizer::fromDb($this->db);
-            return $this->normalizer->normalize($raw, $system, ColumnMap::for($system));
+            return $this->normalizer->normalize(
+                $raw,
+                $source->batchSystem,
+                ColumnMap::for($source->columnMapKey),
+                $source->crosswalkSystem,
+                $source->aliasSystem,
+                $source->personType
+            );
         }
 
         // Fallback: build from the normalized staging columns.

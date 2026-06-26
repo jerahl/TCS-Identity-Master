@@ -15,21 +15,25 @@ use App\Config;
  */
 final class Cli
 {
-    public static function main(string $system, array $argv): int
+    public static function main(string $sourceKey, array $argv): int
     {
+        if (!ImportSource::exists($sourceKey)) {
+            fwrite(STDERR, "Unknown import source '{$sourceKey}'. Known: " . implode(', ', ImportSource::keys()) . "\n");
+            return 1;
+        }
         $opts = self::parse($argv);
         $dryRun = isset($opts['dry-run']);
 
-        $file = $opts['file'] ?? self::newestInFeedDir($system);
+        $file = $opts['file'] ?? self::newestInFeedDir($sourceKey);
         if ($file === null) {
-            fwrite(STDERR, "No --file given and no CSV found in the configured feed directory for {$system}.\n");
+            fwrite(STDERR, "No --file given and no CSV found in the configured feed directory for {$sourceKey}.\n");
             return 1;
         }
 
-        echo "Importing {$system} feed: {$file}" . ($dryRun ? "  (DRY RUN — no writes)\n" : "\n");
+        echo "Importing {$sourceKey} feed: {$file}" . ($dryRun ? "  (DRY RUN — no writes)\n" : "\n");
 
         try {
-            $result = (new Importer())->run($system, $file, null, $dryRun);
+            $result = (new Importer())->run($sourceKey, $file, null, $dryRun);
         } catch (\Throwable $e) {
             fwrite(STDERR, 'Import failed: ' . $e->getMessage() . "\n");
             return 1;
@@ -77,10 +81,9 @@ final class Cli
         return $opts;
     }
 
-    private static function newestInFeedDir(string $system): ?string
+    private static function newestInFeedDir(string $sourceKey): ?string
     {
-        $dirKey = $system === 'nextgen' ? 'FEED_NEXTGEN_DIR' : 'FEED_POWERSCHOOL_DIR';
-        $dir = Config::get($dirKey);
+        $dir = Config::get('FEED_' . strtoupper($sourceKey) . '_DIR');
         if ($dir === null || !is_dir($dir)) {
             return null;
         }
