@@ -35,6 +35,27 @@ if (is_file($path)) {
     echo "File writable:          " . (is_writable($path) ? 'yes' : 'NO') . "\n";
 }
 
+// Walk the parent chain: creating a file needs execute (traverse) on EVERY
+// ancestor, even if the leaf dir is owned by this user. A parent missing x is
+// the usual "dir is mine but still permission denied" cause.
+echo "Path traversal (each ancestor needs 'x' to descend):\n";
+$parts = explode('/', rtrim($dir, '/'));
+$acc = '';
+foreach ($parts as $seg) {
+    $acc = $acc === '' ? ($seg === '' ? '/' : $seg) : rtrim($acc, '/') . '/' . $seg;
+    if ($acc === '' || $seg === '') {
+        $acc = '/';
+    }
+    if (!is_dir($acc)) {
+        echo "  {$acc}  (missing)\n";
+        continue;
+    }
+    $perms = substr(sprintf('%o', fileperms($acc)), -4);
+    $owner = function_exists('posix_getpwuid') ? (posix_getpwuid(fileowner($acc))['name'] ?? (string) fileowner($acc)) : (string) fileowner($acc);
+    $canEnter = is_executable($acc);
+    echo "  " . str_pad($acc, 26) . " {$perms} {$owner}" . ($canEnter ? '' : "   <-- NOT traversable by {$user}; fix: sudo chmod o+x {$acc}") . "\n";
+}
+
 if (!Config::bool('ONESYNC_API_DEBUG', false)) {
     echo "\nLogging is OFF, so no test line was written. Enable it and re-run.\n";
     exit(0);
