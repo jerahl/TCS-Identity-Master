@@ -7,6 +7,7 @@ namespace App\Controller;
 use App\Config;
 use App\Import\SyncStatusImporter;
 use App\Import\WritebackImporter;
+use App\Support\ApiLog;
 
 /**
  * Machine-to-machine write-back API for OneSync. OneSync executes an API call on
@@ -27,6 +28,60 @@ use App\Import\WritebackImporter;
  */
 final class ApiController
 {
+    private ?string $rawBody = null;
+
+    /** Raw request body, read once (php://input isn't always re-readable). */
+    private function rawBody(): string
+    {
+        if ($this->rawBody === null) {
+            $b = file_get_contents('php://input');
+            $this->rawBody = $b === false ? '' : $b;
+        }
+        return $this->rawBody;
+    }
+
+    /**
+     * Write one debug-log line describing this request + its outcome. Captures
+     * exactly what's needed to see why OneSync failed: which header carried the
+     * token (masked), whether it matched, the body, and the response status.
+     *
+     * @param array<string,mixed> $ctx
+     */
+    private function logRequest(string $endpoint, int $status, array $ctx = []): void
+    {
+        if (!ApiLog::enabled()) {
+            return;
+        }
+        $tok = $this->presentedToken();
+        $scheme = stripos((string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''), 'Bearer ') === 0
+            ? 'bearer' : (isset($_SERVER['HTTP_X_API_KEY']) ? 'x-api-key' : 'none');
+        $body = $this->rawBody();
+        ApiLog::write([
+            'endpoint'       => $endpoint,
+            'status'         => $status,
+            'method'         => (string) ($_SERVER['REQUEST_METHOD'] ?? ''),
+            'ip'             => (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
+            'content_type'   => (string) ($_SERVER['CONTENT_TYPE'] ?? ''),
+            'auth_scheme'    => $scheme,
+            'token_present'  => $tok !== null && $tok !== '',
+            'token_len'      => $tok !== null ? strlen($tok) : 0,
+            'token_preview'  => self::mask($tok),
+            'key_configured' => trim((string) Config::get('ONESYNC_API_KEY', '')) !== '',
+            'body'           => mb_substr($body, 0, 2000),
+            'body_len'       => strlen($body),
+        ] + $ctx);
+    }
+
+    /** Mask a secret for the log: first/last 3 chars only. */
+    private static function mask(?string $s): string
+    {
+        $s = (string) $s;
+        if ($s === '') {
+            return '';
+        }
+        return strlen($s) <= 8 ? '***' : substr($s, 0, 3) . '…' . substr($s, -3);
+    }
+
     /** Constant-time token comparison; false if no key is configured. */
     public static function tokenMatches(?string $provided, ?string $expected): bool
     {
@@ -49,13 +104,15 @@ final class ApiController
     }
 
     /** Gate: 503 if disabled, 401 if the token is missing/wrong. Returns null when OK. */
-    private function authError(): ?string
+    private function authError(string $endpoint): ?string
     {
         $expected = Config::get('ONESYNC_API_KEY');
         if ($expected === null || trim((string) $expected) === '') {
+            $this->logRequest($endpoint, 503, ['reason' => 'ONESYNC_API_KEY not set']);
             return $this->json(503, ['ok' => false, 'error' => 'API disabled (ONESYNC_API_KEY not set).']);
         }
         if (!self::tokenMatches($this->presentedToken(), (string) $expected)) {
+            $this->logRequest($endpoint, 401, ['reason' => 'token missing or mismatch']);
             return $this->json(401, ['ok' => false, 'error' => 'Unauthorized.']);
         }
         return null;
@@ -63,19 +120,21 @@ final class ApiController
 
     public function ping(): string
     {
-        if (($err = $this->authError()) !== null) {
+        if (($err = $this->authError('ping')) !== null) {
             return $err;
         }
+        $this->logRequest('ping', 200);
         return $this->json(200, ['ok' => true, 'service' => 'tcs-identity onesync api']);
     }
 
     public function username(): string
     {
-        if (($err = $this->authError()) !== null) {
+        if (($err = $this->authError('username')) !== null) {
             return $err;
         }
         $events = $this->readEvents();
         if ($events === null) {
+            $this->logRequest('username', 400, ['reason' => 'invalid or empty JSON body']);
             return $this->json(400, ['ok' => false, 'error' => 'Invalid or empty JSON body.']);
         }
 
@@ -98,16 +157,17 @@ final class ApiController
                 $anyError = true;
             }
         }
-        return $this->respond($results, $anyError);
+        return $this->respond('username', $results, $anyError);
     }
 
     public function syncStatus(): string
     {
-        if (($err = $this->authError()) !== null) {
+        if (($err = $this->authError('sync-status')) !== null) {
             return $err;
         }
         $events = $this->readEvents();
         if ($events === null) {
+            $this->logRequest('sync-status', 400, ['reason' => 'invalid or empty JSON body']);
             return $this->json(400, ['ok' => false, 'error' => 'Invalid or empty JSON body.']);
         }
 
@@ -132,7 +192,7 @@ final class ApiController
                 $anyError = true;
             }
         }
-        return $this->respond($results, $anyError);
+        return $this->respond('sync-status', $results, $anyError);
     }
 
     /**
@@ -143,8 +203,8 @@ final class ApiController
      */
     private function readEvents(): ?array
     {
-        $body = file_get_contents('php://input');
-        if ($body === false || trim($body) === '') {
+        $body = $this->rawBody();
+        if (trim($body) === '') {
             return null;
         }
         $data = json_decode($body, true);
@@ -163,13 +223,16 @@ final class ApiController
     }
 
     /** One result for a single event; the array for a batch. */
-    private function respond(array $results, bool $anyError): string
+    private function respond(string $endpoint, array $results, bool $anyError): string
     {
-        $status = $anyError ? 207 : 200;
         if (count($results) === 1) {
             $one = $results[0];
-            return $this->json($one['ok'] ? 200 : 422, $one);
+            $status = $one['ok'] ? 200 : 422;
+            $this->logRequest($endpoint, $status, ['results' => $results]);
+            return $this->json($status, $one);
         }
+        $status = $anyError ? 207 : 200;
+        $this->logRequest($endpoint, $status, ['results' => $results]);
         return $this->json($status, ['ok' => !$anyError, 'results' => $results]);
     }
 

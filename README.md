@@ -348,6 +348,13 @@ Both write endpoints accept a single event **or** a JSON array (batch); a batch
 returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is the
 `v_onesync_source.uniqueId` (person UUID). Same guarantees as the CSV path below.
 
+*Debugging:* set `ONESYNC_API_DEBUG=true` to log every call (method, IP, which
+auth header carried the token + a masked preview, the body, and the response
+status/outcome) to `ONESYNC_API_LOG` (default `/var/idm/onesync/api_debug.log`),
+one JSON line per request — so you can see exactly why OneSync's calls fail (401
+wrong/missing token, 400 bad JSON, 422 unknown uniqueId). Turn it off once working.
+`tail -f /var/idm/onesync/api_debug.log` while OneSync runs.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 back **straight to the DB** (no files): insert usernames into `onesync_writeback`
 and upsert per-user success/failure into `account_sync_status`. The exact table +
