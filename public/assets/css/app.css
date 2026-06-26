@@ -325,7 +325,10 @@ a { color: inherit; text-decoration: none; }
 .kpi__dot--warn { background: var(--orange); }
 .kpi__dot--amber { background: #D69E2E; }
 .kpi__dot--alert { background: #E5484D; }
-.kpi__value { font-size: 28px; font-weight: 600; letter-spacing: -.5px; font-family: 'IBM Plex Mono', monospace; }
+.kpi__value { font-size: 28px; font-weight: 600; letter-spacing: -.5px; font-family: 'IBM Plex Mono', monospace; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Word values (feed system, write-back state) read better in the UI font, sized
+   to fit so they align with the numeric cards instead of overflowing. */
+.kpi__value--text { font-size: 19px; letter-spacing: -.2px; font-family: inherit; }
 .kpi__sub { font-size: 11.5px; color: var(--muted-3); margin-top: 3px; }
 
 .dash-cols { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; align-items: start; }

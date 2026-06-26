@@ -36,7 +36,7 @@ $cards = [
       <span class="kpi__label"><?= e($c['label']) ?></span>
       <span class="kpi__dot kpi__dot--<?= e($c['tone']) ?>"></span>
     </div>
-    <div class="kpi__value"><?= e($c['value']) ?></div>
+    <div class="kpi__value<?= is_numeric($c['value']) ? '' : ' kpi__value--text' ?>" title="<?= e($c['value']) ?>"><?= e($c['value']) ?></div>
     <div class="kpi__sub"><?= e($c['sub']) ?></div>
   </a>
   <?php endforeach; ?>
