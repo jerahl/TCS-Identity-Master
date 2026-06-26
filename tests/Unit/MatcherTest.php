@@ -64,17 +64,42 @@ final class MatcherTest extends TestCase
         self::assertSame(100.0, $d->score);
     }
 
-    public function testNameDobBelowThresholdGoesToReview(): void
+    public function testFirstInitialOnlyIsNotACandidate(): void
     {
-        // First-initial only (no exact first) + DOB match = 75, below 90.
+        // "M" Lopez vs incoming "Maria" Lopez: first names don't match exactly,
+        // so even with a matching DOB this is NOT a candidate -> NEW (no review).
         $lk = new InMemoryMatchLookup();
         $lk->addPerson(31, 'M', 'Lopez', '1988-07-04');
 
         $d = (new Matcher(90))->match($this->row(['first' => 'Maria', 'last' => 'Lopez', 'dob' => '1988-07-04', 'sourceKey' => 'X']), $lk);
-        self::assertSame(MatchDecision::REVIEW, $d->action);
-        self::assertSame('name+dob', $d->basis);
+        self::assertSame(MatchDecision::NEW, $d->action);
         self::assertNull($d->personId);
-        self::assertSame(31, $d->candidates[0]['person_id']);
+    }
+
+    public function testSharedLastNameDifferentFirstIsNotACandidate(): void
+    {
+        // The Smith/Jones flood: a different first name with the same last name
+        // must NOT become a review candidate.
+        $lk = new InMemoryMatchLookup();
+        $lk->addPerson(32, 'Jane', 'Smith', '1980-05-05');
+        $lk->addPerson(33, 'Bob', 'Smith', '1975-01-01');
+
+        $d = (new Matcher(90))->match($this->row(['first' => 'John', 'last' => 'Smith', 'dob' => '1990-02-02', 'sourceKey' => 'X']), $lk);
+        self::assertSame(MatchDecision::NEW, $d->action, 'same last name, different first name is not a match');
+        self::assertNull($d->personId);
+    }
+
+    public function testFullNameOnlyGoesToReview(): void
+    {
+        // Exact first + last, candidate has no DOB on file -> name_only review.
+        $lk = new InMemoryMatchLookup();
+        $lk->addPerson(34, 'Maria', 'Lopez', null);
+
+        $d = (new Matcher(90))->match($this->row(['first' => 'Maria', 'last' => 'Lopez', 'dob' => '1988-07-04', 'sourceKey' => 'X']), $lk);
+        self::assertSame(MatchDecision::REVIEW, $d->action);
+        self::assertSame('name_only', $d->basis);
+        self::assertSame(75.0, $d->score);
+        self::assertSame(34, $d->candidates[0]['person_id']);
     }
 
     public function testNameOnlyNeverAutoLinksEvenWithZeroThreshold(): void

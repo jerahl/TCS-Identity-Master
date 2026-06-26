@@ -14,22 +14,24 @@ use App\Import\NormalizedRow;
  * Tiers, strongest key first (first hit wins):
  *   1. existing person_source_id (system, source_key)  -> AUTO  (exact, score 100)
  *   2. employee_id                                      -> AUTO  (score 100)
- *   3. name + DOB                                       -> score; AUTO if >= threshold
+ *   3. full name + DOB                                  -> score; AUTO if >= threshold
  *                                                          AND unambiguous, else REVIEW
- *   4. name only (no corroborating DOB)                 -> REVIEW, NEVER auto
+ *   4. full name only (no corroborating DOB)            -> REVIEW, NEVER auto
  *   - no candidate at all                               -> NEW
+ *
+ * A candidate requires BOTH first and last name to match exactly — a shared last
+ * name or first-initial alone is never a candidate (kills the Smith/Jones flood).
  *
  * Hard guarantee (guardrail + tested): a name-only match NEVER auto-links,
  * regardless of the configured threshold. Auto on the name tier requires a
  * DOB-confirmed ('name+dob') basis.
  *
  * Scoring (name tier), deterministic:
- *   base 50  : same last name AND (same first name OR same first initial)
- *   +25      : first name exact (not just initial)
+ *   base 75  : first AND last name both match exactly
  *   +25      : DOB present on both sides AND equal
  *   -40      : DOB present on both sides AND different   (likely a different human)
- *   So an exact name + DOB match = 100; a first-initial + DOB match = 75;
- *   a name-only match (DOB missing on a side) = 50–75 but basis stays 'name_only'.
+ *   So a full name + DOB match = 100; a name-only match (DOB missing on a side)
+ *   = 75 but basis stays 'name_only'; a name match with conflicting DOB = 35.
  */
 final class Matcher
 {
@@ -70,21 +72,23 @@ final class Matcher
         foreach ($lookup->findByLastName($row->lastName) as $cand) {
             $cFirst = self::norm($cand['first_name']);
             $cLast = self::norm($cand['last_name']);
-            if ($cLast !== $rowLast) {
-                continue; // last name must match (after normalization)
+            // BOTH first and last name must match exactly (after normalization).
+            // A shared last name alone — or a mere first-initial match — is NOT a
+            // candidate: the district has many Smiths and Joneses, and an initial
+            // match flooded the review queue with people who aren't the same human.
+            if ($cLast === '' || $cLast !== $rowLast) {
+                continue;
             }
-            $firstExact = $cFirst !== '' && $cFirst === $rowFirst;
-            $firstInitial = $cFirst !== '' && $rowFirst !== '' && $cFirst[0] === $rowFirst[0];
-            if (!$firstExact && !$firstInitial) {
-                continue; // require at least a first-initial match to be a candidate
+            if ($cFirst === '' || $rowFirst === '' || $cFirst !== $rowFirst) {
+                continue;
             }
 
             $dobBoth = $row->dob !== null && $row->dob !== '' && !empty($cand['dob']);
             $dobEqual = $dobBoth && $row->dob === $cand['dob'];
 
-            $score = 50.0
-                + ($firstExact ? 25.0 : 0.0)
-                + ($dobEqual ? 25.0 : ($dobBoth ? -40.0 : 0.0));
+            // Full-name match = 75; DOB confirmation lifts it to 100; a conflicting
+            // DOB drops it to 35 (strong evidence of a different person).
+            $score = 75.0 + ($dobEqual ? 25.0 : ($dobBoth ? -40.0 : 0.0));
 
             $basis = $dobEqual ? 'name+dob' : 'name_only';
             $scored[] = ['person_id' => (int) $cand['person_id'], 'score' => $score, 'basis' => $basis];
