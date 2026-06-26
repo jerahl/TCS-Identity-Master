@@ -1,3 +1,3 @@
 USERS.dcid,USERS.Email_Addr,USERS.First_Name,USERS.HomeSchoolId,USERS.Last_Name,USERS.LoginID,USERS.Middle_Name,USERS.TeacherNumber,USERS.Title,U_DEF_EXT_USERS.job_title,U_DEF_EXT_USERS.staff_classification,S_USR_X.hiredate,S_AL_USR_X.exit_date
-1001,jmarsh@tcs.k12.al.us,Jennifer,4010,Marsh,jmarsh,Sue,15241,Teacher,Mathematics Teacher,Certified,08/18/2014,
-1002,bnguyen@tcs.k12.al.us,Brandon,4020,Nguyen,bnguyen,,16100,Teacher,Science Teacher,Certified,08/10/2026,
+1001,jmarsh@tcs.k12.al.us,Jennifer,160,Marsh,jmarsh,Sue,15241,Teacher,Mathematics Teacher,Certified,08/18/2014,
+1002,bnguyen@tcs.k12.al.us,Brandon,75,Nguyen,bnguyen,,16100,Teacher,Science Teacher,Certified,08/10/2026,
