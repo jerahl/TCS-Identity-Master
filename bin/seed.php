@@ -7,6 +7,8 @@ declare(strict_types=1);
  *
  *   php bin/seed.php            upsert school, school_code_alias, ethnicity_map
  *   php bin/seed.php --dry-run  parse + report counts, change nothing
+ *   php bin/seed.php --prune    also DELETE schools/aliases not in the CSVs
+ *                               (makes the CSVs authoritative; clears stale rows)
  *
  * Idempotent: re-running upserts on the natural keys, so it's safe to run after
  * editing the CSVs in db/seeds/. These CSVs ship as PLACEHOLDERS — replace with
@@ -19,7 +21,9 @@ use App\Db;
 
 require __DIR__ . '/../src/bootstrap.php';
 
-$dryRun = in_array('--dry-run', array_slice($argv, 1), true);
+$args = array_slice($argv, 1);
+$dryRun = in_array('--dry-run', $args, true);
+$prune = in_array('--prune', $args, true);
 $seedDir = __DIR__ . '/../db/seeds';
 
 try {
@@ -90,6 +94,47 @@ try {
                 ':code'      => $row['code'],
             ]);
         }
+    }
+
+    // --- prune (optional): make the CSVs authoritative by deleting school /
+    //     school_code_alias rows that are no longer present in them. Removes stale
+    //     demo placeholders. Aliases go first (FK child); a school still referenced
+    //     by a person/assignment is reported and kept. ---
+    if ($prune && !$dryRun) {
+        $keepCodes = [];
+        foreach ($aliases as $row) {
+            $keepCodes[$row['system'] . "\x1f" . $row['code']] = true;
+        }
+        $del = $pdo->prepare('DELETE FROM school_code_alias WHERE system = :s AND code = :c');
+        $prunedAliases = 0;
+        foreach ($pdo->query('SELECT alias_id, system, code FROM school_code_alias')->fetchAll() as $a) {
+            if (!isset($keepCodes[$a['system'] . "\x1f" . $a['code']])) {
+                $del->execute([':s' => $a['system'], ':c' => $a['code']]);
+                $prunedAliases++;
+            }
+        }
+
+        $keepPs = [];
+        foreach ($schools as $row) {
+            $keepPs[(string) $row['ps_school_id']] = true;
+        }
+        $delSchool = $pdo->prepare('DELETE FROM school WHERE school_id = :id');
+        $prunedSchools = 0;
+        $kept = 0;
+        foreach ($pdo->query('SELECT school_id, name, ps_school_id FROM school')->fetchAll() as $s) {
+            if (isset($keepPs[(string) $s['ps_school_id']])) {
+                continue;
+            }
+            try {
+                $delSchool->execute([':id' => $s['school_id']]);
+                $prunedSchools++;
+            } catch (\PDOException $e) {
+                fwrite(STDERR, "  WARN: kept school '{$s['name']}' (ps_school_id={$s['ps_school_id']}) — still referenced (person/assignment).\n");
+                $kept++;
+            }
+        }
+        echo "prune: removed {$prunedAliases} alias(es), {$prunedSchools} school(s)"
+            . ($kept ? ", kept {$kept} still-referenced" : '') . ".\n";
     }
 
     echo $dryRun ? "Dry run complete — nothing written.\n" : "Seed complete.\n";

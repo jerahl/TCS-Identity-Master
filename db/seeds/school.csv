@@ -2,9 +2,9 @@ name,ps_school_id,ad_ou,google_ou,status
 The Alberta School of Performing Arts,10,,,active
 Arcadia Elementary School,20,,,active
 Central Elementary School,30,,,active
-Paul W. Bryant High School,55,,,active
-Eastwood Middle School,60,,,active
-Northridge High School,75,,,active
+Paul W. Bryant High School,55,OU=PWB,/Staff/PWB,active
+Eastwood Middle School,60,OU=EMS,/Staff/EMS,active
+Northridge High School,75,OU=NHS,/Staff/NHS,active
 NES,80,,,active
 Oakdale Elementary School,90,,,active
 Oak Hill School,135,,,active
@@ -14,15 +14,15 @@ Skyland Elementary School,110,,,active
 Southview Elementary School,131,,,active
 SVMS,132,,,active
 Martin Luther King Jr Elementary School,140,,,active
-Tuscaloosa Magnet Schools - Elementary,156,,,active
-Tuscaloosa Magnet Schools - Middle,157,,,active
-Central High School,160,,,active
-University Place Elementary School,180,,,active
+Tuscaloosa Magnet Schools - Elementary,156,OU=TMES,/Staff/TMES,active
+Tuscaloosa Magnet Schools - Middle,157,OU=TMMS,/Staff/TMMS,active
+Central High School,160,OU=CHS,/Staff/CHS,active
+University Place Elementary School,180,OU=UPE,/Staff/UPE,active
 UPMS,181,,,active
 Verner Elementary School,185,,,active
 Woodland Forrest Elementary School,195,,,active
-Westlawn Middle School,200,,,active
-Central Office,4999,,,active
+Westlawn Middle School,200,OU=WMS,/Staff/WMS,active
+Central Office,4999,OU=Central,/Staff/Central,active
 Tuscaloosa Career and Technology Academy,6000,,,active
 Summer Learning,7001,,,active
 BPCC,8000,,,active
