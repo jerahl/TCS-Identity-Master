@@ -50,23 +50,26 @@ final class Importer
         if (!is_file($file) || !is_readable($file)) {
             throw new RuntimeException("Feed file not found or unreadable: {$file}");
         }
-        $fh = fopen($file, 'rb');
-        if ($fh === false) {
+        $content = file_get_contents($file);
+        if ($content === false) {
             throw new RuntimeException("Cannot open feed file: {$file}");
         }
 
-        $firstLine = fgets($fh);
-        if ($firstLine === false) {
+        // Split on any line ending (CR / CRLF / LF). PowerSchool exports often use
+        // bare CR; fgets/fgetcsv would otherwise read the whole file as one line.
+        $lines = Csv::splitLines($content);
+        if ($lines === []) {
             throw new RuntimeException('Feed file is empty.');
         }
-        $delim = Csv::detectDelimiter($firstLine);
+        $delim = Csv::detectDelimiter($lines[0]);
 
         if ($source->headerless) {
             // No header row: columns are positional (the column map uses indexes).
             $header = null;
-            rewind($fh); // the first line is data
+            $dataLines = $lines; // the first line is data
         } else {
-            $header = array_map(static fn($h) => trim((string) $h), str_getcsv(Csv::stripBom($firstLine), $delim, '"', '\\'));
+            $header = array_map(static fn($h) => trim((string) $h), str_getcsv(Csv::stripBom($lines[0]), $delim, '"', '\\'));
+            $dataLines = array_slice($lines, 1);
         }
 
         $normalizer = Normalizer::fromDb($this->db);
@@ -84,7 +87,8 @@ final class Importer
         $counts = ['total' => 0, 'auto_match' => 0, 'new' => 0, 'needs_review' => 0, 'skipped' => 0, 'errors' => 0, 'unmapped' => 0];
         $outcomes = [];
 
-        while (($cols = fgetcsv($fh, 0, ',', '"', '\\')) !== false) {
+        foreach ($dataLines as $line) {
+            $cols = str_getcsv($line, $delim, '"', '\\');
             if ($cols === [null] || (count($cols) === 1 && trim((string) ($cols[0] ?? '')) === '')) {
                 continue; // blank line
             }
@@ -124,7 +128,6 @@ final class Importer
                 $outcomes[] = ['name' => '(row ' . $counts['total'] . ')', 'source_key' => '', 'action' => 'error', 'reason' => $e->getMessage(), 'warnings' => []];
             }
         }
-        fclose($fh);
 
         if (!$dryRun) {
             $status = ($counts['total'] > 0 && $counts['auto_match'] + $counts['new'] + $counts['needs_review'] === 0)
