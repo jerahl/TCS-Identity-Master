@@ -69,9 +69,21 @@ final class PhpseclibSftpClient implements SftpClient
     {
         $sftp = $this->client();
         $names = $sftp->nlist($dir);
+
+        // Some servers (e.g. Serv-U) want a resolved path — retry via realpath.
         if ($names === false) {
-            throw new RuntimeException("Cannot list SFTP directory: {$dir}");
+            $serverError = trim((string) $sftp->getLastSFTPError());
+            $real = $sftp->realpath($dir);
+            if ($real !== false && $real !== $dir) {
+                $names = $sftp->nlist($real);
+            }
+            if ($names === false) {
+                $hint = $serverError !== '' ? $serverError : 'no such directory, or permission denied';
+                throw new RuntimeException("Cannot list SFTP directory '{$dir}': {$hint}. "
+                    . 'Verify the exact path/case (try: php bin/sftp_ls.php --dir=/).');
+            }
         }
+
         $out = [];
         foreach ($names as $name) {
             if ($name === '.' || $name === '..') {

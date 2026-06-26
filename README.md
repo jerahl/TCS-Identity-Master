@@ -141,6 +141,18 @@ php bin/sftp_setup_key.php --host=sftp.example.org --user=tcs_feeds
 After it verifies key-only login it clears `SFTP_PASS`. If the server's home
 isn't writable over SFTP, it prints the public key so you can add it manually.
 
+**Discover remote paths.** If a fetch reports "Cannot list SFTP directory",
+the path/case is likely off (Serv-U and others use case-sensitive virtual
+paths). List what the account actually sees:
+
+```sh
+php bin/sftp_ls.php                  # home + '/'
+php bin/sftp_ls.php --dir=/Nextgen
+```
+
+It prints the resolved home and a `[dir]/[file]` listing (with the server's real
+error if a path is wrong), so you can set `SFTP_<SOURCE>_DIR` to the exact path.
+
 **Import source categories.** Each feed is a first-class source (`src/Import/ImportSource.php`)
 that drives the person type and crosswalk provenance:
 

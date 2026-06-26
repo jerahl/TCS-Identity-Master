@@ -33,11 +33,17 @@ final class FeedSync
     /** Build from environment config (phpseclib client). */
     public static function fromConfig(): self
     {
+        return new self(self::clientFromConfig());
+    }
+
+    /** Build a phpseclib SFTP client from the SFTP_* environment config. */
+    public static function clientFromConfig(): PhpseclibSftpClient
+    {
         $keyFile = Config::get('SFTP_PRIVATE_KEY_FILE');
         $privateKey = ($keyFile !== null && is_file($keyFile) && is_readable($keyFile))
             ? (string) file_get_contents($keyFile) : null;
 
-        $client = new PhpseclibSftpClient(
+        return new PhpseclibSftpClient(
             host: (string) Config::get('SFTP_HOST', ''),
             port: (int) Config::get('SFTP_PORT', '22'),
             user: (string) Config::get('SFTP_USER', ''),
@@ -46,7 +52,6 @@ final class FeedSync
             passphrase: Config::get('SFTP_PASSPHRASE'),
             fingerprint: Config::get('SFTP_FINGERPRINT'),
         );
-        return new self($client);
     }
 
     /** Import-source keys that have an SFTP remote directory configured. */
