@@ -357,16 +357,20 @@ wrong/missing token, 400 bad JSON, 422 unknown uniqueId). Turn it off once worki
 
 **One-time AD username link.** To adopt the usernames that already exist in AD
 (before OneSync was authoritative), import an AD export. Each row matches a person
-by the PowerSchool id embedded in `uniqueId` (leading `T` stripped: `T8422` →
-`TEACHERS.ID` 8422, our PS crosswalk key), falling back to the `Employee ID`
-column (`TEACHERS.TeacherNumber`, also `T`-prefixed), then sets + **locks** the
-`sAMAccountName` as the username (and `mail` as email) and records the AD id in the
-crosswalk (`person_source_id` system `ad`). Headers: `uniqueId, mail, surname,
-givenName, sAMAccountName, Employee ID, department, title, ADTitle`.
+by the PowerSchool id (`TEACHERS.ID`, our crosswalk key) — falling back to the
+NextGen Employee # — then sets + **locks** the username (and email) and records
+the AD id (`T`+`TEACHERS.ID`) in the crosswalk (`person_source_id` system `ad`).
+
+It auto-detects the file format from the headers, so you can feed it **either**:
+- the **PowerSchool TEACHERS export** (the same `TeachersID.csv` used for the
+  PowerSchool import): `TEACHERS.ID`, `TEACHERS.TeacherLoginID` (username),
+  `TEACHERS.Email_Addr` (email), `TEACHERS.TeacherNumber` (NextGen #); or
+- an **AD directory export**: `uniqueId` (`T`+`TEACHERS.ID`), `sAMAccountName`,
+  `mail`, `Employee ID`.
 
 ```sh
-php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv --dry-run
-php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv
+php bin/import_ad_usernames.php --file=/var/idm/feeds/powerschool/TeachersID.csv --dry-run
+php bin/import_ad_usernames.php --file=/var/idm/feeds/powerschool/TeachersID.csv
 ```
 
 Idempotent and safe: a username already locked to a different value is reported as

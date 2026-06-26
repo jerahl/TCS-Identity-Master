@@ -24,4 +24,10 @@ final class AdUsernameTest extends TestCase
         self::assertSame('14774', AdUsernameImporter::stripLeadingT('14774'));
         self::assertSame('', AdUsernameImporter::stripLeadingT(''));
     }
+
+    public function testDetectFormatFromHeaders(): void
+    {
+        self::assertSame('teachers', AdUsernameImporter::detectFormat(['TEACHERS.ID' => '8422', 'TEACHERS.TeacherLoginID' => 'kabraham']));
+        self::assertSame('ad', AdUsernameImporter::detectFormat(['uniqueId' => 'T8422', 'sAMAccountName' => 'kabraham']));
+    }
 }

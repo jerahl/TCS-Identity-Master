@@ -28,26 +28,43 @@ use RuntimeException;
  * --dry-run. Runs as the MIGRATE role — a trusted one-time ops step (it also
  * writes the person_source_id 'ad' crosswalk row, beyond the write-back grants).
  *
- * Expected headers (tab- or comma-delimited; auto-detected):
- *   uniqueId, mail, surname, givenName, sAMAccountName, Employee ID,
- *   department, title, ADTitle
+ * Accepts EITHER file (format auto-detected from the header row):
+ *  - AD directory export: uniqueId, mail, sAMAccountName, Employee ID, ...
+ *  - PowerSchool TEACHERS export (same file used for the PowerSchool import):
+ *    TEACHERS.ID, TEACHERS.Email_Addr, TEACHERS.TeacherLoginID, TEACHERS.TeacherNumber
+ *    (here the AD uniqueId recorded in the crosswalk is "T" + TEACHERS.ID).
  */
 final class AdUsernameImporter
 {
     private PDO $db;
     private AuditService $audit;
 
-    private const MAP = [
-        'uniqueId'    => 'uniqueId',
+    /** AD directory export columns. */
+    private const MAP_AD = [
+        'id'          => 'uniqueId',          // "T" + TEACHERS.ID
         'mail'        => 'mail',
         'username'    => 'sAMAccountName',
         'employee_id' => 'Employee ID',
+    ];
+
+    /** PowerSchool TEACHERS export columns (same file we import for PowerSchool). */
+    private const MAP_TEACHERS = [
+        'id'          => 'TEACHERS.ID',       // the PS crosswalk key (no "T")
+        'mail'        => 'TEACHERS.Email_Addr',
+        'username'    => 'TEACHERS.TeacherLoginID',
+        'employee_id' => 'TEACHERS.TeacherNumber',
     ];
 
     public function __construct(?PDO $db = null)
     {
         $this->db = $db ?? Db::connect(Db::ROLE_MIGRATE);
         $this->audit = new AuditService($this->db);
+    }
+
+    /** Pick the column map from the header row: TEACHERS export vs AD export. */
+    public static function detectFormat(array $row): string
+    {
+        return array_key_exists('TEACHERS.ID', $row) ? 'teachers' : 'ad';
     }
 
     /**
@@ -72,39 +89,48 @@ final class AdUsernameImporter
         }
 
         $rows = Csv::read($file);
+        $map = ($rows !== [] && self::detectFormat($rows[0]) === 'teachers') ? self::MAP_TEACHERS : self::MAP_AD;
+        $teachers = $map === self::MAP_TEACHERS;
         $counts = ['total' => 0, 'applied' => 0, 'noop' => 0, 'conflict' => 0, 'skipped' => 0, 'no_person' => 0, 'errors' => 0];
         $outcomes = [];
 
         foreach ($rows as $raw) {
             $counts['total']++;
-            $uniqueId = trim((string) ($raw[self::MAP['uniqueId']] ?? ''));
-            $username = trim((string) ($raw[self::MAP['username']] ?? ''));
-            $email = trim((string) ($raw[self::MAP['mail']] ?? ''));
-            $employeeId = trim((string) ($raw[self::MAP['employee_id']] ?? ''));
+            $idField = trim((string) ($raw[$map['id']] ?? ''));
+            $username = trim((string) ($raw[$map['username']] ?? ''));
+            $email = trim((string) ($raw[$map['mail']] ?? ''));
+            $employeeId = trim((string) ($raw[$map['employee_id']] ?? ''));
+            // AD account uniqueId for the crosswalk: the raw uniqueId (AD export)
+            // or "T" + TEACHERS.ID (TEACHERS export), so both record the same id.
+            $adUniqueId = $teachers ? ($idField !== '' ? 'T' . $idField : '') : $idField;
 
             try {
-                $outcome = $this->processRow($uniqueId, $username, $email, $employeeId, $dryRun, $actor);
+                $outcome = $this->processRow($idField, $adUniqueId, $username, $email, $employeeId, $dryRun, $actor);
             } catch (\Throwable $e) {
                 $counts['errors']++;
-                $outcomes[] = ['uniqueId' => $uniqueId, 'username' => $username, 'outcome' => 'error', 'detail' => $e->getMessage()];
+                $outcomes[] = ['uniqueId' => $adUniqueId, 'username' => $username, 'outcome' => 'error', 'detail' => $e->getMessage()];
                 continue;
             }
             $counts[$outcome['key']]++;
-            $outcomes[] = ['uniqueId' => $uniqueId, 'username' => $username, 'outcome' => $outcome['key'], 'detail' => $outcome['detail']];
+            $outcomes[] = ['uniqueId' => $adUniqueId, 'username' => $username, 'outcome' => $outcome['key'], 'detail' => $outcome['detail']];
         }
 
         return ['dry_run' => $dryRun, 'counts' => $counts, 'outcomes' => $outcomes];
     }
 
-    /** @return array{key:string,detail:string} */
-    private function processRow(string $uniqueId, string $username, string $email, string $employeeId, bool $dryRun, string $actor): array
+    /**
+     * @param string $idField    the PS id field (AD uniqueId "T8422" or TEACHERS.ID "8422")
+     * @param string $adUniqueId the AD account id to record in the crosswalk ("T8422")
+     * @return array{key:string,detail:string}
+     */
+    private function processRow(string $idField, string $adUniqueId, string $username, string $email, string $employeeId, bool $dryRun, string $actor): array
     {
         if ($username === '') {
-            return ['key' => 'skipped', 'detail' => 'blank sAMAccountName'];
+            return ['key' => 'skipped', 'detail' => 'blank username'];
         }
 
-        // AD uniqueId = "T" + TEACHERS.ID, which is our PowerSchool crosswalk key.
-        $psId = self::stripLeadingT($uniqueId);
+        // PS crosswalk key = TEACHERS.ID (= AD uniqueId minus the leading "T").
+        $psId = self::stripLeadingT($idField);
         $employeeId = self::stripLeadingT($employeeId);
         $person = $this->findPerson($psId, $employeeId);
         if ($person === null) {
@@ -118,7 +144,7 @@ final class AdUsernameImporter
         }
         if ($decision === 'noop') {
             if (!$dryRun) {
-                $this->recordAdSourceId((int) $person['person_id'], $uniqueId, $actor);
+                $this->recordAdSourceId((int) $person['person_id'], $adUniqueId, $actor);
             }
             return ['key' => 'noop', 'detail' => 'already set'];
         }
@@ -138,7 +164,7 @@ final class AdUsernameImporter
             $sql .= ' WHERE person_id = :id';
             $this->db->prepare($sql)->execute($params);
 
-            $this->recordAdSourceId((int) $person['person_id'], $uniqueId, $actor);
+            $this->recordAdSourceId((int) $person['person_id'], $adUniqueId, $actor);
 
             $this->audit->log('person', (int) $person['person_id'], 'update', $before,
                 ['username' => $username, 'email' => $email ?: $person['email'], 'username_locked' => 1], $actor);

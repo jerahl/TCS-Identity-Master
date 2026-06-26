@@ -5,17 +5,18 @@ declare(strict_types=1);
 /**
  * ONE-TIME: link existing AD usernames to the golden record.
  *
- *   php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv --dry-run
+ *   php bin/import_ad_usernames.php --file=/var/idm/feeds/powerschool/TeachersID.csv --dry-run
  *   php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv
  *
- * The AD uniqueId is "T" + TEACHERS.ID, and TEACHERS.ID is our PowerSchool
- * crosswalk key, so the stripped uniqueId matches directly. Falls back to the
- * Employee ID column (NextGen #, leading "T" stripped). Then sets + LOCKS the
- * person's sAMAccountName as username (and mail as email). Idempotent; never
- * overwrites a username already locked to a different value.
+ * Accepts either file (auto-detected from the headers):
+ *  - PowerSchool TEACHERS export: TEACHERS.ID (PS key), TEACHERS.TeacherLoginID
+ *    (username), TEACHERS.Email_Addr (email), TEACHERS.TeacherNumber (NextGen #).
+ *  - AD directory export: uniqueId ("T"+TEACHERS.ID), sAMAccountName, mail,
+ *    Employee ID.
  *
- * Expected headers (tab or comma; auto-detected):
- *   uniqueId  mail  surname  givenName  sAMAccountName  Employee ID  department  title  ADTitle
+ * Matches on the PS id (TEACHERS.ID, or AD uniqueId with the leading "T"
+ * stripped), falling back to the Employee ID / TeacherNumber, then sets + LOCKS
+ * the username (and email). Idempotent; never overwrites a locked username.
  */
 
 use App\Import\AdUsernameImporter;
