@@ -128,6 +128,19 @@ php bin/fetch_feeds.php --no-import     # download only
 Run it from cron before the nightly OneSync run; editors can also trigger it
 from the **Pull from SFTP** button on `/import`.
 
+**Bootstrap key auth from your password (one time).** Instead of storing the
+SFTP password, run this once — it generates an Ed25519 key, installs the public
+half on the server (using your password), records the host fingerprint, and
+switches `.env` to key auth:
+
+```sh
+php bin/sftp_setup_key.php --host=sftp.example.org --user=tcs_feeds
+# (password prompted, hidden; or pass it via the SFTP_SETUP_PASSWORD env var)
+```
+
+After it verifies key-only login it clears `SFTP_PASS`. If the server's home
+isn't writable over SFTP, it prints the public key so you can add it manually.
+
 **Import source categories.** Each feed is a first-class source (`src/Import/ImportSource.php`)
 that drives the person type and crosswalk provenance:
 
