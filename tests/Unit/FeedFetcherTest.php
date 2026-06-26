@@ -94,8 +94,10 @@ final class FeedFetcherTest extends TestCase
         );
         $fetcher = new FeedFetcher($client);
 
+        // b.csv is already present locally and unchanged -> must be skipped.
+        file_put_contents($this->tmp . '/b.csv', "EmployeeID\n2");
+
         // a.csv already fetched at mtime 1000 but remote is now 2000 -> re-download.
-        // b.csv already fetched at its current mtime -> skip.
         $res = $fetcher->fetchSource('/outbound/nextgen', '*.csv', $this->tmp, ['a.csv' => 1000, 'b.csv' => 1000], false);
 
         self::assertCount(1, $res, 'only the updated a.csv');
@@ -103,7 +105,21 @@ final class FeedFetcherTest extends TestCase
         self::assertSame(2000, $res[0]['mtime']);
         self::assertTrue($res[0]['downloaded']);
         self::assertFileExists($this->tmp . '/a.csv');
-        self::assertFileDoesNotExist($this->tmp . '/b.csv');
+    }
+
+    public function testRefetchesWhenLocalFileMissing(): void
+    {
+        // Logged as already fetched at the current mtime, but the local copy is
+        // gone (feed dir cleared) -> must re-download.
+        $client = new InMemorySftpClient(
+            ['/d' => ['users.csv' => "USERS.dcid\n1"]],
+            ['/d' => ['users.csv' => 1000]],
+        );
+        $res = (new FeedFetcher($client))->fetchSource('/d', '*.csv', $this->tmp, ['users.csv' => 1000], false);
+
+        self::assertCount(1, $res, 'missing local file forces re-fetch despite the log');
+        self::assertSame('users.csv', $res[0]['name']);
+        self::assertFileExists($this->tmp . '/users.csv');
     }
 
     public function testDryRunDownloadsNothing(): void

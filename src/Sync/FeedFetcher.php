@@ -65,6 +65,20 @@ final class FeedFetcher
         $remote = $this->client->listFilesWithMeta($remoteDir);
         $new = self::plan($remote, $fetchedMtimes, $pattern);
 
+        // Re-fetch any matching remote file whose LOCAL copy is missing, even if
+        // the fetch log says we already had it (e.g. the feed dir was cleared).
+        $names = array_column($new, 'name');
+        foreach ($remote as $f) {
+            $name = (string) ($f['name'] ?? '');
+            if ($name === '' || in_array($name, $names, true) || !fnmatch($pattern, $name, FNM_CASEFOLD)) {
+                continue;
+            }
+            if (!is_file(rtrim($localDir, '/') . '/' . $name)) {
+                $new[] = ['name' => $name, 'size' => $f['size'] ?? null, 'mtime' => $f['mtime'] ?? null];
+                $names[] = $name;
+            }
+        }
+
         if ($new !== [] && !$dryRun && !is_dir($localDir) && !@mkdir($localDir, 0750, true) && !is_dir($localDir)) {
             throw new RuntimeException("Cannot create local feed dir: {$localDir}");
         }
