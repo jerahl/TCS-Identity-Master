@@ -27,6 +27,8 @@ final class Importer
     private PDO $db;
     private Matcher $matcher;
     private PersonWriter $writer;
+    /** @var string[] normalized names whose rows are skipped (system accounts) */
+    private array $excludeNames;
 
     public function __construct(?PDO $db = null, ?Matcher $matcher = null)
     {
@@ -34,6 +36,35 @@ final class Importer
         $threshold = (float) Config::get('MATCH_AUTO_THRESHOLD', '90');
         $this->matcher = $matcher ?? new Matcher($threshold);
         $this->writer = new PersonWriter($this->db, new AuditService($this->db));
+
+        // Non-person rows to ignore (e.g. PowerSchool Admin / Lookup accounts),
+        // matched by first OR last name. Configurable, comma-separated.
+        $raw = (string) Config::get('IMPORT_EXCLUDE_NAMES', 'admin,lookup');
+        $this->excludeNames = array_values(array_filter(
+            array_map(static fn(string $s) => Matcher::norm($s), explode(',', $raw)),
+            static fn(string $s) => $s !== ''
+        ));
+    }
+
+    /** True if this row is a system/non-person account we should ignore. */
+    private function isExcludedAccount(NormalizedRow $row): bool
+    {
+        return self::nameExcluded($row->firstName, $row->lastName, $this->excludeNames);
+    }
+
+    /**
+     * Pure exclusion test: true when the first OR last name (normalized) is in the
+     * exclude list. Static + dependency-free so it's unit-testable.
+     *
+     * @param string[] $excludeNames already-normalized exclude tokens
+     */
+    public static function nameExcluded(string $first, string $last, array $excludeNames): bool
+    {
+        if ($excludeNames === []) {
+            return false;
+        }
+        return in_array(Matcher::norm($first), $excludeNames, true)
+            || in_array(Matcher::norm($last), $excludeNames, true);
     }
 
     /**
@@ -109,7 +140,11 @@ final class Importer
             try {
                 $row = $normalizer->normalize($raw, $system, $map, $source->crosswalkSystem, $source->aliasSystem, $source->personType);
                 $counts['unmapped'] += count($row->warnings);
-                $decision = $this->matcher->match($row, $lookup);
+
+                $decision = $this->isExcludedAccount($row)
+                    ? new MatchDecision(MatchDecision::SKIPPED, null, 0.0, 'excluded',
+                        'Excluded system account (name in IMPORT_EXCLUDE_NAMES).')
+                    : $this->matcher->match($row, $lookup);
 
                 if (!$dryRun) {
                     $this->applyRow($batchId, $source, $row, $decision, $actor);
