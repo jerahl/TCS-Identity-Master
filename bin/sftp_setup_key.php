@@ -92,51 +92,117 @@ try {
     }
     echo "Password login OK.\n";
 
-    // --- 3. install public key into ~/.ssh/authorized_keys ---
-    if (!$sftp->is_dir('.ssh')) {
-        $sftp->mkdir('.ssh');
-    }
-    $sftp->chmod(0700, '.ssh');
-    $existing = $sftp->file_exists('.ssh/authorized_keys') ? (string) $sftp->get('.ssh/authorized_keys') : '';
-    if (!str_contains($existing, $pub)) {
-        $merged = ($existing === '' ? '' : rtrim($existing, "\n") . "\n") . $pub . "\n";
-        if ($sftp->put('.ssh/authorized_keys', $merged) === false) {
-            throw new RuntimeException('Could not write ~/.ssh/authorized_keys (is the home dir writable?).');
-        }
-        $sftp->chmod(0600, '.ssh/authorized_keys');
-        echo "Installed public key in ~/.ssh/authorized_keys.\n";
-    } else {
-        echo "Public key already present in authorized_keys.\n";
-    }
+    // --- 3. install public key (SFTP write, then SSH exec fallback) ---
+    $installed = install_via_sftp($sftp, $pub) || install_via_exec($host, $port, $user, $password, $pub);
 
-    // --- 4. verify key-only login ---
-    $verify = new SFTP($host, $port);
-    if (!$verify->login($user, PublicKeyLoader::load($priv))) {
-        throw new RuntimeException('Key login verification FAILED — left .env on password auth.');
+    // --- 4. verify key-only login (only if we think it's installed) ---
+    $keyVerified = false;
+    if ($installed) {
+        $verify = new SFTP($host, $port);
+        $keyVerified = (bool) $verify->login($user, PublicKeyLoader::load($priv));
+        echo $keyVerified ? "Key-based login verified.\n" : "Installed, but key login did not verify.\n";
     }
-    echo "Key-based login verified.\n";
 
     // --- 5. update .env ---
     $envPath = $root . '/.env';
-    if (is_file($envPath)) {
-        set_env($envPath, 'SFTP_HOST', $host);
-        set_env($envPath, 'SFTP_PORT', (string) $port);
-        set_env($envPath, 'SFTP_USER', $user);
-        set_env($envPath, 'SFTP_PRIVATE_KEY_FILE', $keyFile);
-        set_env($envPath, 'SFTP_FINGERPRINT', $fingerprint);
-        set_env($envPath, 'SFTP_PASS', '');
-        echo "Updated .env (key auth; SFTP_PASS cleared).\n";
-    } else {
-        echo "No .env found — add SFTP_PRIVATE_KEY_FILE={$keyFile} and SFTP_FINGERPRINT={$fingerprint} yourself.\n";
+    $writeEnv = static function (array $kv) use ($envPath): bool {
+        if (!is_file($envPath)) {
+            return false;
+        }
+        foreach ($kv as $k => $v) {
+            set_env($envPath, $k, $v);
+        }
+        return true;
+    };
+
+    if ($keyVerified) {
+        $ok = $writeEnv([
+            'SFTP_HOST' => $host, 'SFTP_PORT' => (string) $port, 'SFTP_USER' => $user,
+            'SFTP_PRIVATE_KEY_FILE' => $keyFile, 'SFTP_FINGERPRINT' => $fingerprint, 'SFTP_PASS' => '',
+        ]);
+        echo $ok
+            ? "Updated .env — key auth enabled, SFTP_PASS cleared.\n"
+            : "No .env found — set SFTP_PRIVATE_KEY_FILE={$keyFile} and SFTP_FINGERPRINT={$fingerprint}.\n";
+        echo "\nDone. Test with:  php bin/fetch_feeds.php --dry-run\n";
+        exit(0);
     }
 
-    echo "\nDone. Test with:  php bin/fetch_feeds.php --dry-run\n";
+    // Could not install the key automatically (SFTP-only/chrooted server, or key
+    // management is elsewhere). Configure PASSWORD auth so fetching works now,
+    // record the fingerprint, and print the key for manual install.
+    $envOk = $writeEnv([
+        'SFTP_HOST' => $host, 'SFTP_PORT' => (string) $port, 'SFTP_USER' => $user,
+        'SFTP_FINGERPRINT' => $fingerprint, 'SFTP_PASS' => $password, 'SFTP_PRIVATE_KEY_FILE' => '',
+    ]);
+    if (!$envOk) {
+        fwrite(STDOUT, "\nNo .env found at {$envPath} — run `cp .env.example .env` first, or set the SFTP_* values yourself.\n");
+    }
+    fwrite(STDOUT, "\n");
+    fwrite(STDOUT, "Could not install the key automatically — the server's home isn't writable over SFTP\n");
+    fwrite(STDOUT, "and SSH exec isn't available (typical for SFTP-only / chrooted accounts).\n\n");
+    fwrite(STDOUT, ".env was set to PASSWORD auth (host/port/user/password + verified host fingerprint),\n");
+    fwrite(STDOUT, "so 'php bin/fetch_feeds.php' works now. To switch to key auth, ask the SFTP admin to\n");
+    fwrite(STDOUT, "add this public key to the account's authorized_keys, then re-run this script:\n\n");
+    fwrite(STDOUT, $pub . "\n\n");
+    fwrite(STDOUT, "(public key also saved at {$keyFile}.pub)\n");
+    exit(0);
 } catch (\Throwable $e) {
     fwrite(STDERR, 'SFTP key setup failed: ' . $e->getMessage() . "\n");
     if (isset($pub)) {
-        fwrite(STDERR, "\nIf automated install failed, add this public key to the server's authorized_keys manually:\n{$pub}\n");
+        fwrite(STDERR, "\nPublic key (install manually if needed):\n{$pub}\n");
     }
     exit(1);
+}
+
+/** Append the public key via SFTP write of ~/.ssh/authorized_keys. Returns success. */
+function install_via_sftp(SFTP $sftp, string $pub): bool
+{
+    try {
+        if (!$sftp->is_dir('.ssh') && !$sftp->mkdir('.ssh')) {
+            return false;
+        }
+        @$sftp->chmod(0700, '.ssh');
+        $existing = $sftp->file_exists('.ssh/authorized_keys') ? (string) $sftp->get('.ssh/authorized_keys') : '';
+        if (str_contains($existing, $pub)) {
+            echo "Public key already present in authorized_keys (SFTP).\n";
+            return true;
+        }
+        $merged = ($existing === '' ? '' : rtrim($existing, "\n") . "\n") . $pub . "\n";
+        if ($sftp->put('.ssh/authorized_keys', $merged) === false) {
+            return false;
+        }
+        @$sftp->chmod(0600, '.ssh/authorized_keys');
+        echo "Installed public key via SFTP (~/.ssh/authorized_keys).\n";
+        return true;
+    } catch (\Throwable) {
+        return false;
+    }
+}
+
+/** Append the public key by running a shell command over SSH. Returns success. */
+function install_via_exec(string $host, int $port, string $user, string $password, string $pub): bool
+{
+    if (!class_exists(\phpseclib3\Net\SSH2::class)) {
+        return false;
+    }
+    try {
+        $ssh = new \phpseclib3\Net\SSH2($host, $port);
+        if (!$ssh->login($user, $password)) {
+            return false;
+        }
+        $k = str_replace("'", "'\\''", $pub); // single-quote-safe
+        $cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+            . "touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && "
+            . "(grep -qxF '{$k}' ~/.ssh/authorized_keys || printf '%s\\n' '{$k}' >> ~/.ssh/authorized_keys) && echo IDM_OK";
+        $out = (string) $ssh->exec($cmd);
+        if (str_contains($out, 'IDM_OK')) {
+            echo "Installed public key via SSH exec.\n";
+            return true;
+        }
+        return false;
+    } catch (\Throwable) {
+        return false;
+    }
 }
 
 // ---------------------------------------------------------------------------
