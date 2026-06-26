@@ -132,6 +132,13 @@ ON DUPLICATE KEY UPDATE
 `person_id` is filled automatically by migration `0004`'s triggers, so the row
 links to the golden record immediately.
 
+**Freshness / staleness.** `last_sync_at` drives the staleness indicators:
+the dashboard flags **"OneSync hasn't run"** (no rows) or a stale write-back, and
+each person's destination card shows a **stale** marker when its `last_sync_at`
+is older than `SYNC_STALE_HOURS` (default 26h). Always send a current
+`last_sync_at` so the freshness reads correctly. Stale input feeds are flagged
+separately via the import timestamps (`FEED_STALE_HOURS`).
+
 ---
 
 ## 4. (Optional) WRITE-BACK — event history: table `account_sync_event`

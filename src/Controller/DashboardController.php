@@ -22,11 +22,33 @@ final class DashboardController extends Controller
 
     public function index(): string
     {
+        $feeds = $this->dash->feeds();
+        $syncHealth = $this->dash->syncHealth();
+
         return $this->render('dashboard/index', [
             'kpis'        => $this->dash->kpis(),
             'activity'    => $this->dash->recentActivity(),
-            'feeds'       => $this->dash->feeds(),
+            'feeds'       => $feeds,
             'failedSyncs' => $this->dash->failedSyncs(),
+            'syncHealth'  => $syncHealth,
+            'alerts'      => $this->buildAlerts($syncHealth, $feeds),
         ], 'home', 'Dashboard', 'Dashboard — TCS Identity Master');
+    }
+
+    /** Staleness banners: OneSync not run / write-back stale, and stale feeds. */
+    private function buildAlerts(array $syncHealth, array $feeds): array
+    {
+        $alerts = [];
+        if ($syncHealth['state'] === 'never') {
+            $alerts[] = 'OneSync has not written any provisioning status yet.';
+        } elseif ($syncHealth['state'] === 'stale') {
+            $alerts[] = "OneSync write-back looks stale — last status {$syncHealth['label']} (expected within {$syncHealth['staleHours']}h). Has the sync run?";
+        }
+        foreach ($feeds as $f) {
+            if (($f['fresh_state'] ?? '') === 'stale') {
+                $alerts[] = "{$f['label']} feed is stale — last import {$f['fresh_label']}.";
+            }
+        }
+        return $alerts;
     }
 }

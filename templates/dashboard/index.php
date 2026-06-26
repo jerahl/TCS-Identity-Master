@@ -1,14 +1,17 @@
 <?php
-/** @var array $kpis @var array $activity @var array $feeds @var array $failedSyncs */
+/** @var array $kpis @var array $activity @var array $feeds @var array $failedSyncs @var array $syncHealth @var array $alerts */
 use App\View\Present;
 
 $k = $kpis;
+$sh = $syncHealth ?? ['state' => 'never', 'label' => 'never', 'staleAccounts' => 0];
+$syncTone = ['fresh' => 'ok', 'stale' => 'warn', 'never' => 'alert'][$sh['state']] ?? 'alert';
 $cards = [
     ['label' => 'Pending review', 'value' => $k['pendingReview'], 'sub' => 'awaiting a decision', 'tone' => $k['pendingReview'] > 0 ? 'warn' : 'ok', 'href' => url('/review')],
     ['label' => 'Pending activation', 'value' => $k['pendingActivation'], 'sub' => 'not yet provisioned', 'tone' => 'amber', 'href' => url('/people', ['status' => 'pending'])],
     ['label' => 'Missing username', 'value' => $k['missingUsername'], 'sub' => 'no account yet', 'tone' => $k['missingUsername'] > 0 ? 'warn' : 'ok', 'href' => url('/people', ['missing' => 1])],
     ['label' => 'Unmapped values', 'value' => $k['unmapped'], 'sub' => 'school + ethnicity', 'tone' => $k['unmapped'] > 0 ? 'warn' : 'ok', 'href' => url('/reference')],
     ['label' => 'Failed syncs', 'value' => $k['failedSync'], 'sub' => 'last sync failed', 'tone' => $k['failedSync'] > 0 ? 'alert' : 'ok', 'href' => url('/dashboard') . '#failed'],
+    ['label' => 'OneSync write-back', 'value' => $sh['label'], 'sub' => $sh['state'] === 'never' ? 'never run' : ($sh['staleAccounts'] . ' stale account' . ($sh['staleAccounts'] === 1 ? '' : 's')), 'tone' => $syncTone, 'href' => url('/dashboard') . '#failed'],
     ['label' => 'Last feed run', 'value' => $k['lastFeed'] ? ucfirst($k['lastFeed']['system']) : '—', 'sub' => $k['lastFeed'] ? ($k['lastFeed']['status'] . ' · ' . $k['lastFeed']['started_at']) : 'no imports yet', 'tone' => 'ok', 'href' => url('/import')],
 ];
 ?>
@@ -18,6 +21,13 @@ $cards = [
     <p>One golden record per person across NextGen, PowerSchool &amp; manual entry — synced to AD and Google by OneSync.</p>
   </div>
 </div>
+
+<?php foreach (($alerts ?? []) as $alert): ?>
+  <div class="notice notice--warn" style="margin-bottom:14px;">
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="#9A6A12" stroke-width="1.7" style="flex:0 0 17px; margin-top:1px;"><path d="M9 1.5L17 15.5H1L9 1.5z" stroke-linejoin="round"/><path d="M9 7v3.5" stroke-linecap="round"/><circle cx="9" cy="12.7" r=".6" fill="#9A6A12" stroke="none"/></svg>
+    <div><?= e($alert) ?></div>
+  </div>
+<?php endforeach; ?>
 
 <div class="kpi-grid">
   <?php foreach ($cards as $c): ?>
@@ -66,10 +76,13 @@ $cards = [
       <div class="feed">
         <div class="feed__head">
           <span style="font-weight:600; font-size:13px;"><?= e($f['label'] ?? ucfirst($f['system'])) ?></span>
-          <span class="badge badge--<?= e($mod === 'ok' ? 'active' : ($mod === 'fail' ? 'terminated' : 'pending')) ?>"><?= e($f['status']) ?></span>
+          <span>
+            <?php if (($f['fresh_state'] ?? '') === 'stale'): ?><span class="sync-badge sync-badge--fail" style="margin-right:4px;">stale</span><?php endif; ?>
+            <span class="badge badge--<?= e($mod === 'ok' ? 'active' : ($mod === 'fail' ? 'terminated' : 'pending')) ?>"><?= e($f['status']) ?></span>
+          </span>
         </div>
         <div class="feed__meta mono">
-          <?= e($f['started_at']) ?> · <?= e((int) $f['row_count']) ?> rows<?php if ((int) $f['review_count'] > 0): ?> · <a href="<?= e(url('/review')) ?>" style="color:#B45309;"><?= e((int) $f['review_count']) ?> to review</a><?php endif; ?>
+          <?= e($f['fresh_label'] ?? $f['started_at']) ?> · <?= e((int) $f['row_count']) ?> rows<?php if ((int) $f['review_count'] > 0): ?> · <a href="<?= e(url('/review')) ?>" style="color:#B45309;"><?= e((int) $f['review_count']) ?> to review</a><?php endif; ?>
         </div>
       </div>
       <?php endforeach; ?>

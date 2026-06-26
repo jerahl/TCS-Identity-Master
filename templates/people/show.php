@@ -154,8 +154,11 @@ $eventTitle = [
               <span class="sync-card__dest"><?= e($sy['label'] ?? $sy['destination']) ?></span>
               <span class="sync-badge sync-badge--<?= e($mod) ?>"><?= e($reported ? $dash($sy['last_status']) : 'Not synced') ?></span>
             </div>
-            <?php if ($reported): ?>
-              <div class="sync-card__meta"><?= e($dash($sy['last_action'])) ?> · <?= e($dash($sy['last_sync_at'])) ?></div>
+            <?php if ($reported): $stale = ($sy['fresh_state'] ?? '') === 'stale'; ?>
+              <div class="sync-card__meta">
+                <?= e($dash($sy['last_action'])) ?> · <?= e($sy['fresh_label'] ?? $dash($sy['last_sync_at'])) ?>
+                <?php if ($stale): ?><span class="sync-badge sync-badge--fail" style="margin-left:6px;">stale</span><?php endif; ?>
+              </div>
               <?php if ($mod === 'fail' && $sy['message']): ?><div class="sync-card__msg"><?= e($sy['message']) ?></div><?php endif; ?>
             <?php else: ?>
               <div class="sync-card__meta">awaiting OneSync</div>

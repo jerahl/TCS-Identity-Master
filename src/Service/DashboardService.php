@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Config;
 use App\Db;
 use App\Import\ImportSource;
+use App\Sync\Freshness;
 use PDO;
 
 /**
@@ -73,6 +75,8 @@ final class DashboardService
     /** Most recent batch per import source (the per-source feed breakdown). */
     public function feeds(): array
     {
+        $now = time();
+        $staleHours = max(1, (int) Config::get('FEED_STALE_HOURS', '26'));
         $out = [];
         $stmt = $this->db->prepare(
             'SELECT system, started_at, finished_at, row_count, status, message,
@@ -85,10 +89,43 @@ final class DashboardService
             $row = $stmt->fetch();
             if ($row !== false) {
                 $row['label'] = $source->label;
+                $fresh = Freshness::classify($row['started_at'] ?? null, $staleHours, $now);
+                $row['fresh_state'] = $fresh['state'];
+                $row['fresh_label'] = $fresh['label'];
                 $out[] = $row;
             }
         }
         return $out;
+    }
+
+    /**
+     * OneSync write-back freshness: when did OneSync last report any status, and
+     * how many accounts are stale? Drives the "OneSync hasn't run" indicator.
+     *
+     * @return array{state:string,label:string,at:?string,staleAccounts:int,staleHours:int}
+     */
+    public function syncHealth(): array
+    {
+        $staleHours = max(1, (int) Config::get('SYNC_STALE_HOURS', '26'));
+        $lastAt = $this->db->query('SELECT MAX(last_sync_at) FROM account_sync_status')->fetchColumn();
+        $lastAt = $lastAt === false ? null : $lastAt;
+
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(*) FROM account_sync_status
+             WHERE last_sync_at IS NULL OR last_sync_at < (NOW() - INTERVAL :h HOUR)'
+        );
+        $stmt->bindValue(':h', $staleHours, PDO::PARAM_INT);
+        $stmt->execute();
+        $staleAccounts = (int) $stmt->fetchColumn();
+
+        $fresh = Freshness::classify($lastAt, $staleHours, time());
+        return [
+            'state' => $fresh['state'],
+            'label' => $fresh['label'],
+            'at' => $fresh['at'],
+            'staleAccounts' => $staleAccounts,
+            'staleHours' => $staleHours,
+        ];
     }
 
     /** Accounts whose last sync failed (the health rollup). */

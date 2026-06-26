@@ -9,7 +9,9 @@ use App\Import\NormalizedRow;
 use App\Import\PersonWriter;
 use App\Service\AuditService;
 use App\Support\Csrf;
+use App\Config;
 use App\Sync\Destinations;
+use App\Sync\Freshness;
 
 /**
  * People list + person detail (read), and manual Add person (editor+).
@@ -54,12 +56,27 @@ final class PersonController extends Controller
             'p'          => $person,
             'sourceIds'  => $this->people->sourceIds($id),
             'assignments' => $this->people->assignments($id),
-            'syncStatus' => Destinations::merge($this->people->syncStatus($id)),
+            'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
+
+    /** Tag each reported destination with how fresh its last sync is. */
+    private function annotateFreshness(array $rows): array
+    {
+        $staleHours = max(1, (int) Config::get('SYNC_STALE_HOURS', '26'));
+        $now = time();
+        foreach ($rows as &$r) {
+            if (!empty($r['reported'])) {
+                $f = Freshness::classify($r['last_sync_at'] ?? null, $staleHours, $now);
+                $r['fresh_state'] = $f['state'];
+                $r['fresh_label'] = $f['label'];
+            }
+        }
+        return $rows;
+    }
 
     /** Manual add form (for subs/contractors/interns not in HR). */
     public function addForm(array $old = [], string $error = ''): string
