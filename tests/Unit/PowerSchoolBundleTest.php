@@ -47,6 +47,29 @@ final class PowerSchoolBundleTest extends TestCase
         self::assertCount(1, array_filter($ps->schools, static fn($s) => $s['primary']));
     }
 
+    public function testSelectByKindPrefersCanonicalFilename(): void
+    {
+        // MultipleID.csv also has TEACHERS.* columns; TeachersID.csv must win.
+        $teacherHeader = ['TEACHERS.ID' => '', 'TEACHERS.Users_DCID' => ''];
+        $headers = [
+            '/feeds/ps/Users_export.csv'      => ['USERS.dcid' => ''],
+            '/feeds/ps/MultipleID.csv'        => $teacherHeader,
+            '/feeds/ps/TeachersID.csv'        => $teacherHeader,
+            '/feeds/ps/SchoolStaff_export.csv' => ['SCHOOLSTAFF.dcid' => ''],
+        ];
+        $pick = PowerSchoolBundle::selectByKind($headers);
+
+        self::assertSame('/feeds/ps/TeachersID.csv', $pick['teachers'], 'TeachersID beats MultipleID');
+        self::assertSame('/feeds/ps/Users_export.csv', $pick['users']);
+        self::assertSame('/feeds/ps/SchoolStaff_export.csv', $pick['schoolstaff']);
+    }
+
+    public function testSelectByKindFallsBackToFirstWhenNoNameMatch(): void
+    {
+        $headers = ['/x/odd_name.csv' => ['TEACHERS.ID' => '']];
+        self::assertSame('/x/odd_name.csv', PowerSchoolBundle::selectByKind($headers)['teachers']);
+    }
+
     public function testFallsBackToTeacherNamesAndFirstPrimary(): void
     {
         // No USERS row, no HomeSchoolId -> names from TEACHERS, first school primary.
