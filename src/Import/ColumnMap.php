@@ -33,13 +33,21 @@ final class ColumnMap
             'hire_date'   => 'Hire Date',
             'end_date'    => 'Position End Date',
         ],
-        // PowerSchool extract is HEADERLESS — values are 0-based COLUMN INDEXES,
-        // not header names (see ImportSource: 'powerschool' is headerless).
-        // Discover the layout with:
-        //   php bin/feed_headers.php --system=powerschool --file=<file>
-        // then set the indexes below. PLACEHOLDER — confirm before relying on it.
+        // PowerSchool extract (USERS view). source_key = dcid (stable PS id);
+        // TeacherNumber is the NextGen Employee Number, so PS rows auto-link to
+        // the same person as NextGen. LoginID/Email_Addr are NOT imported here —
+        // OneSync owns username/email.
         'powerschool' => [
-            'source_key'  => 0,
+            'source_key'  => 'USERS.dcid',
+            'employee_id' => 'USERS.TeacherNumber',
+            'first'       => 'USERS.First_Name',
+            'middle'      => 'USERS.Middle_Name',
+            'last'        => 'USERS.Last_Name',
+            'school_code' => 'USERS.HomeSchoolId',
+            'person_type' => 'U_DEF_EXT_USERS.staff_classification',
+            'title'       => 'USERS.Title',
+            'hire_date'   => 'S_USR_X.hiredate',
+            'end_date'    => 'S_AL_USR_X.exit_date',
         ],
         // Intern roster (e.g. university placements). No employee id; school code
         // is a PowerSchool SchoolID. person_type is forced to 'intern'.

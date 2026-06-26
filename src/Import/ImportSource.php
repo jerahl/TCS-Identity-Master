@@ -35,7 +35,7 @@ final class ImportSource
     /** @var array<string,array<string,mixed>> */
     private const DEFS = [
         'nextgen'     => ['label' => 'NextGen (HR)',          'batch' => 'nextgen',     'crosswalk' => 'nextgen',     'alias' => 'nextgen',     'type' => null,        'map' => 'nextgen',     'headerless' => false],
-        'powerschool' => ['label' => 'PowerSchool',           'batch' => 'powerschool', 'crosswalk' => 'powerschool', 'alias' => 'powerschool', 'type' => null,        'map' => 'powerschool', 'headerless' => true],
+        'powerschool' => ['label' => 'PowerSchool',           'batch' => 'powerschool', 'crosswalk' => 'powerschool', 'alias' => 'powerschool', 'type' => null,        'map' => 'powerschool', 'headerless' => false],
         'intern'      => ['label' => 'Intern',                'batch' => 'intern',      'crosswalk' => 'intern_csv',  'alias' => 'powerschool', 'type' => 'intern',     'map' => 'intern',      'headerless' => false],
         'sub'         => ['label' => 'Long-term substitute',  'batch' => 'sub',         'crosswalk' => 'sub',         'alias' => 'powerschool', 'type' => 'sub',        'map' => 'sub',         'headerless' => false],
         'contractor'  => ['label' => 'Contract employee',     'batch' => 'contractor',  'crosswalk' => 'contractor',  'alias' => 'powerschool', 'type' => 'contractor', 'map' => 'contractor',  'headerless' => false],

@@ -56,6 +56,25 @@ final class NormalizerTest extends TestCase
         self::assertCount(2, $row->warnings);
     }
 
+    public function testPowerSchoolHeaderMapping(): void
+    {
+        // PowerSchool USERS extract headers; TeacherNumber is the NextGen id.
+        $map = ColumnMap::for('powerschool');
+        $raw = [
+            'USERS.dcid' => '1001', 'USERS.TeacherNumber' => '15241',
+            'USERS.First_Name' => 'Jennifer', 'USERS.Last_Name' => 'Marsh',
+            'USERS.HomeSchoolId' => '401', 'USERS.LoginID' => 'jmarsh',
+        ];
+        // alias group for powerschool resolves HomeSchoolId here.
+        $norm = new Normalizer(['powerschool' => ['401' => 1]], []);
+        $row = $norm->normalize($raw, 'powerschool', $map, 'powerschool', 'powerschool', null);
+
+        self::assertSame('1001', $row->sourceKey, 'source key = dcid');
+        self::assertSame('15241', $row->employeeId, 'employee id = TeacherNumber (links to NextGen)');
+        self::assertSame('Jennifer', $row->firstName);
+        self::assertSame(1, $row->schoolId);
+    }
+
     public function testDateParsingVariants(): void
     {
         self::assertSame('1990-05-05', Normalizer::parseDate('1990-05-05'));

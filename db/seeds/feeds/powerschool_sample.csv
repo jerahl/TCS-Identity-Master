@@ -1,3 +1,3 @@
-PSID,TeacherNumber,First_Name,Middle_Name,Last_Name,Preferred_Name,DOB,Gender,Ethnicity,SchoolID,StaffType,Title,JobCode,FTE,HireDate,EndDate,Primary
-PST15241,15241,Jennifer,Sue,Marsh,Jen,1986-04-12,Female,White,4010,Faculty,Teacher,TCH,1.0,2014-08-18,,Y
-PST16100,16100,Brandon,T,Nguyen,,1995-03-22,Male,Asian,4020,Faculty,Teacher,TCH,1.0,2026-08-10,,Y
+USERS.dcid,USERS.Email_Addr,USERS.First_Name,USERS.HomeSchoolId,USERS.Last_Name,USERS.LoginID,USERS.Middle_Name,USERS.TeacherNumber,USERS.Title,U_DEF_EXT_USERS.job_title,U_DEF_EXT_USERS.staff_classification,S_USR_X.hiredate,S_AL_USR_X.exit_date
+1001,jmarsh@tcs.k12.al.us,Jennifer,4010,Marsh,jmarsh,Sue,15241,Teacher,Mathematics Teacher,Certified,08/18/2014,
+1002,bnguyen@tcs.k12.al.us,Brandon,4020,Nguyen,bnguyen,,16100,Teacher,Science Teacher,Certified,08/10/2026,
