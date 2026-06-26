@@ -97,6 +97,44 @@ final class PhpseclibSftpClient implements SftpClient
         return $out;
     }
 
+    public function listFilesWithMeta(string $dir): array
+    {
+        $sftp = $this->client();
+        $list = $sftp->rawlist($dir);
+
+        // Same Serv-U realpath retry as listFiles().
+        if ($list === false) {
+            $serverError = trim((string) $sftp->getLastSFTPError());
+            $real = $sftp->realpath($dir);
+            if ($real !== false && $real !== $dir) {
+                $list = $sftp->rawlist($real);
+            }
+            if ($list === false) {
+                $hint = $serverError !== '' ? $serverError : 'no such directory, or permission denied';
+                throw new RuntimeException("Cannot list SFTP directory '{$dir}': {$hint}. "
+                    . 'Verify the exact path/case (try: php bin/sftp_ls.php --dir=/).');
+            }
+        }
+
+        $out = [];
+        foreach ($list as $key => $attr) {
+            $a = (array) $attr;
+            $name = (string) ($a['filename'] ?? $key);
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+            if (($a['type'] ?? null) === 2) { // NET_SFTP_TYPE_DIRECTORY
+                continue;
+            }
+            $out[] = [
+                'name'  => $name,
+                'size'  => isset($a['size']) ? (int) $a['size'] : null,
+                'mtime' => isset($a['mtime']) ? (int) $a['mtime'] : null,
+            ];
+        }
+        return $out;
+    }
+
     public function download(string $remotePath, string $localPath): int
     {
         $sftp = $this->client();

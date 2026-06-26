@@ -26,40 +26,89 @@ final class FeedFetcherTest extends TestCase
         @rmdir($this->tmp);
     }
 
+    /** @return array<int,array{name:string,size:?int,mtime:?int}> */
+    private function meta(array $namesToMtime): array
+    {
+        $out = [];
+        foreach ($namesToMtime as $name => $mtime) {
+            $out[] = ['name' => $name, 'size' => null, 'mtime' => $mtime];
+        }
+        return $out;
+    }
+
+    /** @return string[] just the selected names, for convenient asserting */
+    private function names(array $plan): array
+    {
+        return array_map(static fn($f) => $f['name'], $plan);
+    }
+
     public function testPlanFiltersPatternAndAlreadyFetched(): void
     {
-        $remote = ['staff_20260625.csv', 'staff_20260626.csv', 'README.txt', 'old.CSV'];
-        $new = FeedFetcher::plan($remote, ['staff_20260625.csv'], '*.csv');
+        $remote = $this->meta([
+            'staff_20260625.csv' => 1000,
+            'staff_20260626.csv' => 1000,
+            'README.txt' => 1000,
+            'old.CSV' => 1000,
+        ]);
+        $new = $this->names(FeedFetcher::plan($remote, ['staff_20260625.csv' => 1000], '*.csv'));
 
         self::assertContains('staff_20260626.csv', $new);
         self::assertContains('old.CSV', $new, 'pattern match is case-insensitive');
-        self::assertNotContains('staff_20260625.csv', $new, 'already fetched skipped');
+        self::assertNotContains('staff_20260625.csv', $new, 'already fetched, unchanged, skipped');
         self::assertNotContains('README.txt', $new, 'non-csv skipped');
     }
 
-    public function testFetchSourceDownloadsOnlyNewFiles(): void
+    public function testPlanRefetchesWhenRemoteIsNewer(): void
     {
-        $client = new InMemorySftpClient([
-            '/outbound/nextgen' => [
+        // Same name overwritten in place with a newer mtime -> re-fetch.
+        $remote = $this->meta(['users.csv' => 2000]);
+        self::assertSame(['users.csv'], $this->names(FeedFetcher::plan($remote, ['users.csv' => 1000])));
+    }
+
+    public function testPlanSkipsWhenRemoteNotNewer(): void
+    {
+        // Unchanged (same mtime) or older -> skip.
+        $remote = $this->meta(['users.csv' => 1000]);
+        self::assertSame([], FeedFetcher::plan($remote, ['users.csv' => 1000]));
+        $older = $this->meta(['users.csv' => 500]);
+        self::assertSame([], FeedFetcher::plan($older, ['users.csv' => 1000]));
+    }
+
+    public function testPlanUnknownMtimeFallsBackToNameOnce(): void
+    {
+        // Server reports no mtime: fetch the first time, then never again.
+        $remote = $this->meta(['users.csv' => null]);
+        self::assertSame(['users.csv'], $this->names(FeedFetcher::plan($remote, [])));
+        self::assertSame([], FeedFetcher::plan($remote, ['users.csv' => null]));
+    }
+
+    public function testFetchSourceDownloadsNewAndUpdatedFiles(): void
+    {
+        $client = new InMemorySftpClient(
+            ['/outbound/nextgen' => [
                 'a.csv' => "EmployeeID\n1",
                 'b.csv' => "EmployeeID\n2",
                 'notes.txt' => 'ignore',
-            ],
-        ]);
+            ]],
+            ['/outbound/nextgen' => ['a.csv' => 2000, 'b.csv' => 1000]],
+        );
         $fetcher = new FeedFetcher($client);
 
-        $res = $fetcher->fetchSource('/outbound/nextgen', '*.csv', $this->tmp, ['a.csv'], false);
+        // a.csv already fetched at mtime 1000 but remote is now 2000 -> re-download.
+        // b.csv already fetched at its current mtime -> skip.
+        $res = $fetcher->fetchSource('/outbound/nextgen', '*.csv', $this->tmp, ['a.csv' => 1000, 'b.csv' => 1000], false);
 
-        self::assertCount(1, $res, 'only b.csv is new');
-        self::assertSame('b.csv', $res[0]['name']);
+        self::assertCount(1, $res, 'only the updated a.csv');
+        self::assertSame('a.csv', $res[0]['name']);
+        self::assertSame(2000, $res[0]['mtime']);
         self::assertTrue($res[0]['downloaded']);
-        self::assertFileExists($this->tmp . '/b.csv');
-        self::assertFileDoesNotExist($this->tmp . '/a.csv');
+        self::assertFileExists($this->tmp . '/a.csv');
+        self::assertFileDoesNotExist($this->tmp . '/b.csv');
     }
 
     public function testDryRunDownloadsNothing(): void
     {
-        $client = new InMemorySftpClient(['/d' => ['x.csv' => 'EmployeeID']]);
+        $client = new InMemorySftpClient(['/d' => ['x.csv' => 'EmployeeID']], ['/d' => ['x.csv' => 1000]]);
         $res = (new FeedFetcher($client))->fetchSource('/d', '*.csv', $this->tmp, [], true);
 
         self::assertCount(1, $res);

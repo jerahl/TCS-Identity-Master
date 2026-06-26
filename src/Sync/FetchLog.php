@@ -20,24 +20,35 @@ final class FetchLog
         $this->db = $db ?? Db::connect(Db::ROLE_APP);
     }
 
-    /** @return string[] remote names already fetched for this source */
-    public function seen(string $system): array
+    /**
+     * Remote names already fetched for this source, mapped to the last-seen remote
+     * mtime (null when the server didn't report one). The fetcher uses this to
+     * re-download files that were overwritten in place with a newer mtime.
+     *
+     * @return array<string,?int> remote_name => remote_mtime
+     */
+    public function fetchedMtimes(string $system): array
     {
-        $stmt = $this->db->prepare('SELECT remote_name FROM feed_fetch_log WHERE system = :s');
+        $stmt = $this->db->prepare('SELECT remote_name, remote_mtime FROM feed_fetch_log WHERE system = :s');
         $stmt->execute([':s' => $system]);
-        return $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        $out = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $out[$r['remote_name']] = $r['remote_mtime'] !== null ? (int) $r['remote_mtime'] : null;
+        }
+        return $out;
     }
 
     /** Record a downloaded file; returns the row id (idempotent on (system, name)). */
-    public function record(string $system, string $name, ?string $localPath, ?int $size): int
+    public function record(string $system, string $name, ?string $localPath, ?int $size, ?int $mtime = null): int
     {
         $stmt = $this->db->prepare(
-            'INSERT INTO feed_fetch_log (system, remote_name, local_path, size_bytes, status)
-             VALUES (:s, :n, :p, :z, \'downloaded\')
+            'INSERT INTO feed_fetch_log (system, remote_name, local_path, size_bytes, remote_mtime, status)
+             VALUES (:s, :n, :p, :z, :m, \'downloaded\')
              ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), local_path = VALUES(local_path),
-                                     size_bytes = VALUES(size_bytes), fetched_at = CURRENT_TIMESTAMP'
+                                     size_bytes = VALUES(size_bytes), remote_mtime = VALUES(remote_mtime),
+                                     status = \'downloaded\', message = NULL, fetched_at = CURRENT_TIMESTAMP'
         );
-        $stmt->execute([':s' => $system, ':n' => $name, ':p' => $localPath, ':z' => $size]);
+        $stmt->execute([':s' => $system, ':n' => $name, ':p' => $localPath, ':z' => $size, ':m' => $mtime]);
         return (int) $this->db->lastInsertId();
     }
 

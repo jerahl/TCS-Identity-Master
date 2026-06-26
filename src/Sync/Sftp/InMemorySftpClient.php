@@ -12,8 +12,11 @@ use RuntimeException;
  */
 final class InMemorySftpClient implements SftpClient
 {
-    /** @param array<string,array<string,string>> $tree dir => [name => contents] */
-    public function __construct(private array $tree = [])
+    /**
+     * @param array<string,array<string,string>> $tree   dir => [name => contents]
+     * @param array<string,array<string,int>>    $mtimes dir => [name => unix mtime]
+     */
+    public function __construct(private array $tree = [], private array $mtimes = [])
     {
     }
 
@@ -26,6 +29,20 @@ final class InMemorySftpClient implements SftpClient
     {
         $dir = rtrim($dir, '/');
         return array_keys($this->tree[$dir] ?? []);
+    }
+
+    public function listFilesWithMeta(string $dir): array
+    {
+        $dir = rtrim($dir, '/');
+        $out = [];
+        foreach ($this->tree[$dir] ?? [] as $name => $contents) {
+            $out[] = [
+                'name'  => $name,
+                'size'  => strlen($contents),
+                'mtime' => $this->mtimes[$dir][$name] ?? null,
+            ];
+        }
+        return $out;
     }
 
     public function download(string $remotePath, string $localPath): int

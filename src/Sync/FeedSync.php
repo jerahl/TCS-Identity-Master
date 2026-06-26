@@ -97,7 +97,7 @@ final class FeedSync
             $pattern = (string) Config::get('SFTP_' . strtoupper($key) . '_PATTERN', '*.csv');
 
             try {
-                $files = $this->fetcher->fetchSource($remoteDir, $pattern, $localDir, $this->log->seen($key), $dryRun);
+                $files = $this->fetcher->fetchSource($remoteDir, $pattern, $localDir, $this->log->fetchedMtimes($key), $dryRun);
             } catch (\Throwable $e) {
                 $sources[] = ['key' => $key, 'error' => $e->getMessage(), 'files' => []];
                 $totals['errors']++;
@@ -111,7 +111,7 @@ final class FeedSync
                 $row = ['name' => $f['name'], 'imported' => false, 'reason' => $dryRun ? 'dry-run' : ''];
 
                 if (!$dryRun) {
-                    $logId = $this->log->record($key, $f['name'], $f['local'], $f['size']);
+                    $logId = $this->log->record($key, $f['name'], $f['local'], $f['size'], $f['mtime']);
                     if ($doImport) {
                         try {
                             $res = (new Importer())->run($key, $f['local'], null, false, $actor, $f['name']);

@@ -116,8 +116,11 @@ matches but writes nothing.
 server (phpseclib — no PECL needed), then import them. Configure `SFTP_HOST` /
 `SFTP_USER`, a key (`SFTP_PRIVATE_KEY_FILE`) or `SFTP_PASS`, the host
 `SFTP_FINGERPRINT` (verified), and a remote dir per source (`SFTP_<SOURCE>_DIR`);
-files land in `FEED_<SOURCE>_DIR`. Already-fetched files are skipped via
-`feed_fetch_log` (requires migration `0005`).
+files land in `FEED_<SOURCE>_DIR`. Already-fetched files are tracked in
+`feed_fetch_log` (requires migrations `0005`+`0006`). The district overwrites each
+CSV in place, so dedupe is by **remote modification time**: a file is re-downloaded
+and re-imported when its mtime is newer than the last fetch (not just when the name
+is new). If the server reports no mtime, it falls back to fetch-once by name.
 
 ```sh
 php bin/fetch_feeds.php                 # fetch + import all configured sources
