@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace App\Sync;
 
 use App\Config;
+use App\Import\Csv;
 use App\Import\Importer;
 use App\Import\ImportSource;
+use App\Import\PowerSchoolBundle;
+use App\Import\PowerSchoolImporter;
 use App\Sync\Sftp\PhpseclibSftpClient;
 use App\Sync\Sftp\SftpClient;
 use RuntimeException;
@@ -104,7 +107,11 @@ final class FeedSync
                 continue;
             }
 
+            // PowerSchool is three joined files — download all, import once.
+            $isPowerSchool = $key === 'powerschool';
+
             $entry = ['key' => $key, 'downloaded' => 0, 'imported' => 0, 'errors' => 0, 'files' => []];
+            $psLogIds = [];
             foreach ($files as $f) {
                 $totals['downloaded'] += $f['downloaded'] ? 1 : 0;
                 $entry['downloaded'] += $f['downloaded'] ? 1 : 0;
@@ -112,7 +119,9 @@ final class FeedSync
 
                 if (!$dryRun) {
                     $logId = $this->log->record($key, $f['name'], $f['local'], $f['size'], $f['mtime']);
-                    if ($doImport) {
+                    if ($isPowerSchool) {
+                        $psLogIds[] = $logId;            // combined import after the loop
+                    } elseif ($doImport) {
                         try {
                             $res = (new Importer())->run($key, $f['local'], null, false, $actor, $f['name']);
                             $this->log->markImported($logId, $res['batch_id']);
@@ -130,10 +139,70 @@ final class FeedSync
                 }
                 $entry['files'][] = $row;
             }
+
+            if ($isPowerSchool && $doImport && !$dryRun) {
+                $this->importPowerSchool($localDir, $actor, $psLogIds, $entry, $totals);
+            }
+
             $sources[] = $entry;
         }
 
         return ['dry_run' => $dryRun, 'imported_enabled' => $doImport, 'sources' => $sources, 'totals' => $totals];
+    }
+
+    /**
+     * Combined PowerSchool import: join the current USERS + TEACHERS + SCHOOLSTAFF
+     * files in $localDir (classified by header, so partial updates still pick up
+     * the other two) and run them through PowerSchoolImporter once.
+     *
+     * @param int[] $logIds feed_fetch_log rows for the files downloaded this run
+     * @param array<string,mixed> $entry  @param array<string,int> $totals
+     */
+    private function importPowerSchool(string $localDir, string $actor, array $logIds, array &$entry, array &$totals): void
+    {
+        if ($logIds === []) {
+            return; // nothing new downloaded
+        }
+        $found = ['users' => null, 'teachers' => null, 'schoolstaff' => null];
+        foreach (glob(rtrim($localDir, '/') . '/*.csv') ?: [] as $f) {
+            $rows = Csv::read($f);
+            if ($rows === []) {
+                continue;
+            }
+            $kind = PowerSchoolBundle::classify($rows[0]);
+            if ($kind !== null && $found[$kind] === null) {
+                $found[$kind] = $f;
+            }
+        }
+        $missing = array_keys(array_filter($found, static fn($v) => $v === null));
+        if ($missing !== []) {
+            $reason = 'waiting for all 3 PowerSchool files; missing: ' . implode(', ', $missing);
+            foreach ($logIds as $id) {
+                $this->log->markFailed($id, $reason);
+            }
+            $entry['errors']++;
+            $totals['errors']++;
+            $entry['files'][] = ['name' => '(combined)', 'imported' => false, 'reason' => $reason];
+            return;
+        }
+        try {
+            $res = (new PowerSchoolImporter())->run($found['users'], $found['teachers'], $found['schoolstaff'], false, $actor);
+            foreach ($logIds as $id) {
+                $this->log->markImported($id, $res['batch_id']);
+            }
+            $entry['imported'] += count($logIds);
+            $totals['imported'] += count($logIds);
+            $c = $res['counts'];
+            $entry['files'][] = ['name' => '(combined PowerSchool import)', 'imported' => true,
+                'reason' => "batch #{$res['batch_id']} · auto {$c['auto_match']} · new {$c['new']} · review {$c['needs_review']} · assignments {$c['assignments']}"];
+        } catch (\Throwable $e) {
+            foreach ($logIds as $id) {
+                $this->log->markFailed($id, $e->getMessage());
+            }
+            $entry['errors']++;
+            $totals['errors']++;
+            $entry['files'][] = ['name' => '(combined PowerSchool import)', 'imported' => false, 'reason' => 'import failed: ' . $e->getMessage()];
+        }
     }
 
     private function connect(): void

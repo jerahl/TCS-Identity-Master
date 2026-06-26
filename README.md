@@ -208,6 +208,31 @@ first *or* last name is in `IMPORT_EXCLUDE_NAMES` (comma-separated, default
 logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
 the maps to match the district's real export headers.
 
+**PowerSchool is three files.** PowerSchool exports as USERS + TEACHERS +
+SCHOOLSTAFF, joined on the user DCID (`PowerSchoolBundle::combine`):
+- **USERS** — one row per user (`USERS.dcid`): demographics, `HomeSchoolId`,
+  `Title`, `staff_classification`, `TeacherNumber`, hire/exit.
+- **TEACHERS** — one row per (user, school): `TEACHERS.ID` is the per-assignment
+  PS id AD mirrors as `T`+ID; `TEACHERS.Users_DCID` = `USERS.dcid`. A user with N
+  schools has N rows / N IDs — **all** are linked to the crosswalk.
+- **SCHOOLSTAFF** — one row per assignment (`SCHOOLSTAFF.dcid` = `TEACHERS.dcid`);
+  `SCHOOLSTAFF.SchoolID` is that assignment's school → one assignment per school,
+  primary = `HomeSchoolId`.
+
+Run it on a folder holding all three (auto-detected by header, any filename):
+
+```sh
+php bin/import_powerschool.php --dir=/var/idm/feeds/powerschool --dry-run
+php bin/import_powerschool.php --dir=/var/idm/feeds/powerschool
+# or explicit: --users=… --teachers=… --schoolstaff=…
+```
+
+`fetch_feeds.php` (and the **Pull from SFTP** button) pull all three from the
+PowerSchool SFTP dir and run the combined import once; a re-pull of any one file
+re-imports using the current trio. Each person auto-links to the NextGen record
+by `TeacherNumber`, and AD usernames (`bin/import_ad_usernames.php`) link by
+`TEACHERS.ID`.
+
 **Reset for a clean import test.** To wipe imported person data (person, source
 ids, assignments, staging/batches, sync status, lifecycle/audit) while preserving
 reference data (schools, aliases, ethnicity) and app login accounts:

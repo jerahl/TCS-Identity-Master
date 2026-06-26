@@ -55,6 +55,18 @@ final class Normalizer
         return $c === '' ? '0' : $c;
     }
 
+    /** Resolve a school code to school_id for an alias group (leading-zero tolerant). */
+    public function resolveSchool(string $aliasSystem, ?string $code): ?int
+    {
+        if ($code === null || trim($code) === '') {
+            return null;
+        }
+        $code = trim($code);
+        return $this->schoolAlias[$aliasSystem][$code]
+            ?? $this->schoolAliasNorm[$aliasSystem][self::normalizeSchoolCode($code)]
+            ?? null;
+    }
+
     public static function fromDb(?PDO $db = null): self
     {
         $db ??= Db::connect(Db::ROLE_APP);
@@ -101,9 +113,7 @@ final class Normalizer
         $schoolCode = $get('school_code');
         $schoolId = null;
         if ($schoolCode !== null) {
-            $schoolId = $this->schoolAlias[$aliasSystem][$schoolCode]
-                ?? $this->schoolAliasNorm[$aliasSystem][self::normalizeSchoolCode($schoolCode)]
-                ?? null;
+            $schoolId = $this->resolveSchool($aliasSystem, $schoolCode);
             if ($schoolId === null) {
                 $warnings[] = "Unmapped {$aliasSystem} school code '{$schoolCode}'.";
             }
