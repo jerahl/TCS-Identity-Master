@@ -126,6 +126,17 @@ OneSync export-log CSV instead, add those importers to the schedule too:
 50 2 * * *  cd /var/www/idm && /usr/bin/php bin/import_sync_status.php >> /var/log/idm/feeds.log 2>&1
 ```
 
+To pull per-destination status + failure messages **directly from OneSync's
+MariaDB** (instead of the CSV/Event-Log paths), schedule the DB result importer
+after OneSync's nightly run:
+
+```cron
+15 3 * * *  cd /var/www/idm && /usr/bin/php bin/import_onesync_db.php >> /var/log/idm/feeds.log 2>&1
+```
+
+Requires `ONESYNC_DB_*` configured (read-only SELECT on OneSync's DB) and
+`ONESYNC_DB_SOURCE_ID` = OneSync's source id for our IDM feed.
+
 ---
 
 ## Monitoring & troubleshooting
