@@ -135,7 +135,9 @@ after OneSync's nightly run:
 ```
 
 Requires `ONESYNC_DB_*` configured (read-only SELECT on OneSync's DB) and
-`ONESYNC_DB_SOURCE_ID` = OneSync's source id for our IDM feed.
+`ONESYNC_DB_SOURCE_ID` = OneSync's source id for our IDM feed. Ready-made
+systemd units for this importer are in [`../deploy/`](../deploy/) — see
+[`../deploy/README.md`](../deploy/README.md).
 
 ---
 

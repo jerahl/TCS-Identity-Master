@@ -211,6 +211,7 @@ Common failures the log makes obvious:
   key stops working immediately (no key list).
 
 See also: [`onesync-mapping.md`](onesync-mapping.md) for the read view
-(`v_onesync_source`) and the CSV/direct-DB write-back paths, and
-[`onesync-windows-events.md`](onesync-windows-events.md) for collecting OneSync
-results from the Windows Event Log into `/api/onesync/sync-status`.
+(`v_onesync_source`) and the CSV/direct-DB write-back paths. To pull
+per-destination status + failure messages from OneSync, use the DB result
+importer (`bin/import_onesync_db.php`); scheduling is in
+[`cron-feed-pull.md`](cron-feed-pull.md).
