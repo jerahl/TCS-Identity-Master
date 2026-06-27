@@ -252,6 +252,117 @@ Two big generic patterns plus many specific endpoints.
 
 ---
 
+## Frontend SSO flow (ClassLink LaunchPad)
+
+This is the exact login handshake the OneSync Angular app performs for "Sign in with ClassLink". It is a **brokered SSO**: the browser authenticates against ClassLink LaunchPad, ClassLink's OMS brokers the result, and the OneSync backend hands back its own JWT once it sees the LaunchPad session complete. Your web app cannot simply exchange its own ClassLink access token for a OneSync JWT — it must run *OneSync's* `generateLaunchpadCode` → LaunchPad → `verifyLaunchpadCode` handshake, because the correlation token minted by OneSync is what its backend recognizes.
+
+End result: `verifyLaunchpadCode` returns `{ loginToken, username }`, and `loginToken` is the **bearer JWT** you use for every `/v1p0/...` API call (`Authorization: Bearer <loginToken>`) — identical to the token from direct `POST /auth`.
+
+### Step-by-step
+
+1. **Mint a correlation code.**
+   `GET /v1p0/auth/generateLaunchpadCode` → returns a plain string, either `"<token>"` or `"<token>,<serverGuid>"` (comma-separated).
+   - `token = parts[0]`
+   - `serverGuid = parts.length === 2 ? ("," + parts[1]) : ""` (a routing suffix appended to the OAuth `state`; empty for single-server tenants).
+
+2. **Decide beta vs production.**
+   `GET /v1p0/settings/connectToBetaOms` → truthy = use the beta LaunchPad/OMS hosts, falsy = production. (On request error the app falls back to production.)
+
+3. **Open the LaunchPad OAuth popup.** Open a popup window to the ClassLink LaunchPad authorize URL. The user signs in there with their ClassLink account.
+
+   Production:
+   ```
+   https://launchpad.classlink.com/oauth2/v2/auth
+     ?scope=full
+     &client_id=c1587556210325442f066178b254bbc92cdc0e3e35a9c2
+     &redirect_uri=https://oms.classlink.com
+     &response_type=code
+     &state=launchpadLogin,<token><serverGuid>
+   ```
+
+   Beta:
+   ```
+   https://betalaunchpad.classlink.com/oauth2/v2/auth
+     ?scope=full
+     &client_id=c1587556958064115508101d95a8b38dd23777d0124f41
+     &redirect_uri=https://beta-oms.classlink.com
+     &response_type=code
+     &state=launchpadLogin,<token><serverGuid>
+   ```
+
+   Note the `redirect_uri` is **ClassLink's OMS**, not the OneSync app, and the `state` is `launchpadLogin,<token>` (plus the optional `,<serverGuid>`). The OMS uses that state to tie the LaunchPad login back to the OneSync tenant's correlation code (via OneSync's OMS/RabbitMQ connection).
+
+4. **Receive the postMessage from the OMS page.** Before/while the popup is open, register a `message` listener on the opener window. The OMS redirect page posts back a single pipe-delimited string:
+   ```
+   imagePath|||tenant|||email
+   ```
+   Split on `"|||"` → `[imagePath, tenant, email]`. The app stashes these (used as hints in step 6 and for UI display). `imagePath`/`email` may be empty or the literal string `"null"`.
+
+5. **Wait for the popup to close.** The app polls `setInterval(() => { if (popup.closed) {...} })`. When the popup closes (the OAuth round-trip is done), clear the interval and proceed.
+
+6. **Exchange the code for the OneSync JWT.**
+   `GET /v1p0/auth/verifyLaunchpadCode/<token>?email=<email>&imagePath=<imagePath>`
+   - `email` = the value received in step 4 (or empty).
+   - `imagePath` = the step-4 value, but only if it is non-null/non-empty/not the string `"null"`; otherwise empty.
+   - Response: `{ loginToken: "<JWT>", username: "<user>", ... }`.
+
+7. **Use the token.** Store `loginToken` and send `Authorization: Bearer <loginToken>` on all API calls. (The app also sets `federatedAccount = true` and `acknowlegedLoginMethodWarning = false` in local state.)
+
+### Reference pseudocode (browser, framework-agnostic)
+
+```js
+const API = location.origin + "/v1p0";
+
+async function ssoLogin() {
+  // 1. correlation code
+  const raw = await (await fetch(`${API}/auth/generateLaunchpadCode`)).json();
+  const [token, srv] = String(raw).split(",");
+  const serverGuid = srv ? "," + srv : "";
+
+  // 2. beta vs prod
+  let beta = false;
+  try { beta = !!(await (await fetch(`${API}/settings/connectToBetaOms`)).json()); } catch {}
+
+  const lp = beta
+    ? { host: "https://betalaunchpad.classlink.com", cid: "c1587556958064115508101d95a8b38dd23777d0124f41", rd: "https://beta-oms.classlink.com" }
+    : { host: "https://launchpad.classlink.com",      cid: "c1587556210325442f066178b254bbc92cdc0e3e35a9c2", rd: "https://oms.classlink.com" };
+
+  const url = `${lp.host}/oauth2/v2/auth?scope=full&client_id=${lp.cid}`
+            + `&redirect_uri=${lp.rd}&response_type=code&state=launchpadLogin,${token}${serverGuid}`;
+
+  // 3-4. open popup, capture imagePath|||tenant|||email
+  let imagePath = "", email = "";
+  const onMsg = (e) => { const a = String(e.data).split("|||"); imagePath = a[0]; email = a[2]; };
+  window.addEventListener("message", onMsg, false);
+  const popup = window.open(url);
+
+  // 5. wait for popup to close
+  await new Promise((res) => {
+    const t = setInterval(() => { if (!popup || popup.closed) { clearInterval(t); res(); } }, 500);
+  });
+  window.removeEventListener("message", onMsg);
+
+  // 6. exchange for JWT
+  const ip = (imagePath && imagePath !== "null") ? imagePath : "";
+  const q = new URLSearchParams({ email: email || "", imagePath: ip });
+  const r = await (await fetch(`${API}/auth/verifyLaunchpadCode/${token}?${q}`)).json();
+
+  // 7. r.loginToken is the bearer JWT
+  return { token: r.loginToken, username: r.username };
+}
+```
+
+### Implementation notes for your web app
+
+- **Same-origin requirement.** `generateLaunchpadCode`, `connectToBetaOms`, and `verifyLaunchpadCode` are all OneSync API calls under `/v1p0` on your OneSync host. Your app should call them against that origin (and handle CORS or proxy through your backend if your app is on a different origin).
+- **The token, client IDs, and OMS redirect URIs are fixed values baked into OneSync** (captured above). They are ClassLink-side OAuth client registrations — you reuse them as-is; you do not register your own.
+- **`verifyLaunchpadCode` only succeeds after the LaunchPad login completes** for that `token`. If you call it too early it will fail. The frontend's trigger is "popup closed"; a backend implementation would poll `verifyLaunchpadCode/<token>` on an interval (with a timeout) until it returns a `loginToken`.
+- **Popup vs full-redirect.** The stock app uses a popup + `postMessage`. If your app already lands the user in a ClassLink-authenticated context you can adapt the same `state=launchpadLogin,<token>` round-trip as a full-page redirect, then call `verifyLaunchpadCode/<token>` on return.
+- **`serverGuid`** must be carried verbatim into the `state` when present, or the OMS can't route the login to the right OneSync server.
+- The resulting `loginToken` is a normal OneSync JWT — see the `bearerAuth` scheme in `openapi.yaml` and the token-lifetime/refresh behavior in `onesync_auth.py`.
+
+---
+
 ## Verification notes
 
 - **Verbs/paths above are taken from the running frontend** and are reliable. Where my extractor occasionally glued a UI toast message onto a path (e.g. `...success...`), I've trimmed to the real route.
