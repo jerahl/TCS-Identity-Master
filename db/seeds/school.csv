@@ -1,0 +1,30 @@
+name,ps_school_id,ad_ou,google_ou,status
+The Alberta School of Performing Arts,10,OU=ALB,/Staff/ALB,active
+Arcadia Elementary School,20,OU=ARC,/Staff/ARC,active
+Central Elementary School,30,OU=CES,/Staff/CES,active
+Paul W. Bryant High School,55,OU=BHS,/Staff/BHS,active
+Eastwood Middle School,60,OU=EMS,/Staff/EMS,active
+Northridge High School,75,OU=NHS,/Staff/NHS,active
+NES,80,,,active
+Oakdale Elementary School,90,OU=OKD,/Staff/OKD,active
+Oak Hill School,135,OU=OKH,/Staff/OKH,active
+Rock Quarry Elementary School,105,OU=RQES,/Staff/RQES,active
+Northridge Middle School,106,OU=NMS,/Staff/NMS,active
+Skyland Elementary School,110,OU=SKY,/Staff/SKY,active
+Southview Elementary School,131,OU=SES,/Staff/SES,active
+SVMS,132,OU=SVMS,/Staff/SVMS,active
+Martin Luther King Jr Elementary School,140,OU=MLK,/Staff/MLK,active
+Tuscaloosa Magnet Schools - Elementary,156,OU=TMES,/Staff/TMES,active
+Tuscaloosa Magnet Schools - Middle,157,OU=TMMS,/Staff/TMMS,active
+Central High School,160,OU=CHS,/Staff/CHS,active
+University Place Elementary School,180,OU=UPE,/Staff/UPE,active
+UPMS,181,OU=UPE,/Staff/UPE,active
+Verner Elementary School,185,OU=VES,/Staff/VES,active
+Woodland Forrest Elementary School,195,OU=WFS,/Staff/WFS,active
+Westlawn Middle School,200,OU=WMS,/Staff/WMS,active
+Central Office,4999,OU=CO,/Staff/CO,active
+Tuscaloosa Career and Technology Academy,6000,OU=TCT,/Staff/TCT,active
+Summer Learning,7001,OU=Summer Learning,/Staff/Summer Learning,active
+BPCC,8000,"OU=STC,OU=CO",/Staff/STC,active
+ES,8001,"OU=STC,OU=CO",/Staff/STC,active
+TCJDC,8003,"OU=STC,OU=CO",/Staff/STC,active

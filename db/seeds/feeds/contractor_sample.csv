@@ -1,0 +1,3 @@
+ContractorID,FirstName,MiddleName,LastName,PreferredName,DOB,Gender,Ethnicity,SchoolID,Role,StartDate,EndDate,Primary
+C-3310,Lena,,Ortiz,,1985-11-02,Female,Hispanic/Latino,0010,Network Contractor,2026-01-05,2026-12-31,Y
+C-3311,Samuel,K,Reed,Sam,1979-06-21,Male,White,0010,HVAC Contractor,2026-02-01,2026-11-30,Y

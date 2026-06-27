@@ -1,0 +1,3 @@
+TEACHERS.ID,TEACHERS.dcid,TEACHERS.Users_DCID,TEACHERS.TeacherNumber,TEACHERS.First_Name,TEACHERS.Last_Name,TEACHERS.Email_Addr,TEACHERS.LoginID,TEACHERS.Status
+8422,8422,6260,9849,Kirby,Abraham,kabraham@tcs.k12.al.us,kabraham,1
+16100,16100,7001,16100,Brandon,Nguyen,bnguyen@tcs.k12.al.us,bnguyen,1

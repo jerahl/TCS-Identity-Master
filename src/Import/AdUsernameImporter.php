@@ -1,0 +1,238 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Import;
+
+use App\Db;
+use App\Service\AuditService;
+use PDO;
+use RuntimeException;
+
+/**
+ * ONE-TIME reconciliation: link existing AD usernames to the golden record.
+ *
+ * Before OneSync was authoritative, accounts already existed in AD. This imports
+ * an AD export and stamps each person's current sAMAccountName as their (locked)
+ * username + email, so OneSync sees them as already-provisioned instead of
+ * minting new names.
+ *
+ * Match key: the AD `uniqueId` is TEACHERS.ID with a leading "T"
+ * (e.g. T8422 -> PowerSchool source_key 8422), and TEACHERS.ID is what we key the
+ * powerschool crosswalk on — so we strip the T and resolve directly, falling back
+ * to the NextGen Employee ID column (TEACHERS.TeacherNumber, also "T"-prefixed).
+ * Also records the AD uniqueId in person_source_id (system 'ad') for traceability.
+ *
+ * Same guardrails as the OneSync write-back: a locked username is never
+ * overwritten with a different value; re-runs are idempotent. Writes nothing on
+ * --dry-run. Runs as the MIGRATE role — a trusted one-time ops step (it also
+ * writes the person_source_id 'ad' crosswalk row, beyond the write-back grants).
+ *
+ * Accepts EITHER file (format auto-detected from the header row):
+ *  - AD directory export: uniqueId, mail, sAMAccountName, Employee ID, ...
+ *  - PowerSchool TEACHERS export (same file used for the PowerSchool import):
+ *    TEACHERS.ID, TEACHERS.Email_Addr, TEACHERS.TeacherLoginID, TEACHERS.TeacherNumber
+ *    (here the AD uniqueId recorded in the crosswalk is "T" + TEACHERS.ID).
+ */
+final class AdUsernameImporter
+{
+    private PDO $db;
+    private AuditService $audit;
+
+    /** AD directory export columns. */
+    private const MAP_AD = [
+        'id'          => 'uniqueId',          // "T" + TEACHERS.ID
+        'mail'        => 'mail',
+        'username'    => 'sAMAccountName',
+        'employee_id' => 'Employee ID',
+    ];
+
+    /** PowerSchool TEACHERS export columns (same file we import for PowerSchool). */
+    private const MAP_TEACHERS = [
+        'id'          => 'TEACHERS.ID',       // the PS crosswalk key (no "T")
+        'mail'        => 'TEACHERS.Email_Addr',
+        'username'    => 'TEACHERS.TeacherLoginID',
+        'employee_id' => 'TEACHERS.TeacherNumber',
+    ];
+
+    public function __construct(?PDO $db = null)
+    {
+        $this->db = $db ?? Db::connect(Db::ROLE_MIGRATE);
+        $this->audit = new AuditService($this->db);
+    }
+
+    /** Pick the column map from the header row: TEACHERS export vs AD export. */
+    public static function detectFormat(array $row): string
+    {
+        return array_key_exists('TEACHERS.ID', $row) ? 'teachers' : 'ad';
+    }
+
+    /**
+     * Strip a single leading "T"/"t" prefix (both the AD uniqueId and the
+     * Employee ID carry it: T14774 -> 14774). Unchanged if there's no T prefix.
+     */
+    public static function stripLeadingT(string $value): string
+    {
+        $v = trim($value);
+        if ($v !== '' && ($v[0] === 'T' || $v[0] === 't')) {
+            return substr($v, 1);
+        }
+        return $v;
+    }
+
+    /** @return array<string,mixed> summary */
+    public function run(string $file, bool $dryRun = false, ?string $actor = null): array
+    {
+        $actor ??= 'system:import_ad_usernames';
+        if (!is_file($file) || !is_readable($file)) {
+            throw new RuntimeException("AD export not found or unreadable: {$file}");
+        }
+
+        $rows = Csv::read($file);
+        $map = ($rows !== [] && self::detectFormat($rows[0]) === 'teachers') ? self::MAP_TEACHERS : self::MAP_AD;
+        $teachers = $map === self::MAP_TEACHERS;
+        $counts = ['total' => 0, 'applied' => 0, 'noop' => 0, 'conflict' => 0, 'skipped' => 0, 'no_person' => 0, 'errors' => 0];
+        $outcomes = [];
+
+        foreach ($rows as $raw) {
+            $counts['total']++;
+            $idField = trim((string) ($raw[$map['id']] ?? ''));
+            $username = trim((string) ($raw[$map['username']] ?? ''));
+            $email = trim((string) ($raw[$map['mail']] ?? ''));
+            $employeeId = trim((string) ($raw[$map['employee_id']] ?? ''));
+            // AD account uniqueId for the crosswalk: the raw uniqueId (AD export)
+            // or "T" + TEACHERS.ID (TEACHERS export), so both record the same id.
+            $adUniqueId = $teachers ? ($idField !== '' ? 'T' . $idField : '') : $idField;
+
+            try {
+                $outcome = $this->processRow($idField, $adUniqueId, $username, $email, $employeeId, $dryRun, $actor);
+            } catch (\Throwable $e) {
+                $counts['errors']++;
+                $outcomes[] = ['uniqueId' => $adUniqueId, 'username' => $username, 'outcome' => 'error', 'detail' => $e->getMessage()];
+                continue;
+            }
+            $counts[$outcome['key']]++;
+            $outcomes[] = ['uniqueId' => $adUniqueId, 'username' => $username, 'outcome' => $outcome['key'], 'detail' => $outcome['detail']];
+        }
+
+        return ['dry_run' => $dryRun, 'counts' => $counts, 'outcomes' => $outcomes];
+    }
+
+    /**
+     * @param string $idField    the PS id field (AD uniqueId "T8422" or TEACHERS.ID "8422")
+     * @param string $adUniqueId the AD account id to record in the crosswalk ("T8422")
+     * @return array{key:string,detail:string}
+     */
+    private function processRow(string $idField, string $adUniqueId, string $username, string $email, string $employeeId, bool $dryRun, string $actor): array
+    {
+        if ($username === '') {
+            return ['key' => 'skipped', 'detail' => 'blank username'];
+        }
+
+        // PS crosswalk key = TEACHERS.ID (= AD uniqueId minus the leading "T").
+        $psId = self::stripLeadingT($idField);
+        $employeeId = self::stripLeadingT($employeeId);
+        $person = $this->findPerson($psId, $employeeId);
+        if ($person === null) {
+            return ['key' => 'no_person', 'detail' => "no person for PS id '{$psId}'"
+                . ($employeeId !== '' ? " / employee '{$employeeId}'" : '')];
+        }
+
+        $decision = WritebackImporter::decide($person['username'], (int) $person['username_locked'] === 1, $username);
+        if ($decision === 'conflict') {
+            return ['key' => 'conflict', 'detail' => "locked username '{$person['username']}' != '{$username}' — left unchanged"];
+        }
+        if ($decision === 'noop') {
+            if (!$dryRun) {
+                $this->recordAdSourceId((int) $person['person_id'], $adUniqueId, $actor);
+                $this->activateIfPending((int) $person['person_id'], (string) $person['status'], $actor);
+            }
+            return ['key' => 'noop', 'detail' => 'already set'];
+        }
+        // apply
+        if ($dryRun) {
+            return ['key' => 'applied', 'detail' => "would set username '{$username}'" . ($email !== '' ? " + email '{$email}'" : '')];
+        }
+
+        try {
+            $before = ['username' => $person['username'], 'email' => $person['email'], 'username_locked' => $person['username_locked']];
+            $sql = 'UPDATE person SET username = :u, username_assigned_at = CURRENT_TIMESTAMP, username_locked = 1';
+            $params = [':u' => $username, ':id' => $person['person_id']];
+            if ($email !== '') {
+                $sql .= ', email = :e';
+                $params[':e'] = $email;
+            }
+            $sql .= ' WHERE person_id = :id';
+            $this->db->prepare($sql)->execute($params);
+
+            $this->recordAdSourceId((int) $person['person_id'], $adUniqueId, $actor);
+
+            $this->audit->log('person', (int) $person['person_id'], 'update', $before,
+                ['username' => $username, 'email' => $email ?: $person['email'], 'username_locked' => 1], $actor);
+            $this->audit->lifecycle((int) $person['person_id'], 'username_assigned',
+                ['summary' => "Existing AD username {$username} linked (one-time import) and locked."], $actor);
+            $this->activateIfPending((int) $person['person_id'], (string) $person['status'], $actor);
+
+            return ['key' => 'applied', 'detail' => "username '{$username}' set + locked"];
+        } catch (\PDOException $e) {
+            if ((int) $e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
+                return ['key' => 'conflict', 'detail' => "unique conflict applying '{$username}' (already used)"];
+            }
+            throw $e;
+        }
+    }
+
+    /** Resolve a person by PowerSchool crosswalk id, then by NextGen employee id. */
+    private function findPerson(string $psId, string $employeeId): ?array
+    {
+        if ($psId !== '') {
+            $stmt = $this->db->prepare(
+                'SELECT p.person_id, p.username, p.email, p.username_locked, p.status
+                 FROM person p JOIN person_source_id s ON s.person_id = p.person_id
+                 WHERE s.system = \'powerschool\' AND s.source_key = :k LIMIT 1'
+            );
+            $stmt->execute([':k' => $psId]);
+            $row = $stmt->fetch();
+            if ($row !== false) {
+                return $row;
+            }
+        }
+        if ($employeeId !== '') {
+            $stmt = $this->db->prepare(
+                "SELECT person_id, username, email, username_locked, status
+                 FROM person WHERE employee_id = :e AND employee_id <> '' LIMIT 1"
+            );
+            $stmt->execute([':e' => $employeeId]);
+            $row = $stmt->fetch();
+            if ($row !== false) {
+                return $row;
+            }
+        }
+        return null;
+    }
+
+    /** Flip a provisioned person from 'pending' to 'active' (locked username = live). */
+    private function activateIfPending(int $personId, string $currentStatus, string $actor): void
+    {
+        if ($currentStatus !== 'pending') {
+            return;
+        }
+        $this->db->prepare("UPDATE person SET status = 'active' WHERE person_id = :id AND status = 'pending'")
+            ->execute([':id' => $personId]);
+        $this->audit->log('person', $personId, 'update', ['status' => 'pending'], ['status' => 'active'], $actor);
+        $this->audit->lifecycle($personId, 'enable', ['summary' => 'Activated — AD account linked (one-time import).'], $actor);
+    }
+
+    /** Record the AD uniqueId in the crosswalk (idempotent on system+source_key). */
+    private function recordAdSourceId(int $personId, string $uniqueId, string $actor): void
+    {
+        if ($uniqueId === '') {
+            return;
+        }
+        $this->db->prepare(
+            'INSERT INTO person_source_id (person_id, system, source_key)
+             VALUES (:pid, \'ad\', :k)
+             ON DUPLICATE KEY UPDATE last_seen = CURRENT_TIMESTAMP, is_active = 1'
+        )->execute([':pid' => $personId, ':k' => $uniqueId]);
+    }
+}

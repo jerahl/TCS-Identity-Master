@@ -1,0 +1,11 @@
+[Unit]
+Description=Run TCS Identity OneSync DB result import (after OneSync's nightly run)
+
+[Timer]
+# 03:15 daily — after OneSync has finished exporting. Adjust to taste.
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
