@@ -32,7 +32,7 @@
 
     <?php if ($samlConfigured): ?>
       <a class="btn btn--primary" href="<?= e(url('/saml/login')) ?>" style="width:100%; justify-content:center; height:44px;">
-        Sign in with district SSO
+        Sign in with ClassLink
       </a>
     <?php elseif (!$devAllowed): ?>
       <div class="notice notice--warn">Single sign-on is not configured. Set the SAML_* values in <code>.env</code>.</div>

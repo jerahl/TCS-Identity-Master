@@ -79,41 +79,86 @@ final class SamlProvider
         return new SamlAuth($this->settings());
     }
 
+    /**
+     * The SAML attribute names this SP requests from ClassLink. ClassLink has no
+     * fixed attribute names — the district admin maps ClassLink source fields
+     * (Email / Given Name / Family Name / Display Name) to whatever names the SP
+     * declares. These defaults are advertised in our SP metadata (so the admin
+     * sees exactly what to map) AND used to read the assertion, so the two can't
+     * drift. Override via env only if the admin must use different names.
+     *
+     * @return array{email:string,first:string,last:string,display:string}
+     */
+    public static function attributeNames(): array
+    {
+        return [
+            'email'   => (string) Config::get('SAML_ATTR_EMAIL', 'email'),
+            'first'   => (string) Config::get('SAML_ATTR_FIRST_NAME', 'firstName'),
+            'last'    => (string) Config::get('SAML_ATTR_LAST_NAME', 'lastName'),
+            'display' => (string) Config::get('SAML_ATTR_DISPLAY_NAME', 'displayName'),
+        ];
+    }
+
     /** Build the onelogin settings array from config. */
     private function settings(): array
     {
         $spKey = self::fileContents(Config::get('SAML_SP_PRIVATE_KEY_FILE'));
         $spCert = self::fileContents(Config::get('SAML_SP_CERT_FILE'));
+        $attr = self::attributeNames();
+        $spSls = trim((string) Config::get('SAML_SP_SLS_URL', ''));
+        $idpSlo = trim((string) Config::get('SAML_IDP_SLO_URL', ''));
+
+        $sp = [
+            'entityId' => Config::require('SAML_SP_ENTITY_ID'),
+            'assertionConsumerService' => [
+                'url' => Config::require('SAML_SP_ACS_URL'),
+                'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
+            ],
+            'NameIDFormat' => 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+            'x509cert' => $spCert ?? '',
+            'privateKey' => $spKey ?? '',
+            // Advertised in SP metadata as <md:RequestedAttribute> so the
+            // ClassLink admin knows precisely which attributes to map.
+            'attributeConsumingService' => [
+                'serviceName' => 'TCS Identity Master',
+                'serviceDescription' => 'Staff/faculty identity administration',
+                'requestedAttributes' => [
+                    ['name' => $attr['email'],   'isRequired' => true],
+                    ['name' => $attr['first'],   'isRequired' => false],
+                    ['name' => $attr['last'],    'isRequired' => false],
+                    ['name' => $attr['display'], 'isRequired' => false],
+                ],
+            ],
+        ];
+        // Single Logout is optional (ClassLink may not use it). Only declare it
+        // when configured — an empty URL fails metadata validation.
+        if ($spSls !== '') {
+            $sp['singleLogoutService'] = [
+                'url' => $spSls,
+                'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+            ];
+        }
+
+        $idp = [
+            'entityId' => Config::require('SAML_IDP_ENTITY_ID'),
+            'singleSignOnService' => [
+                'url' => Config::require('SAML_IDP_SSO_URL'),
+                'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+            ],
+            'x509cert' => Config::require('SAML_IDP_X509_CERT'),
+        ];
+        if ($idpSlo !== '') {
+            $idp['singleLogoutService'] = [
+                'url' => $idpSlo,
+                'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+            ];
+        }
 
         return [
             'strict' => true,
             'baseurl' => Config::get('APP_BASE_URL'),
-            'sp' => [
-                'entityId' => Config::require('SAML_SP_ENTITY_ID'),
-                'assertionConsumerService' => [
-                    'url' => Config::require('SAML_SP_ACS_URL'),
-                    'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
-                ],
-                'singleLogoutService' => [
-                    'url' => (string) Config::get('SAML_SP_SLS_URL', ''),
-                    'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
-                ],
-                'NameIDFormat' => 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
-                'x509cert' => $spCert ?? '',
-                'privateKey' => $spKey ?? '',
-            ],
-            'idp' => [
-                'entityId' => Config::require('SAML_IDP_ENTITY_ID'),
-                'singleSignOnService' => [
-                    'url' => Config::require('SAML_IDP_SSO_URL'),
-                    'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
-                ],
-                'singleLogoutService' => [
-                    'url' => (string) Config::get('SAML_IDP_SLO_URL', ''),
-                    'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
-                ],
-                'x509cert' => Config::require('SAML_IDP_X509_CERT'),
-            ],
+            'sp' => $sp,
+            'idp' => $idp,
             'security' => [
                 'requestedAuthnContext' => false,
                 'wantAssertionsSigned' => true,
@@ -135,26 +180,65 @@ final class SamlProvider
         if (filter_var($nameId, FILTER_VALIDATE_EMAIL)) {
             return $nameId;
         }
-        foreach (['email', 'mail', 'emailAddress',
-                  'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'] as $key) {
-            if (!empty($attrs[$key][0])) {
-                return (string) $attrs[$key][0];
-            }
-        }
-        return $nameId; // last resort: use NameID as the key
+        // Our configured ClassLink attribute first, then common variants.
+        $candidates = array_merge(
+            [self::attributeNames()['email']],
+            ['email', 'mail', 'emailAddress', 'Email', 'EmailAddress',
+             'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress']
+        );
+        $v = self::firstAttr($attrs, $candidates);
+        return $v ?? $nameId; // last resort: use NameID as the key
     }
 
     public static function extractDisplayName(array $attrs): ?string
     {
-        foreach (['displayName', 'name', 'cn',
-                  'http://schemas.microsoft.com/identity/claims/displayname'] as $key) {
-            if (!empty($attrs[$key][0])) {
-                return (string) $attrs[$key][0];
-            }
+        $names = self::attributeNames();
+        $display = self::firstAttr($attrs, array_merge(
+            [$names['display']],
+            ['displayName', 'name', 'cn',
+             'http://schemas.microsoft.com/identity/claims/displayname']
+        ));
+        if ($display !== null) {
+            return $display;
         }
-        $given = $attrs['givenName'][0] ?? $attrs['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'][0] ?? null;
-        $sn = $attrs['surname'][0] ?? $attrs['sn'][0] ?? $attrs['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'][0] ?? null;
+        // Build it from first + last (ClassLink "Given Name" / "Family Name").
+        $given = self::firstAttr($attrs, array_merge(
+            [$names['first']],
+            ['firstName', 'givenName', 'givenname', 'FirstName', 'GivenName',
+             'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname']
+        ));
+        $sn = self::firstAttr($attrs, array_merge(
+            [$names['last']],
+            ['lastName', 'surname', 'sn', 'familyName', 'LastName', 'Surname',
+             'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname']
+        ));
         $full = trim((string) $given . ' ' . (string) $sn);
         return $full !== '' ? $full : null;
+    }
+
+    /**
+     * First non-empty attribute value matching any of $keys, compared
+     * case-insensitively (ClassLink admins type the attribute names by hand, so
+     * case can vary between the mapping and the assertion).
+     *
+     * @param array<string,mixed> $attrs
+     * @param string[]            $keys
+     */
+    private static function firstAttr(array $attrs, array $keys): ?string
+    {
+        $lower = [];
+        foreach ($attrs as $k => $v) {
+            $lower[strtolower((string) $k)] = $v;
+        }
+        foreach ($keys as $key) {
+            $hit = $lower[strtolower($key)] ?? null;
+            if (is_array($hit) && isset($hit[0]) && trim((string) $hit[0]) !== '') {
+                return (string) $hit[0];
+            }
+            if (is_string($hit) && trim($hit) !== '') {
+                return $hit;
+            }
+        }
+        return null;
     }
 }
