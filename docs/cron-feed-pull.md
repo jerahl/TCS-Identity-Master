@@ -120,8 +120,8 @@ given as an absolute path.
 2. Downloads new/updated files into `FEED_<SOURCE>_DIR`, recording each in
    `feed_fetch_log`.
 3. Imports: NextGen (and intern/sub/contractor) per file; **PowerSchool queries
-   USERS + TEACHERS + SCHOOLSTAFF directly from Oracle over ODBC and imports
-   once** (no SFTP).
+   active staff (TEACHERS + USERS extensions) directly from Oracle over ODBC and
+   imports once** (no SFTP).
 4. Updates `import_batch` (shown as "Last feed run" on the dashboard).
 
 It does **not** apply OneSync write-back — usernames/status come in via the

@@ -47,6 +47,33 @@ final class PowerSchoolBundleTest extends TestCase
         self::assertCount(1, array_filter($ps->schools, static fn($s) => $s['primary']));
     }
 
+    public function testHomeSchoolAndTitleFallBackToTeachersWhenNotOnUsers(): void
+    {
+        // ODBC layout: HomeSchoolId / Title / TeacherNumber live on TEACHERS, and
+        // USERS only adds the middle name. Primary must still resolve from the
+        // teacher-level HomeSchoolId, and Title/employee id from TEACHERS.
+        $users = [
+            ['USERS.dcid' => '1011', 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K', 'USERS.Last_Name' => 'Allen'],
+        ];
+        $teachers = [
+            ['TEACHERS.ID' => '1011', 'TEACHERS.Users_DCID' => '1011', 'TEACHERS.TeacherNumber' => '12924',
+             'TEACHERS.First_Name' => 'Darby', 'TEACHERS.Last_Name' => 'Allen', 'TEACHERS.HomeSchoolId' => '160', 'TEACHERS.Title' => 'Teacher'],
+            ['TEACHERS.ID' => '2901', 'TEACHERS.Users_DCID' => '1011', 'TEACHERS.TeacherNumber' => '12924',
+             'TEACHERS.First_Name' => 'Darby', 'TEACHERS.Last_Name' => 'Allen', 'TEACHERS.HomeSchoolId' => '160', 'TEACHERS.Title' => 'Teacher'],
+        ];
+        $staff = [
+            ['SCHOOLSTAFF.Users_DCID' => '1011', 'SCHOOLSTAFF.SchoolID' => '75'],
+            ['SCHOOLSTAFF.Users_DCID' => '1011', 'SCHOOLSTAFF.SchoolID' => '160'],
+        ];
+
+        $out = PowerSchoolBundle::combine($users, $teachers, $staff);
+        self::assertCount(1, $out);
+        self::assertSame('12924', $out[0]->employeeId, 'TeacherNumber from TEACHERS');
+        self::assertSame('Teacher', $out[0]->title, 'Title from TEACHERS');
+        self::assertSame('160', $out[0]->primarySchoolCode(), 'HomeSchoolId from TEACHERS picks the primary');
+        self::assertCount(2, $out[0]->schools);
+    }
+
     public function testFallsBackToTeacherNamesAndFirstPrimary(): void
     {
         // No USERS row, no HomeSchoolId -> names from TEACHERS, first school primary.

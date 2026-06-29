@@ -60,8 +60,10 @@ final class PowerSchoolBundle
             $first = self::pick($u, 'USERS.First_Name', $trows[0], 'TEACHERS.First_Name');
             $last = self::pick($u, 'USERS.Last_Name', $trows[0], 'TEACHERS.Last_Name');
             $middle = trim((string) ($u['USERS.Middle_Name'] ?? ''));
-            $homeCode = trim((string) ($u['USERS.HomeSchoolId'] ?? ''));
-            $employeeId = trim((string) ($u['USERS.TeacherNumber'] ?? ($trows[0]['TEACHERS.TeacherNumber'] ?? '')));
+            // HomeSchoolId / Title / TeacherNumber may live on USERS or TEACHERS
+            // depending on the schema; prefer USERS, fall back to TEACHERS.
+            $homeCode = self::pick($u, 'USERS.HomeSchoolId', $trows[0], 'TEACHERS.HomeSchoolId');
+            $employeeId = self::pick($u, 'USERS.TeacherNumber', $trows[0], 'TEACHERS.TeacherNumber');
 
             // All distinct TEACHERS.IDs for this user (each = one AD-able PS id).
             $teacherIds = [];
@@ -99,7 +101,7 @@ final class PowerSchoolBundle
                 firstName: $first,
                 middleName: $middle,
                 lastName: $last,
-                title: self::nz($u['USERS.Title'] ?? ''),
+                title: self::nz(self::pick($u, 'USERS.Title', $trows[0], 'TEACHERS.Title')),
                 classification: self::nz($u['U_DEF_EXT_USERS.staff_classification'] ?? ''),
                 hireDate: self::nz($u['S_USR_X.hiredate'] ?? ''),
                 endDate: self::nz($u['S_AL_USR_X.exit_date'] ?? ''),

@@ -9,23 +9,35 @@ use App\Db;
 use PDO;
 
 /**
- * Reads the three PowerSchool staff datasets — USERS, TEACHERS, SCHOOLSTAFF —
- * straight from PowerSchool's Oracle database over ODBC. This is the direct
- * replacement for the old SFTP CSV feed: instead of PowerSchool exporting three
- * CSVs that we pull and parse, we query the same tables in place.
+ * Reads PowerSchool staff straight from PowerSchool's Oracle database over ODBC.
+ * This is the direct replacement for the old SFTP CSV feed: instead of exporting
+ * CSVs that we pull and parse, we query the tables in place.
  *
- * Each query aliases its columns to the *exact* dotted header names the CSV
- * exports used (e.g. "USERS.dcid", "TEACHERS.ID"), so the rows this returns are
- * shape-compatible with what Csv::read() produced and PowerSchoolBundle::combine()
- * can consume them unchanged. Oracle preserves the case of double-quoted column
- * aliases, so the keys come back exactly as written.
+ * TEACHERS is the anchor (it carries the per-assignment school and the staff
+ * identity in this district's schema): we pull every active row
+ *   FROM teachers WHERE status = 1
+ * — one row per (teacher, school) — so a teacher at N schools yields N rows / N
+ * TEACHERS.IDs, all linked to the crosswalk. The school for each assignment is
+ * TEACHERS.SchoolID; the primary is the row where SchoolID = HomeSchoolId.
  *
- * The SQL mirrors the columns the export selected; adjust the constants here (or
- * set PS_ODBC_SCHEMA for a table-owner prefix) to match the district's live PS
- * schema. The connection is read-only intent — grant SELECT only.
+ * USERS (+ its extension tables) supplies only the fields that aren't on TEACHERS
+ * — middle name, staff_classification, hire/exit dates — joined by users_dcid.
+ *
+ * read() returns three datasets keyed to the *exact* dotted header names the CSV
+ * exports used ("USERS.dcid", "TEACHERS.ID", "SCHOOLSTAFF.SchoolID", …), so
+ * PowerSchoolBundle::combine() consumes them unchanged. The SCHOOLSTAFF dataset
+ * is derived from the TEACHERS rows (their SchoolID) — this district keeps the
+ * assignment school on TEACHERS rather than a separate SCHOOLSTAFF table. Oracle
+ * preserves the case of double-quoted aliases, so the keys come back as written.
+ *
+ * Adjust the SQL here (or set PS_ODBC_SCHEMA for a table-owner prefix) to match
+ * the district's live PS schema. The connection is read-only intent — SELECT only.
  */
 final class PowerSchoolOdbcReader
 {
+    /** PowerSchool TEACHERS.Status for an active staff record. */
+    private const STATUS_ACTIVE = 1;
+
     private PDO $db;
 
     public function __construct(?PDO $db = null)
@@ -34,17 +46,40 @@ final class PowerSchoolOdbcReader
     }
 
     /**
-     * Query all three datasets.
+     * Query the datasets PowerSchoolBundle::combine() needs. SCHOOLSTAFF is
+     * derived from the TEACHERS rows (assignment school = TEACHERS.SchoolID).
      *
      * @return array{users:array<int,array<string,string>>,teachers:array<int,array<string,string>>,schoolstaff:array<int,array<string,string>>}
      */
     public function read(): array
     {
+        $teachers = $this->query($this->teachersSql());
         return [
             'users'       => $this->query($this->usersSql()),
-            'teachers'    => $this->query($this->teachersSql()),
-            'schoolstaff' => $this->query($this->schoolStaffSql()),
+            'teachers'    => $teachers,
+            'schoolstaff' => self::schoolStaffFromTeachers($teachers),
         ];
+    }
+
+    /**
+     * Project the TEACHERS rows into the SCHOOLSTAFF shape combine() expects (one
+     * assignment per teacher row, school from TEACHERS.SchoolID). Keeps the school
+     * source consistent with TEACHERS without assuming a separate SCHOOLSTAFF table.
+     *
+     * @param array<int,array<string,string>> $teachers
+     * @return array<int,array<string,string>>
+     */
+    public static function schoolStaffFromTeachers(array $teachers): array
+    {
+        $out = [];
+        foreach ($teachers as $t) {
+            $out[] = [
+                'SCHOOLSTAFF.dcid'       => $t['TEACHERS.dcid'] ?? '',
+                'SCHOOLSTAFF.Users_DCID' => $t['TEACHERS.Users_DCID'] ?? '',
+                'SCHOOLSTAFF.SchoolID'   => $t['TEACHERS.SchoolID'] ?? '',
+            ];
+        }
+        return $out;
     }
 
     /**
@@ -90,33 +125,10 @@ final class PowerSchoolOdbcReader
     }
 
     /**
-     * USERS + its extension tables (one row per user). Demographics, HomeSchoolId,
-     * Title, classification, TeacherNumber, hire/exit. Dates are TO_CHAR'd to a
-     * canonical Y-m-d so Normalizer::parseDate gets a stable format regardless of
-     * the session's NLS_DATE_FORMAT.
-     */
-    private function usersSql(): string
-    {
-        return 'SELECT '
-            . 'u.dcid           AS "USERS.dcid", '
-            . 'u.first_name     AS "USERS.First_Name", '
-            . 'u.middle_name    AS "USERS.Middle_Name", '
-            . 'u.last_name      AS "USERS.Last_Name", '
-            . 'u.homeschoolid   AS "USERS.HomeSchoolId", '
-            . 'u.teachernumber  AS "USERS.TeacherNumber", '
-            . 'u.title          AS "USERS.Title", '
-            . 'ext.staff_classification              AS "U_DEF_EXT_USERS.staff_classification", '
-            . "TO_CHAR(sx.hiredate, 'YYYY-MM-DD')    AS \"S_USR_X.hiredate\", "
-            . "TO_CHAR(alx.exit_date, 'YYYY-MM-DD')  AS \"S_AL_USR_X.exit_date\" "
-            . 'FROM ' . $this->table('users') . ' u '
-            . 'LEFT JOIN ' . $this->table('u_def_ext_users') . ' ext ON ext.usersdcid = u.dcid '
-            . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid '
-            . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid';
-    }
-
-    /**
-     * TEACHERS (one row per user/school assignment). TEACHERS.ID is the
-     * per-assignment PS id AD mirrors as "T"+ID; TEACHERS.Users_DCID = USERS.dcid.
+     * Every active staff assignment (one row per teacher/school). HomeSchoolId,
+     * SchoolID and Title come from TEACHERS in this schema; combine() uses
+     * SchoolID for the assignment, HomeSchoolId to pick the primary, and TEACHERS
+     * values as the fallback when the USERS row lacks them.
      */
     private function teachersSql(): string
     {
@@ -126,20 +138,35 @@ final class PowerSchoolOdbcReader
             . 't.users_dcid    AS "TEACHERS.Users_DCID", '
             . 't.teachernumber AS "TEACHERS.TeacherNumber", '
             . 't.first_name    AS "TEACHERS.First_Name", '
-            . 't.last_name     AS "TEACHERS.Last_Name" '
-            . 'FROM ' . $this->table('teachers') . ' t';
+            . 't.last_name     AS "TEACHERS.Last_Name", '
+            . 't.homeschoolid  AS "TEACHERS.HomeSchoolId", '
+            . 't.schoolid      AS "TEACHERS.SchoolID", '
+            . 't.title         AS "TEACHERS.Title" '
+            . 'FROM ' . $this->table('teachers') . ' t '
+            . 'WHERE t.status = ' . self::STATUS_ACTIVE;
     }
 
     /**
-     * SCHOOLSTAFF (one row per assignment). SCHOOLSTAFF.SchoolID is that
-     * assignment's school code; SCHOOLSTAFF.Users_DCID = USERS.dcid.
+     * USERS + extension tables — only the fields not on TEACHERS (middle name,
+     * staff_classification, hire/exit dates), one row per active staff user.
+     * Dates are TO_CHAR'd to a canonical Y-m-d so Normalizer::parseDate gets a
+     * stable format regardless of the session's NLS_DATE_FORMAT.
      */
-    private function schoolStaffSql(): string
+    private function usersSql(): string
     {
         return 'SELECT '
-            . 'ss.dcid       AS "SCHOOLSTAFF.dcid", '
-            . 'ss.users_dcid AS "SCHOOLSTAFF.Users_DCID", '
-            . 'ss.schoolid   AS "SCHOOLSTAFF.SchoolID" '
-            . 'FROM ' . $this->table('schoolstaff') . ' ss';
+            . 'u.dcid        AS "USERS.dcid", '
+            . 'u.first_name  AS "USERS.First_Name", '
+            . 'u.middle_name AS "USERS.Middle_Name", '
+            . 'u.last_name   AS "USERS.Last_Name", '
+            . 'ext.staff_classification              AS "U_DEF_EXT_USERS.staff_classification", '
+            . "TO_CHAR(sx.hiredate, 'YYYY-MM-DD')    AS \"S_USR_X.hiredate\", "
+            . "TO_CHAR(alx.exit_date, 'YYYY-MM-DD')  AS \"S_AL_USR_X.exit_date\" "
+            . 'FROM ' . $this->table('users') . ' u '
+            . 'LEFT JOIN ' . $this->table('u_def_ext_users') . ' ext ON ext.usersdcid = u.dcid '
+            . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid '
+            . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid '
+            . 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers') . ' t '
+            . 'WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
     }
 }

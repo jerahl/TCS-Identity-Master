@@ -212,17 +212,21 @@ logical fields; sample files in `db/seeds/feeds/` show the expected format. Adju
 the maps to match the district's real export headers.
 
 **PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
-instead of exporting CSVs to SFTP, we query its three staff datasets in place over
-ODBC (`PowerSchoolOdbcReader`) and join them on the user DCID
-(`PowerSchoolBundle::combine`):
-- **USERS** — one row per user (`USERS.dcid`): demographics, `HomeSchoolId`,
-  `Title`, `staff_classification`, `TeacherNumber`, hire/exit.
-- **TEACHERS** — one row per (user, school): `TEACHERS.ID` is the per-assignment
-  PS id AD mirrors as `T`+ID; `TEACHERS.Users_DCID` = `USERS.dcid`. A user with N
-  schools has N rows / N IDs — **all** are linked to the crosswalk.
-- **SCHOOLSTAFF** — one row per assignment (`SCHOOLSTAFF.dcid` = `TEACHERS.dcid`);
-  `SCHOOLSTAFF.SchoolID` is that assignment's school → one assignment per school,
-  primary = `HomeSchoolId`.
+instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in
+place and `PowerSchoolBundle::combine` joins them into one record per person:
+- **TEACHERS** is the anchor — every active row (`WHERE status = 1`), one per
+  (teacher, school). `TEACHERS.ID` is the per-assignment PS id AD mirrors as
+  `T`+ID; rows are grouped by `Users_DCID`, so a teacher at N schools has N rows /
+  N IDs — **all** linked to the crosswalk. The assignment's school is
+  `TEACHERS.SchoolID`; the primary is the row where `SchoolID = HomeSchoolId`.
+  `TeacherNumber` and `Title` come from here too.
+- **USERS** (+ `U_DEF_EXT_USERS`, `S_USR_X`, `S_AL_USR_X`) adds only what isn't on
+  TEACHERS — middle name, `staff_classification`, hire/exit dates — joined by
+  `users_dcid`.
+
+This mirrors the district's existing pull (`… FROM Teachers WHERE Status = 1`),
+widened to all active assignment rows for multi-school support. `Email_Addr` /
+`TeacherLoginID` are **not** imported — OneSync owns username/email.
 
 Configure the connection in `.env` (`PS_ODBC_DSN`, `PS_ODBC_USER`, `PS_ODBC_PASS`,
 optional `PS_ODBC_SCHEMA`); it needs the `pdo_odbc` PHP extension plus an Oracle
