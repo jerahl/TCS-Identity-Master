@@ -110,7 +110,7 @@ final class PowerSchoolBundle
                 dob: self::nz($u['S_AL_USR_X.dob'] ?? ''),
                 alsdeId: self::nz($u['S_USR_X.state_staffnumber'] ?? ''),
                 email: self::nz($u['USERS.Email_Addr'] ?? ''),
-                gender: self::nz($u['USERS.Gender'] ?? ''),
+                gender: self::nz($u['TEACHERS.SCHED_GENDER'] ?? ''),
                 phone: self::nz($u['USERS.Home_Phone'] ?? ''),
                 address1: self::nz($u['USERS.Street'] ?? ''),
                 city: self::nz($u['USERS.City'] ?? ''),

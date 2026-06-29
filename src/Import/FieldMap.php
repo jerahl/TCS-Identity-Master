@@ -67,7 +67,7 @@ final class FieldMap
         ['key' => 'ethnicity', 'label' => 'Ethnicity Description', 'group' => 'demographics',
          'nextgen' => 'Ethnicity Description', 'powerschool' => 'S_AL_USR_X (ALSDE code)', 'golden' => 'person.ethnicity_source', 'origin' => 'nextgen', 'pii' => false],
         ['key' => 'gender', 'label' => 'Gender Type', 'group' => 'demographics',
-         'nextgen' => 'Gender Type', 'powerschool' => 'USERS.Gender', 'golden' => 'person.gender', 'origin' => 'nextgen', 'pii' => false],
+         'nextgen' => 'Gender Type', 'powerschool' => 'TEACHERS.SCHED_GENDER', 'golden' => 'person.gender', 'origin' => 'nextgen', 'pii' => false],
         ['key' => 'dob', 'label' => 'Date of Birth', 'group' => 'demographics',
          'nextgen' => null, 'powerschool' => 'S_AL_USR_X.dob', 'golden' => 'person.dob', 'origin' => 'powerschool', 'pii' => true],
         ['key' => 'alsde_id', 'label' => 'ALSID', 'group' => 'demographics',
@@ -241,6 +241,11 @@ final class FieldMap
         }
         if ($key === 'phone') {
             return preg_replace('/\D+/', '', $a) === preg_replace('/\D+/', '', $b);
+        }
+        if ($key === 'gender') {
+            // PowerSchool stores M/F; NextGen sends Male/Female. Compare initials.
+            $initial = static fn(string $s): string => mb_strtoupper(mb_substr(ltrim($s), 0, 1));
+            return $initial($a) === $initial($b);
         }
         return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
     }

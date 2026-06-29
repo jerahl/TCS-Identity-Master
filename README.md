@@ -243,10 +243,11 @@ reconcile.
 > pull) have no snapshot** — the panel says so and prompts a re-import rather than
 > flagging every field as a mismatch. Run `php bin/import_powerschool.php` once to
 > populate it. The demographic columns are pulled in **best-effort** queries
-> (`PowerSchoolOdbcReader::extendedQueries()` — one per group: contact, ALSID/
-> `state_staffnumber`, DOB), so if your PS schema names one differently the core
-> import still succeeds and the other groups still come through — only that group
-> is skipped (logged).
+> (`PowerSchoolOdbcReader::extendedQueries()` — one per group: contact, gender,
+> ALSID/`state_staffnumber`, and the optional DOB), so if your PS schema names one
+> differently the core import still succeeds and the other groups still come
+> through — only that group is skipped (logged). DOB is off unless
+> `PS_STAFF_DOB_COLUMN` is set.
 
 **PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
 instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in
@@ -258,13 +259,17 @@ place and `PowerSchoolBundle::combine` joins them into one record per person:
   `TEACHERS.SchoolID`; the primary is the row where `SchoolID = HomeSchoolId`.
   `TeacherNumber` and `Title` come from here too.
 - **USERS** (+ `U_DEF_EXT_USERS`, `S_USR_X`, `S_AL_USR_X`) adds only what isn't on
-  TEACHERS — middle name, `staff_classification`, hire/exit dates, and the two
-  demographics NextGen doesn't carry: **date of birth** (`S_AL_USR_X.dob`) and the
-  **Alabama State ID (ALSID)** (`S_USR_X.state_staffnumber`) — joined by
-  `usersdcid`. These land on `person.dob` / `person.alsde_id`. They're pulled in
-  separate **best-effort** queries (one per group), so a column your live PS schema
-  names differently only loses that group, not the whole import — adjust the names
-  in `PowerSchoolOdbcReader::extendedQueries()` to match.
+  TEACHERS — middle name, `staff_classification`, hire/exit dates, and the
+  demographics NextGen doesn't carry. The **Alabama State ID (ALSID)** comes from
+  `S_USR_X.state_staffnumber` (joined by `usersdcid`) and lands on
+  `person.alsde_id`. **Date of birth** is not a standard PowerSchool field, so its
+  column varies by district — name it on `S_AL_USR_X` via `PS_STAFF_DOB_COLUMN`
+  (blank = skip the DOB pull). Contact fields for the comparison come from `USERS`
+  (`email_addr`, `home_phone`, `street`, `city`, `state`, `zip`) and gender from
+  the TEACHERS view (`sched_gender`). All of these are pulled in separate
+  **best-effort** queries (one per group), so a column your live PS schema names
+  differently only loses that group, not the whole import — adjust the names in
+  `PowerSchoolOdbcReader::extendedQueries()` to match.
 
 This mirrors the district's existing pull (`… FROM Teachers WHERE Status = 1`),
 widened to all active assignment rows for multi-school support. `Email_Addr` /
