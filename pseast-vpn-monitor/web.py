@@ -147,7 +147,14 @@ def serve(cfg: dict, mock: bool = False, fixtures_dir: str = monitor.DEFAULT_FIX
     """Run the dashboard server until interrupted. Returns a process exit code."""
     addr = cfg.get("listen_addr", "127.0.0.1")
     port = int(cfg.get("listen_port", 8787))
-    store = history.from_config(cfg)
+    # History/alerts are secondary: if the DB can't be opened (e.g. a read-only
+    # path under a hardened systemd sandbox), log it and keep serving status
+    # rather than failing to start.
+    try:
+        store = history.from_config(cfg)
+    except Exception as exc:
+        print(f"[history] disabled — could not open history DB: {exc}", flush=True)
+        store = None
     cache = SnapshotCache(cfg, mock, fixtures_dir, store=store)
     recent = int(cfg.get("history_recent", 20))
 

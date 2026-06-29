@@ -136,7 +136,10 @@ SupplementaryGroups=systemd-journal adm
 WorkingDirectory=/opt/pseast-vpn-monitor
 ExecStart=/usr/bin/python3 /opt/pseast-vpn-monitor/monitor.py --serve --config /opt/pseast-vpn-monitor/config.json
 Restart=on-failure
-# Hardening — this process only reads:
+# systemd creates /var/lib/pseast-vpn-monitor (owned by vpnmon, writable) for the
+# history sqlite DB — point history_db there in config.json (see note below).
+StateDirectory=pseast-vpn-monitor
+# Hardening — this process only reads, except its own StateDirectory:
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -147,12 +150,30 @@ ReadOnlyPaths=/opt/pseast-vpn-monitor
 WantedBy=multi-user.target
 ```
 
+Because `ProtectSystem=strict` + `ReadOnlyPaths` make the install dir read-only,
+the **history DB must live on a writable path**. Set it to the `StateDirectory`
+(or disable history) in `config.json`:
+
+```jsonc
+"history_db": "/var/lib/pseast-vpn-monitor/history.sqlite3"
+// or, to skip history entirely:  "history_enabled": false
+```
+
 ```sh
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin vpnmon
 sudo usermod -aG systemd-journal,adm vpnmon     # journal read access (see below)
+# If you test-ran as root first, remove the root-owned DB it left in the repo:
+sudo rm -f /opt/pseast-vpn-monitor/history.sqlite3
 sudo systemctl daemon-reload
 sudo systemctl enable --now pseast-vpn-monitor.service
 ```
+
+> **Service won't start but the CLI works as root?** The hardened sandbox makes
+> the install dir read-only, so a relative `history_db` (which resolves next to
+> the script) can't be created. Use the absolute `StateDirectory` path above, or
+> set `history_enabled: false`. As of this version the monitor logs
+> `[history] disabled …` and keeps serving rather than exiting, but the history
+> view stays empty until the path is writable.
 
 ---
 
