@@ -22,9 +22,12 @@
 #
 # USAGE (run as root from a checkout of this repo):
 #
-#   # Auto-download the Oracle Instant Client and point at your PS host:
-#   sudo PS_HOST=psprod.example.org PS_SERVICE=PSPROD \
-#        PS_ODBC_USER=idm_ro PS_ODBC_PASS='…' \
+#   # Auto-download the Oracle Instant Client and point at your PS host. The
+#   # PowerSchool DB is normally SID/service PSPRODDB on port 1521, reached with a
+#   # read-only account (PSNavigator or DataMiner); its tables are exposed via
+#   # synonyms, so PS_ODBC_SCHEMA is usually NOT needed.
+#   sudo PS_HOST=psprod.example.org PS_SERVICE=PSPRODDB \
+#        PS_ODBC_USER=PSNavigator PS_ODBC_PASS='…' \
 #        bash scripts/setup-powerschool-odbc.sh
 #
 #   # Reuse a specific Instant Client already on the host (e.g. OneSync's):

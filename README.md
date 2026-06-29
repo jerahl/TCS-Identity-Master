@@ -237,10 +237,17 @@ unixODBC + `pdo_odbc` and the Oracle Instant Client, registers the driver and a
 DSN, writes `PS_ODBC_*` to `.env`, and opens a test connection:
 
 ```sh
-sudo PS_HOST=psprod.example.org PS_SERVICE=PSPROD \
-     PS_ODBC_USER=idm_ro PS_ODBC_PASS='…' \
+sudo PS_HOST=psprod.example.org PS_SERVICE=PSPRODDB \
+     PS_ODBC_USER=PSNavigator PS_ODBC_PASS='…' \
      bash scripts/setup-powerschool-odbc.sh
 ```
+
+Per PowerSchool's *Oracle ODBC Configuration and Client Installation Guide*, the
+database is normally **SID/service `PSPRODDB`** on port **1521**, reached with a
+read-only account — **`PSNavigator`** (broad table access) or **`DataMiner`**.
+Those accounts see the tables through synonyms (“Only User’s Schema / Include
+Synonyms”), so `PS_ODBC_SCHEMA` is usually left blank. If the service form is
+rejected, the same name often works as a SID (`PS_SID=PSPRODDB`).
 
 Set `PS_PORT` if the listener isn't on 1521, and `PS_ODBC_SCHEMA` if the PS tables
 live under a specific owner (it's written to `.env` and prefixed onto the table
