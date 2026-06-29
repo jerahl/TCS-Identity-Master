@@ -37,7 +37,15 @@ final class AuthController extends Controller
             $this->flash('SSO is not configured.');
             return $this->redirect(url('/login'));
         }
-        (new SamlProvider())->login(url('/'));
+        try {
+            (new SamlProvider())->login(url('/'));
+        } catch (\Throwable $e) {
+            // e.g. missing SP config or php-saml not installed — surface a logged
+            // reason and a friendly message instead of a raw 500 (mirrors acs()).
+            error_log('[idm] SAML login: ' . $e->getMessage());
+            $this->flash('Could not start single sign-on. Contact IT if this persists.');
+            return $this->redirect(url('/login'));
+        }
         return ''; // SamlProvider issued a redirect to the IdP
     }
 
