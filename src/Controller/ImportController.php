@@ -38,6 +38,7 @@ final class ImportController extends Controller
             'staged'  => $staged,
             'sources' => ImportSource::webUploadable(),
             'sftpSources' => FeedSync::configuredSources(),
+            'psOdbc'  => FeedSync::powerSchoolOdbcEnabled(),
             'csrf'    => Csrf::token(),
         ], 'import', 'Configuration  /  Import & feeds', 'Import / feeds — TCS Identity Master');
     }
@@ -52,7 +53,7 @@ final class ImportController extends Controller
 
         $system = (string) ($_POST['system'] ?? '');
         if (!ImportSource::allowsWebUpload($system)) {
-            $this->flash('NextGen and PowerSchool import from the SFTP feed (PowerSchool needs all three files); single-file web upload is disabled for them.');
+            $this->flash('NextGen imports from the SFTP feed and PowerSchool reads directly from Oracle (ODBC); single-file web upload is disabled for them.');
             return $this->redirect(url('/import'));
         }
         $dryRun = !empty($_POST['dry_run']);
@@ -94,7 +95,7 @@ final class ImportController extends Controller
         return $this->redirect(url('/import'));
     }
 
-    /** Pull new feed files from SFTP and import them (editor+). */
+    /** Pull new feed files from SFTP and import PowerSchool from Oracle (editor+). */
     public function fetch(): string
     {
         if (!Csrf::check($_POST['_csrf'] ?? null)) {
@@ -102,17 +103,33 @@ final class ImportController extends Controller
             return $this->redirect(url('/import'));
         }
         $sources = FeedSync::configuredSources();
-        if ($sources === []) {
-            $this->flash('No SFTP sources configured (set SFTP_HOST + SFTP_<source>_DIR).');
+        $psOdbc = FeedSync::powerSchoolOdbcEnabled();
+        if ($sources === [] && !$psOdbc) {
+            $this->flash('No feeds configured (set SFTP_HOST + SFTP_<source>_DIR, and/or PS_ODBC_* for PowerSchool).');
             return $this->redirect(url('/import'));
         }
+        $actor = $this->currentUser()['name'];
+        $downloaded = 0;
+        $imported = 0;
+        $errors = 0;
         try {
-            $r = FeedSync::fromConfig()->run($sources, false, true, $this->currentUser()['name']);
-            $t = $r['totals'];
-            $this->flash("SFTP pull: downloaded {$t['downloaded']}, imported {$t['imported']}, errors {$t['errors']}.");
+            if ($sources !== []) {
+                $t = FeedSync::fromConfig()->run($sources, false, true, $actor)['totals'];
+                $downloaded += $t['downloaded'];
+                $imported += $t['imported'];
+                $errors += $t['errors'];
+            }
+            if ($psOdbc) {
+                $ps = FeedSync::importPowerSchoolOdbc(false, $actor);
+                if ($ps !== null) {
+                    $imported += $ps['imported'];
+                    $errors += $ps['errors'];
+                }
+            }
+            $this->flash("Feed pull: downloaded {$downloaded}, imported {$imported}, errors {$errors}.");
         } catch (\Throwable $e) {
-            error_log('[idm] sftp fetch: ' . $e->getMessage());
-            $this->flash('SFTP pull failed: ' . $e->getMessage());
+            error_log('[idm] feed fetch: ' . $e->getMessage());
+            $this->flash('Feed pull failed: ' . $e->getMessage());
         }
         return $this->redirect(url('/import'));
     }

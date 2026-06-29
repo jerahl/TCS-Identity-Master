@@ -112,8 +112,10 @@ With no `--file`, the importer uses the newest `*.csv` in the configured feed
 directory (`FEED_NEXTGEN_DIR` / `FEED_POWERSCHOOL_DIR`). `--dry-run` reads and
 matches but writes nothing.
 
-**Pull from SFTP.** The app can fetch feed CSVs straight from the district SFTP
-server (phpseclib — no PECL needed), then import them. Configure `SFTP_HOST` /
+**Pull & import feeds.** The app can fetch feed CSVs straight from the district
+SFTP server (phpseclib — no PECL needed) and import them, and it pulls PowerSchool
+directly from Oracle over ODBC (see below — no SFTP for PowerSchool). Configure
+`SFTP_HOST` /
 `SFTP_USER`, a key (`SFTP_PRIVATE_KEY_FILE`) or `SFTP_PASS`, the host
 `SFTP_FINGERPRINT` (verified), and a remote dir per source (`SFTP_<SOURCE>_DIR`);
 files land in `FEED_<SOURCE>_DIR`. Already-fetched files are tracked in
@@ -163,7 +165,7 @@ that drives the person type and crosswalk provenance:
 | Source | CLI | person_type | crosswalk system |
 |--------|-----|-------------|------------------|
 | NextGen (HR) | `bin/import_nextgen.php` | from feed | `nextgen` |
-| PowerSchool (TEACHERS export) | `bin/import_powerschool.php` | from feed | `powerschool` |
+| PowerSchool (Oracle/ODBC) | `bin/import_powerschool.php` | from feed | `powerschool` |
 | Intern | `bin/import_intern.php` | `intern` | `intern_csv` |
 | Long-term substitute | `bin/import_sub.php` | `sub` | `sub` |
 | Contract employee | `bin/import_contractor.php` | `contractor` | `contractor` |
@@ -209,30 +211,77 @@ first *or* last name is in `IMPORT_EXCLUDE_NAMES` (comma-separated, default
 logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
 the maps to match the district's real export headers.
 
-**PowerSchool is three files.** PowerSchool exports as USERS + TEACHERS +
-SCHOOLSTAFF, joined on the user DCID (`PowerSchoolBundle::combine`):
-- **USERS** — one row per user (`USERS.dcid`): demographics, `HomeSchoolId`,
-  `Title`, `staff_classification`, `TeacherNumber`, hire/exit.
-- **TEACHERS** — one row per (user, school): `TEACHERS.ID` is the per-assignment
-  PS id AD mirrors as `T`+ID; `TEACHERS.Users_DCID` = `USERS.dcid`. A user with N
-  schools has N rows / N IDs — **all** are linked to the crosswalk.
-- **SCHOOLSTAFF** — one row per assignment (`SCHOOLSTAFF.dcid` = `TEACHERS.dcid`);
-  `SCHOOLSTAFF.SchoolID` is that assignment's school → one assignment per school,
-  primary = `HomeSchoolId`.
+**PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
+instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in
+place and `PowerSchoolBundle::combine` joins them into one record per person:
+- **TEACHERS** is the anchor — every active row (`WHERE status = 1`), one per
+  (teacher, school). `TEACHERS.ID` is the per-assignment PS id AD mirrors as
+  `T`+ID; rows are grouped by `Users_DCID`, so a teacher at N schools has N rows /
+  N IDs — **all** linked to the crosswalk. The assignment's school is
+  `TEACHERS.SchoolID`; the primary is the row where `SchoolID = HomeSchoolId`.
+  `TeacherNumber` and `Title` come from here too.
+- **USERS** (+ `U_DEF_EXT_USERS`, `S_USR_X`, `S_AL_USR_X`) adds only what isn't on
+  TEACHERS — middle name, `staff_classification`, hire/exit dates — joined by
+  `users_dcid`.
 
-Run it on a folder holding all three (auto-detected by header, any filename):
+This mirrors the district's existing pull (`… FROM Teachers WHERE Status = 1`),
+widened to all active assignment rows for multi-school support. `Email_Addr` /
+`TeacherLoginID` are **not** imported — OneSync owns username/email.
+
+Configure the connection in `.env` (`PS_ODBC_DSN`, `PS_ODBC_USER`, `PS_ODBC_PASS`,
+optional `PS_ODBC_SCHEMA`); it needs the `pdo_odbc` PHP extension plus an Oracle
+ODBC driver on the host. Grant the connecting user **SELECT only**.
+
+`scripts/setup-powerschool-odbc.sh` does the host setup end-to-end — installs
+unixODBC + `pdo_odbc` and the Oracle Instant Client, registers the driver and a
+DSN, writes `PS_ODBC_*` to `.env`, and opens a test connection:
+
+```sh
+sudo PS_HOST=psprod.example.org PS_SERVICE=PSPRODDB \
+     PS_ODBC_USER=PSNavigator PS_ODBC_PASS='…' \
+     bash scripts/setup-powerschool-odbc.sh
+```
+
+Per PowerSchool's *Oracle ODBC Configuration and Client Installation Guide*, the
+database is normally **SID/service `PSPRODDB`** on port **1521**, reached with a
+read-only account — **`PSNavigator`** (broad table access) or **`DataMiner`**.
+Those accounts see the tables through synonyms (“Only User’s Schema / Include
+Synonyms”), so `PS_ODBC_SCHEMA` is usually left blank. If the service form is
+rejected, the same name often works as a SID (`PS_SID=…`).
+
+Your hosted instance may use a **district-specific** service name rather than the
+generic `PSPRODDB` (e.g. an Alabama district code like `AL018`). The reliable
+source is the connection OneSync already uses — copy the host, port, and
+service/SID from its Oracle account config (the field OneSync labels “Schema
+Name” is the value after `host:port/` in the connect string).
+
+Set `PS_PORT` if the listener isn't on 1521, and `PS_ODBC_SCHEMA` if the PS tables
+live under a specific owner (it's written to `.env` and prefixed onto the table
+names). By default it downloads the latest Instant Client; point it at a client
+already on the host with `INSTANTCLIENT_DIR=…` (e.g. the `instantclient_19_12`
+OneSync uses), or supply pre-downloaded Basic+ODBC zips/rpms offline with
+`INSTANTCLIENT_ZIP_DIR=…`.
+
+```sh
+php bin/import_powerschool.php --dry-run     # query Oracle, change nothing
+php bin/import_powerschool.php               # full import
+```
+
+`fetch_feeds.php` (and the **Pull & import feeds** button) run this import as part
+of the nightly job. Each person auto-links to the NextGen record by
+`TeacherNumber`, and AD usernames (`bin/import_ad_usernames.php`) link by
+`TEACHERS.ID`.
+
+CSV files remain a manual/offline fallback (auto-detected by header, any filename):
 
 ```sh
 php bin/import_powerschool.php --dir=/var/idm/feeds/powerschool --dry-run
-php bin/import_powerschool.php --dir=/var/idm/feeds/powerschool
 # or explicit: --users=… --teachers=… --schoolstaff=…
 ```
 
-`fetch_feeds.php` (and the **Pull from SFTP** button) pull all three from the
-PowerSchool SFTP dir and run the combined import once; a re-pull of any one file
-re-imports using the current trio. Each person auto-links to the NextGen record
-by `TeacherNumber`, and AD usernames (`bin/import_ad_usernames.php`) link by
-`TEACHERS.ID`.
+The SQL the reader runs mirrors the columns the old CSV export selected; adjust
+`src/Import/PowerSchoolOdbcReader.php` (or set `PS_ODBC_SCHEMA`) to match the
+district's live PS schema.
 
 **Reset for a clean import test.** To wipe imported person data (person, source
 ids, assignments, staging/batches, sync status, lifecycle/audit) while preserving

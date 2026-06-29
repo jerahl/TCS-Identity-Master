@@ -3,14 +3,18 @@
 declare(strict_types=1);
 
 /**
- * Pull feed CSVs from the SFTP server and import them.
- *   php bin/fetch_feeds.php                 fetch + import all configured sources
- *   php bin/fetch_feeds.php --source=intern only one source
- *   php bin/fetch_feeds.php --dry-run       list what would be downloaded
+ * Pull feed CSVs from the SFTP server and import them, and import PowerSchool
+ * directly from its Oracle DB over ODBC.
+ *
+ *   php bin/fetch_feeds.php                 fetch SFTP feeds + ODBC PowerSchool
+ *   php bin/fetch_feeds.php --source=intern only one source (intern via SFTP)
+ *   php bin/fetch_feeds.php --source=powerschool   only the ODBC PowerSchool import
+ *   php bin/fetch_feeds.php --dry-run       list what would be downloaded/imported
  *   php bin/fetch_feeds.php --no-import      download only (don't import)
  *
- * Sources are enabled by setting SFTP_<SOURCE>_DIR. Already-fetched files are
- * skipped (feed_fetch_log). Intended for cron, before the nightly OneSync run.
+ * SFTP sources are enabled by setting SFTP_<SOURCE>_DIR; already-fetched files are
+ * skipped (feed_fetch_log). PowerSchool is enabled by setting PS_ODBC_DSN.
+ * Intended for cron, before the nightly OneSync run.
  */
 
 use App\Sync\FeedSync;
@@ -26,37 +30,60 @@ foreach (array_slice($_SERVER['argv'] ?? [], 1) as $arg) {
 }
 $dryRun = isset($opts['dry-run']);
 $doImport = !isset($opts['no-import']);
+$sourceOpt = isset($opts['source']) && $opts['source'] !== '1' ? $opts['source'] : null;
 
-$sources = isset($opts['source']) && $opts['source'] !== '1'
-    ? [$opts['source']]
-    : FeedSync::configuredSources();
+// PowerSchool comes from Oracle (ODBC), every other source from SFTP.
+$wantPowerSchool = ($sourceOpt === null || $sourceOpt === 'powerschool') && FeedSync::powerSchoolOdbcEnabled();
+$sftpSources = $sourceOpt === 'powerschool'
+    ? []
+    : ($sourceOpt !== null ? [$sourceOpt] : FeedSync::configuredSources());
 
-if ($sources === []) {
-    fwrite(STDERR, "No SFTP sources configured. Set SFTP_HOST + SFTP_<SOURCE>_DIR in .env.\n");
+if ($sftpSources === [] && !$wantPowerSchool) {
+    fwrite(STDERR, "Nothing to do. Set SFTP_HOST + SFTP_<SOURCE>_DIR for SFTP feeds, and/or PS_ODBC_* for the PowerSchool Oracle import.\n");
     exit(1);
 }
 
-echo 'Fetching feeds from SFTP: ' . implode(', ', $sources)
+$label = array_merge($sftpSources, $wantPowerSchool ? ['powerschool (odbc)'] : []);
+echo 'Fetching feeds: ' . implode(', ', $label)
     . ($dryRun ? '  (DRY RUN)' : ($doImport ? '' : '  (download only)')) . "\n";
 
-try {
-    $result = FeedSync::fromConfig()->run($sources, $dryRun, $doImport);
-} catch (\Throwable $e) {
-    fwrite(STDERR, 'Fetch failed: ' . $e->getMessage() . "\n");
-    exit(1);
+$sources = [];
+$totals = ['downloaded' => 0, 'imported' => 0, 'errors' => 0];
+
+if ($sftpSources !== []) {
+    try {
+        $result = FeedSync::fromConfig()->run($sftpSources, $dryRun, $doImport);
+        $sources = $result['sources'];
+        foreach ($result['totals'] as $k => $v) {
+            $totals[$k] += $v;
+        }
+    } catch (\Throwable $e) {
+        fwrite(STDERR, 'SFTP fetch failed: ' . $e->getMessage() . "\n");
+        exit(1);
+    }
 }
 
-foreach ($result['sources'] as $s) {
+// PowerSchool: import straight from Oracle (skipped under --no-import).
+if ($wantPowerSchool && $doImport) {
+    $ps = FeedSync::importPowerSchoolOdbc($dryRun);
+    if ($ps !== null) {
+        $sources[] = $ps;
+        $totals['imported'] += $ps['imported'];
+        $totals['errors'] += $ps['errors'];
+    }
+}
+
+foreach ($sources as $s) {
     if (isset($s['error'])) {
         printf("  [%s] ERROR: %s\n", $s['key'], $s['error']);
         continue;
     }
-    printf("  [%s] %d new file(s)\n", $s['key'], $s['downloaded']);
+    $via = ($s['source'] ?? '') === 'oracle-odbc' ? ' (oracle odbc)' : sprintf(' %d new file(s)', $s['downloaded']);
+    printf("  [%s]%s\n", $s['key'], $via);
     foreach ($s['files'] as $f) {
         printf("      %-32s %s\n", $f['name'], $f['reason']);
     }
 }
-$t = $result['totals'];
-echo "\n  downloaded {$t['downloaded']}  ·  imported {$t['imported']}  ·  errors {$t['errors']}\n";
+echo "\n  downloaded {$totals['downloaded']}  ·  imported {$totals['imported']}  ·  errors {$totals['errors']}\n";
 
-exit($t['errors'] > 0 ? 1 : 0);
+exit($totals['errors'] > 0 ? 1 : 0);

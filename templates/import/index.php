@@ -14,11 +14,16 @@ $badge = static fn(string $mod): string => match ($mod) {
     </div>
   </div>
 
-  <?php if (!empty($canEdit) && !empty($sftpSources)): ?>
+  <?php if (!empty($canEdit) && (!empty($sftpSources) || !empty($psOdbc))): ?>
+  <?php
+    $pullBits = [];
+    if (!empty($sftpSources)) { $pullBits[] = 'SFTP CSVs for ' . implode(', ', $sftpSources); }
+    if (!empty($psOdbc)) { $pullBits[] = 'PowerSchool from Oracle (ODBC)'; }
+  ?>
   <div class="card card--pad" style="margin-bottom:18px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
     <div style="flex:1; min-width:240px;">
-      <div style="font-weight:600; font-size:13.5px;">Pull from SFTP</div>
-      <div class="muted" style="font-size:12px;">Fetch new CSVs for: <?= e(implode(', ', $sftpSources)) ?>. Already-fetched files are skipped.</div>
+      <div style="font-weight:600; font-size:13.5px;">Pull &amp; import feeds</div>
+      <div class="muted" style="font-size:12px;">Fetch <?= e(implode('; ', $pullBits)) ?>. Already-fetched SFTP files are skipped.</div>
     </div>
     <form method="post" action="<?= e(url('/import/fetch')) ?>">
       <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
@@ -50,7 +55,7 @@ $badge = static fn(string $mod): string => match ($mod) {
       </label>
       <button class="btn btn--primary" type="submit" style="height:38px;">Import</button>
     </form>
-    <p class="muted" style="font-size:11.5px; margin:10px 0 0;">Columns must match the source's expected headers (see <code>src/Import/ColumnMap.php</code>). Re-uploads are idempotent — existing people re-match by source id. <strong>NextGen and PowerSchool import from the SFTP feed</strong> (PowerSchool joins three files) and aren't single-file uploads.</p>
+    <p class="muted" style="font-size:11.5px; margin:10px 0 0;">Columns must match the source's expected headers (see <code>src/Import/ColumnMap.php</code>). Re-uploads are idempotent — existing people re-match by source id. <strong>NextGen imports from the SFTP feed and PowerSchool reads directly from Oracle (ODBC)</strong> — neither is a single-file upload.</p>
   </div>
   <?php endif; ?>
 
