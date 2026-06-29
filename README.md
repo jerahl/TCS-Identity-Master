@@ -238,6 +238,14 @@ Interns and contractors live **only in IDM** (manual records, no NextGen/PowerSc
 feed); their panel shows the current IDM values and notes there is nothing to
 reconcile.
 
+> The PowerSchool side of the comparison comes from a field snapshot captured on
+> each PowerSchool import. **Records imported before this feature (or by a failed
+> pull) have no snapshot** — the panel says so and prompts a re-import rather than
+> flagging every field as a mismatch. Run `php bin/import_powerschool.php` once to
+> populate it. The demographic columns are pulled in a **best-effort** query
+> (`extendedUsersSql`), so if your PS schema names one of them differently the core
+> import still succeeds — only the comparison for that field is skipped (logged).
+
 **PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
 instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in
 place and `PowerSchoolBundle::combine` joins them into one record per person:

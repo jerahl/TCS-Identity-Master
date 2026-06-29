@@ -62,7 +62,9 @@ final class PersonController extends Controller
         $src = $this->people->latestSourceValues($id);
         $hasNextGen = $src['nextgen'] !== null;
         $hasPowerSchool = $src['powerschool'] !== null;
-        $idmOnly = !$hasNextGen && !$hasPowerSchool;
+        $psStale = !empty($src['powerschool_stale']) && !$hasPowerSchool;
+        // IDM-only = neither feed has a usable record (and PS isn't merely stale).
+        $idmOnly = !$hasNextGen && !$hasPowerSchool && !$psStale;
 
         return $this->render('people/show', [
             'p'          => $person,
@@ -74,6 +76,7 @@ final class PersonController extends Controller
             'fieldGroups'    => FieldMap::GROUPS,
             'hasNextGen'     => $hasNextGen,
             'hasPowerSchool' => $hasPowerSchool,
+            'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }

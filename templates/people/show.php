@@ -1,5 +1,5 @@
 <?php
-/** @var array $p @var array $sourceIds @var array $assignments @var array $syncStatus @var array $timeline @var array $fieldMap @var array $fieldGroups @var bool $hasNextGen @var bool $hasPowerSchool @var bool $idmOnly */
+/** @var array $p @var array $sourceIds @var array $assignments @var array $syncStatus @var array $timeline @var array $fieldMap @var array $fieldGroups @var bool $hasNextGen @var bool $hasPowerSchool @var bool $psStale @var bool $idmOnly */
 use App\View\Present;
 
 $st = Present::status($p['status']);
@@ -197,6 +197,10 @@ $eventTitle = [
     <?php if ($idmOnly): ?>
       <div class="identity-note" style="margin-bottom:14px;">
         Maintained in <strong>IDM only</strong> (intern / contractor) — there is no NextGen or PowerSchool source to compare against. The NextGen column shows the current record values.
+      </div>
+    <?php elseif ($psStale): ?>
+      <div class="identity-note" style="margin-bottom:14px; color:#B45309;">
+        A PowerSchool record is linked, but its field values weren't captured at import time (an older or failed pull). Re-run the PowerSchool import (<span class="mono">php bin/import_powerschool.php</span>) to compare field by field.
       </div>
     <?php elseif (!$hasPowerSchool): ?>
       <div class="identity-note" style="margin-bottom:14px;">

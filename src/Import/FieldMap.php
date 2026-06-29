@@ -163,6 +163,12 @@ final class FieldMap
             $psValue = ($f['powerschool'] !== null && is_array($psFields))
                 ? trim((string) ($psFields[$f['key']] ?? ''))
                 : '';
+            // DOB / ALSID have no NextGen column — PowerSchool is their source and
+            // they're stored on the golden record, so show that value even when the
+            // staged snapshot is unavailable.
+            if ($psValue === '' && $f['nextgen'] === null && $f['powerschool'] !== null) {
+                $psValue = self::valueFor($f, $person, $primary);
+            }
             $rows[] = [
                 'key'         => $f['key'],
                 'label'       => $f['label'],

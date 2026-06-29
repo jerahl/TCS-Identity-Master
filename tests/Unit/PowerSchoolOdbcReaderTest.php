@@ -129,4 +129,86 @@ final class PowerSchoolOdbcReaderTest extends TestCase
             }
         };
     }
+
+    public function testMergesExtendedDemographicsByDcid(): void
+    {
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(false));
+        $data = $reader->read();
+
+        // The extended columns are merged onto the core USERS row by dcid.
+        self::assertSame('darby@tcs.k12.al.us', $data['users'][0]['USERS.Email_Addr']);
+        self::assertSame('1985-03-09', $data['users'][0]['S_AL_USR_X.dob']);
+
+        $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
+        self::assertSame('darby@tcs.k12.al.us', $ps->email, 'email surfaced for verification');
+        self::assertSame('1985-03-09', $ps->dob);
+        self::assertSame('AL-552201', $ps->alsdeId);
+    }
+
+    public function testExtendedDemographicsFailureDoesNotBreakCoreImport(): void
+    {
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(true));
+        $data = $reader->read(); // must not throw
+
+        // Core import still produces the user; the optional fields are just absent.
+        self::assertCount(1, $data['users']);
+        $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
+        self::assertSame('Darby', $ps->firstName, 'core fields intact');
+        self::assertNull($ps->dob, 'optional fields blank when the extended query fails');
+        self::assertNull($ps->email);
+    }
+
+    /**
+     * Like fakeDb(), but distinguishes the extended-demographics query (matched on
+     * the USERS.Email_Addr alias, checked first) and can be told to throw on it to
+     * exercise the best-effort merge.
+     */
+    private function fakeDbWithDemographics(bool $extendedThrows): PDO
+    {
+        return new class ('sqlite::memory:', $extendedThrows) extends PDO {
+            public function __construct(string $dsn, private bool $extendedThrows)
+            {
+                parent::__construct($dsn);
+            }
+
+            public function query(string $query, ?int $fetchMode = null, mixed ...$args): \PDOStatement|false
+            {
+                if (str_contains($query, '"USERS.Email_Addr"')) {
+                    if ($this->extendedThrows) {
+                        throw new \PDOException('ORA-00904: invalid identifier');
+                    }
+                    $rows = [['USERS.dcid' => 1011, 'USERS.Email_Addr' => 'darby@tcs.k12.al.us',
+                              'USERS.Gender' => 'F', 'S_AL_USR_X.dob' => '1985-03-09',
+                              'S_AL_USR_X.StaffStateID' => 'AL-552201']];
+                } elseif (str_contains($query, '"USERS.dcid"')) {
+                    $rows = [['USERS.dcid' => 1011, 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K',
+                              'USERS.Last_Name' => 'Allen']];
+                } elseif (str_contains($query, '"TEACHERS.ID"')) {
+                    $rows = [['TEACHERS.ID' => 1011, 'TEACHERS.Users_DCID' => 1011, 'TEACHERS.TeacherNumber' => 12924,
+                              'TEACHERS.First_Name' => 'Darby', 'TEACHERS.Last_Name' => 'Allen',
+                              'TEACHERS.HomeSchoolId' => 160, 'TEACHERS.SchoolID' => 160, 'TEACHERS.Title' => 'Teacher']];
+                } else {
+                    $rows = [];
+                }
+
+                if ($rows === []) {
+                    $stmt = parent::query('SELECT 1 AS "x" WHERE 1 = 0');
+                    $stmt->setFetchMode(PDO::FETCH_ASSOC);
+                    return $stmt;
+                }
+                $selects = [];
+                foreach ($rows as $i => $row) {
+                    $cols = [];
+                    foreach ($row as $k => $v) {
+                        $lit = $v === null ? 'NULL' : (is_int($v) ? (string) $v : $this->quote((string) $v));
+                        $cols[] = $i === 0 ? $lit . ' AS "' . $k . '"' : $lit;
+                    }
+                    $selects[] = 'SELECT ' . implode(', ', $cols);
+                }
+                $stmt = parent::query(implode(' UNION ALL ', $selects));
+                $stmt->setFetchMode(PDO::FETCH_ASSOC);
+                return $stmt;
+            }
+        };
+    }
 }

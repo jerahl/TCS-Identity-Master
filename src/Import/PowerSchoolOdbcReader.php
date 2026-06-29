@@ -54,11 +54,44 @@ final class PowerSchoolOdbcReader
     public function read(): array
     {
         $teachers = $this->query($this->teachersSql());
+        $users = $this->query($this->usersSql());
+        // The DOB / ALSID / contact columns are newer + district-specific, so a
+        // schema that lacks one must not break the core import. Pull them in a
+        // separate best-effort query and merge in; on failure they're just blank.
+        $this->mergeExtendedDemographics($users);
         return [
-            'users'       => $this->query($this->usersSql()),
+            'users'       => $users,
             'teachers'    => $teachers,
             'schoolstaff' => self::schoolStaffFromTeachers($teachers),
         ];
+    }
+
+    /**
+     * Merge the optional demographic/verification columns (DOB, ALSID, e-mail,
+     * gender, phone, address) into the USERS rows by dcid. Best-effort: if the
+     * query fails (a column the schema doesn't have), log and leave USERS as-is so
+     * the core import still succeeds — those fields simply won't be compared.
+     *
+     * @param array<int,array<string,string>> $users by-ref; extended columns added
+     */
+    private function mergeExtendedDemographics(array &$users): void
+    {
+        try {
+            $extra = $this->query($this->extendedUsersSql());
+        } catch (\Throwable $e) {
+            error_log('[idm] PowerSchool extended demographics query skipped: ' . $e->getMessage());
+            return;
+        }
+        $byDcid = [];
+        foreach ($extra as $row) {
+            $byDcid[trim((string) ($row['USERS.dcid'] ?? ''))] = $row;
+        }
+        foreach ($users as &$u) {
+            $row = $byDcid[trim((string) ($u['USERS.dcid'] ?? ''))] ?? null;
+            if ($row !== null) {
+                $u = array_merge($u, $row);
+            }
+        }
     }
 
     /**
@@ -149,14 +182,10 @@ final class PowerSchoolOdbcReader
     /**
      * USERS + extension tables — only the fields not on TEACHERS (middle name,
      * staff_classification, hire/exit dates), one row per active staff user.
-     * The Alabama state extension (S_AL_USR_X) also supplies the two demographics
-     * NextGen doesn't carry: the staff date of birth and the Alabama State ID
-     * (ALSID). Dates are TO_CHAR'd to a canonical Y-m-d so Normalizer::parseDate
-     * gets a stable format regardless of the session's NLS_DATE_FORMAT.
-     *
-     * NOTE: the DOB / ALSID column names (alx.dob, alx.staffstateid) mirror this
-     * district's Alabama extension; adjust them to your live PS schema if they
-     * differ — the same "adjust to your schema" caveat as the rest of this reader.
+     * Dates are TO_CHAR'd to a canonical Y-m-d so Normalizer::parseDate gets a
+     * stable format regardless of the session's NLS_DATE_FORMAT. This is the
+     * core, schema-stable set; DOB/ALSID/contact extras come from
+     * extendedUsersSql() (best-effort, merged in read()).
      */
     private function usersSql(): string
     {
@@ -165,9 +194,30 @@ final class PowerSchoolOdbcReader
             . 'u.first_name  AS "USERS.First_Name", '
             . 'u.middle_name AS "USERS.Middle_Name", '
             . 'u.last_name   AS "USERS.Last_Name", '
-            // Contact / demographic fields pulled for VERIFICATION against NextGen
-            // only — NextGen stays the source of record, so these are never written
-            // to the golden record (see PowerSchoolImporter).
+            . 'ext.staff_classification              AS "U_DEF_EXT_USERS.staff_classification", '
+            . "TO_CHAR(sx.hiredate, 'YYYY-MM-DD')    AS \"S_USR_X.hiredate\", "
+            . "TO_CHAR(alx.exit_date, 'YYYY-MM-DD')  AS \"S_AL_USR_X.exit_date\" "
+            . 'FROM ' . $this->table('users') . ' u '
+            . 'LEFT JOIN ' . $this->table('u_def_ext_users') . ' ext ON ext.usersdcid = u.dcid '
+            . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid '
+            . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid '
+            . 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers') . ' t '
+            . 'WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
+    }
+
+    /**
+     * Optional demographics pulled to VERIFY against NextGen (never written to the
+     * golden record), plus the two PowerSchool-sourced fields NextGen lacks — date
+     * of birth and the Alabama State ID (ALSID), from the Alabama extension
+     * S_AL_USR_X (`dob`, `staffstateid`). Run best-effort and merged by dcid, so a
+     * district whose schema names these columns differently (or lacks one) loses
+     * only the comparison, not the whole import — adjust the names to match your
+     * live PS schema.
+     */
+    private function extendedUsersSql(): string
+    {
+        return 'SELECT '
+            . 'u.dcid        AS "USERS.dcid", '
             . 'u.email_addr  AS "USERS.Email_Addr", '
             . 'u.gender      AS "USERS.Gender", '
             . 'u.home_phone  AS "USERS.Home_Phone", '
@@ -175,14 +225,9 @@ final class PowerSchoolOdbcReader
             . 'u.city        AS "USERS.City", '
             . 'u.state       AS "USERS.State", '
             . 'u.zip         AS "USERS.Zip", '
-            . 'ext.staff_classification              AS "U_DEF_EXT_USERS.staff_classification", '
-            . "TO_CHAR(sx.hiredate, 'YYYY-MM-DD')    AS \"S_USR_X.hiredate\", "
-            . "TO_CHAR(alx.exit_date, 'YYYY-MM-DD')  AS \"S_AL_USR_X.exit_date\", "
             . "TO_CHAR(alx.dob, 'YYYY-MM-DD')        AS \"S_AL_USR_X.dob\", "
             . 'alx.staffstateid                      AS "S_AL_USR_X.StaffStateID" '
             . 'FROM ' . $this->table('users') . ' u '
-            . 'LEFT JOIN ' . $this->table('u_def_ext_users') . ' ext ON ext.usersdcid = u.dcid '
-            . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid '
             . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid '
             . 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers') . ' t '
             . 'WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
