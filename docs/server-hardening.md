@@ -103,6 +103,57 @@ sudo SSH_PORT=2222 ADMIN_USER=deploy bash scripts/harden-debian12.sh
 sudo DISABLE_PASSWORD_AUTH=1 INSTALL_AIDE=1 RUN_LYNIS=1 bash scripts/harden-debian12.sh
 ```
 
+## Letting the OneSync server reach the database
+
+By default MariaDB listens on `127.0.0.1` and the firewall blocks 3306 — keep it
+that way. The one exception is the **OneSync server**, which pulls from our DB
+over ODBC as the read-only `onesync_ro` user (SELECT on `v_onesync_source` only).
+`scripts/allow-db-access.sh` opens that single path, scoped to the OneSync host:
+
+```sh
+# Open 3306 to the OneSync server only (firewall + MariaDB bind + DB grants):
+sudo TRUSTED_IPS="203.0.113.10" bash scripts/allow-db-access.sh
+
+# Multiple hosts / a subnet, and pin MariaDB to one internal NIC:
+sudo TRUSTED_IPS="10.20.0.5,10.20.0.0/24" BIND_ADDRESS="10.20.0.4" \
+     bash scripts/allow-db-access.sh
+
+# Once the IP grants work, remove the wildcard onesync_ro@'%' for good measure:
+sudo TRUSTED_IPS="10.20.0.5" DROP_WILDCARD_GRANT=1 bash scripts/allow-db-access.sh
+```
+
+What it does (idempotent):
+
+1. **Firewall** — `ufw allow from <ip> to any port 3306` for each trusted IP.
+   It **refuses** `0.0.0.0/0` or any `/0`; the DB is never opened to the internet.
+2. **MariaDB bind-address** — writes `mariadb.conf.d/99-idm-remote.cnf` so the DB
+   listens for remote connections (default `0.0.0.0`, gated by the firewall;
+   set `BIND_ADDRESS` to a specific internal NIC for an extra layer).
+3. **DB grants** — pins `onesync_ro` to the trusted IP(s) at the MySQL level
+   (reads the password from `.env`). `DROP_WILDCARD_GRANT=1` removes the
+   `onesync_ro@'%'` entry that `setup-dev-debian12.sh` created.
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `TRUSTED_IPS` | *(required)* | Comma/space-separated IPv4 or CIDR (the OneSync host). |
+| `DB_PORT` | `.env` → `3306` | |
+| `BIND_ADDRESS` | `0.0.0.0` | Pin to an internal NIC for defense in depth. |
+| `TIGHTEN_DB_GRANTS` | `1` | Also restrict `onesync_ro` by host in MySQL. |
+| `DROP_WILDCARD_GRANT` | `0` | Drop `onesync_ro@'%'` after IP grants exist. |
+
+Verify from the OneSync server (and confirm nobody else can):
+
+```sh
+mysql -h <idm-host> -P 3306 -u onesync_ro -p -e "SELECT 1"
+```
+
+To revoke: `sudo ufw delete allow from <ip> to any port 3306 proto tcp` and drop
+the matching `onesync_ro@'<ip>'` user.
+
+> Note: this is *inbound* (OneSync → our DB). The separate `ONESYNC_DB_*` config
+> is the reverse — IDM reading OneSync's own database *outbound* — which needs no
+> inbound rule since the firewall leaves egress open.
+
 ## After running — not automated
 
 These need your domain, certificate, and IdP, so the script leaves them to you:
