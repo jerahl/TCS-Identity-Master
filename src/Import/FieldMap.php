@@ -67,9 +67,9 @@ final class FieldMap
         ['key' => 'ethnicity', 'label' => 'Ethnicity Description', 'group' => 'demographics',
          'nextgen' => 'Ethnicity Description', 'powerschool' => 'S_AL_USR_X (ALSDE code)', 'golden' => 'person.ethnicity_source', 'origin' => 'nextgen', 'pii' => false],
         ['key' => 'gender', 'label' => 'Gender Type', 'group' => 'demographics',
-         'nextgen' => 'Gender Type', 'powerschool' => 'TEACHERS.SCHED_GENDER', 'golden' => 'person.gender', 'origin' => 'nextgen', 'pii' => false],
+         'nextgen' => 'Gender Type', 'powerschool' => 'UsersCoreFields.gender', 'golden' => 'person.gender', 'origin' => 'nextgen', 'pii' => false],
         ['key' => 'dob', 'label' => 'Date of Birth', 'group' => 'demographics',
-         'nextgen' => null, 'powerschool' => 'S_AL_USR_X.dob', 'golden' => 'person.dob', 'origin' => 'powerschool', 'pii' => true],
+         'nextgen' => null, 'powerschool' => 'UsersCoreFields.dob', 'golden' => 'person.dob', 'origin' => 'powerschool', 'pii' => true],
         ['key' => 'alsde_id', 'label' => 'ALSID', 'group' => 'demographics',
          'nextgen' => null, 'powerschool' => 'S_USR_X.state_staffnumber', 'golden' => 'person.alsde_id', 'origin' => 'powerschool', 'pii' => false],
 

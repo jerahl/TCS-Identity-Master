@@ -132,65 +132,42 @@ final class PowerSchoolOdbcReaderTest extends TestCase
 
     public function testMergesExtendedDemographicGroupsByDcid(): void
     {
-        putenv('PS_STAFF_DOB_COLUMN=dob'); // enable the optional DOB group
-        try {
-            $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(''));
-            $data = $reader->read();
-        } finally {
-            putenv('PS_STAFF_DOB_COLUMN');
-        }
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(''));
+        $data = $reader->read();
 
         // Each best-effort group is merged onto the core USERS row by dcid.
         self::assertSame('darby@tcs.k12.al.us', $data['users'][0]['USERS.Email_Addr']);
-        self::assertSame('F', $data['users'][0]['TEACHERS.SCHED_GENDER']);
-        self::assertSame('1985-03-09', $data['users'][0]['S_AL_USR_X.dob']);
+        self::assertSame('Female', $data['users'][0]['UsersCoreFields.gender']);
+        self::assertSame('1985-03-09', $data['users'][0]['UsersCoreFields.dob']);
         self::assertSame('AL-552201', $data['users'][0]['S_USR_X.state_staffnumber']);
 
         $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
         self::assertSame('darby@tcs.k12.al.us', $ps->email, 'email surfaced for verification');
-        self::assertSame('F', $ps->gender, 'gender from TEACHERS.SCHED_GENDER');
-        self::assertSame('1985-03-09', $ps->dob);
+        self::assertSame('Female', $ps->gender, 'gender from UsersCoreFields');
+        self::assertSame('1985-03-09', $ps->dob, 'DOB from UsersCoreFields');
         self::assertSame('AL-552201', $ps->alsdeId, 'ALSID from S_USR_X.state_staffnumber');
     }
 
     public function testOneFailingGroupDoesNotSinkTheOthers(): void
     {
-        // The contact group's SQL errors (a column the schema lacks); the gender,
-        // ALSID and DOB groups are independent queries and must still come through,
-        // and the core import must not throw.
-        putenv('PS_STAFF_DOB_COLUMN=dob');
-        try {
-            $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics('contact'));
-            $data = $reader->read();
-        } finally {
-            putenv('PS_STAFF_DOB_COLUMN');
-        }
+        // The contact group's SQL errors (a column the schema lacks); the
+        // core_fields (DOB/gender) and staff_number (ALSID) groups are independent
+        // queries and must still come through, and the core import must not throw.
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics('contact'));
+        $data = $reader->read();
 
         $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
         self::assertSame('Darby', $ps->firstName, 'core fields intact');
         self::assertNull($ps->email, 'failed contact group -> email blank');
-        self::assertSame('F', $ps->gender, 'gender group unaffected');
-        self::assertSame('1985-03-09', $ps->dob, 'dob group unaffected');
+        self::assertSame('Female', $ps->gender, 'core_fields group unaffected');
+        self::assertSame('1985-03-09', $ps->dob, 'core_fields group unaffected');
         self::assertSame('AL-552201', $ps->alsdeId, 'staff_number group unaffected');
-    }
-
-    public function testDobGroupSkippedWhenColumnNotConfigured(): void
-    {
-        putenv('PS_STAFF_DOB_COLUMN'); // ensure unset
-        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(''));
-        $data = $reader->read();
-
-        // No DOB column configured -> no DOB query runs, no error, dob stays blank.
-        self::assertArrayNotHasKey('S_AL_USR_X.dob', $data['users'][0]);
-        $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
-        self::assertNull($ps->dob);
-        self::assertSame('AL-552201', $ps->alsdeId, 'ALSID still pulled');
     }
 
     /**
      * Like fakeDb(), but answers each extended-demographics group query by its
-     * distinctive alias. Pass a group label ('contact' | 'gender' | 'staff_number'
-     * | 'dob') to make that group's query throw, exercising the best-effort merge.
+     * distinctive alias. Pass a group label ('contact' | 'core_fields' |
+     * 'staff_number') to make that group's query throw, exercising the merge.
      */
     private function fakeDbWithDemographics(string $throwGroup): PDO
     {
@@ -204,9 +181,8 @@ final class PowerSchoolOdbcReaderTest extends TestCase
             {
                 $group = match (true) {
                     str_contains($query, '"USERS.Email_Addr"')         => 'contact',
-                    str_contains($query, '"TEACHERS.SCHED_GENDER"')    => 'gender',
+                    str_contains($query, '"UsersCoreFields.dob"')      => 'core_fields',
                     str_contains($query, '"S_USR_X.state_staffnumber"') => 'staff_number',
-                    str_contains($query, '"S_AL_USR_X.dob"')           => 'dob',
                     default                                            => '',
                 };
                 if ($group !== '' && $group === $this->throwGroup) {
@@ -215,9 +191,8 @@ final class PowerSchoolOdbcReaderTest extends TestCase
 
                 $rows = match (true) {
                     $group === 'contact' => [['USERS.dcid' => 1011, 'USERS.Email_Addr' => 'darby@tcs.k12.al.us']],
-                    $group === 'gender' => [['USERS.dcid' => 1011, 'TEACHERS.SCHED_GENDER' => 'F']],
+                    $group === 'core_fields' => [['USERS.dcid' => 1011, 'UsersCoreFields.dob' => '1985-03-09', 'UsersCoreFields.gender' => 'Female']],
                     $group === 'staff_number' => [['USERS.dcid' => 1011, 'S_USR_X.state_staffnumber' => 'AL-552201']],
-                    $group === 'dob' => [['USERS.dcid' => 1011, 'S_AL_USR_X.dob' => '1985-03-09']],
                     str_contains($query, '"USERS.dcid"') => [
                         ['USERS.dcid' => 1011, 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K', 'USERS.Last_Name' => 'Allen'],
                     ],

@@ -226,9 +226,8 @@ final class PowerSchoolOdbcReader
         $active = 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers')
             . ' t WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
 
-        $queries = [
-            // USERS address/contact block. NOTE: USERS has no gender column — staff
-            // gender is on the TEACHERS view (SCHED_GENDER), pulled separately below.
+        return [
+            // USERS address/contact block (USERS has no gender/dob — see core_fields).
             'contact' => 'SELECT '
                 . 'u.dcid       AS "USERS.dcid", '
                 . 'u.email_addr AS "USERS.Email_Addr", '
@@ -239,12 +238,15 @@ final class PowerSchoolOdbcReader
                 . 'u.zip        AS "USERS.Zip" '
                 . 'FROM ' . $users . ' u ' . $active,
 
-            // Staff gender = TEACHERS.SCHED_GENDER (M/F on the Teachers view), keyed
-            // to the user via users_dcid so it merges onto the USERS row.
-            'gender' => 'SELECT '
-                . 't.users_dcid   AS "USERS.dcid", '
-                . 't.sched_gender AS "TEACHERS.SCHED_GENDER" '
-                . 'FROM ' . $this->table('teachers') . ' t WHERE t.status = ' . self::STATUS_ACTIVE,
+            // Staff date of birth + gender live on the UsersCoreFields extension
+            // (general staff info), joined by usersdcid. DOB is stored as a string
+            // there (Varchar), so it's selected raw and parsed by Normalizer.
+            'core_fields' => 'SELECT '
+                . 'u.dcid     AS "USERS.dcid", '
+                . 'ucf.dob    AS "UsersCoreFields.dob", '
+                . 'ucf.gender AS "UsersCoreFields.gender" '
+                . 'FROM ' . $users . ' u '
+                . 'LEFT JOIN ' . $this->table('userscorefields') . ' ucf ON ucf.usersdcid = u.dcid ' . $active,
 
             // ALSID lives on S_USR_X (state_staffnumber), joined by usersdcid — the
             // same join the core query already uses for S_USR_X.hiredate.
@@ -254,20 +256,5 @@ final class PowerSchoolOdbcReader
                 . 'FROM ' . $users . ' u '
                 . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid ' . $active,
         ];
-
-        // Staff DOB is not a standard PowerSchool field, so its column varies by
-        // district. Enable it by naming the column on the Alabama extension
-        // S_AL_USR_X via PS_STAFF_DOB_COLUMN (e.g. "dob"); when unset the query is
-        // skipped entirely so no invalid-identifier error is raised.
-        $dobCol = trim((string) Config::get('PS_STAFF_DOB_COLUMN', ''));
-        if ($dobCol !== '' && preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $dobCol) === 1) {
-            $queries['dob'] = 'SELECT '
-                . 'u.dcid AS "USERS.dcid", '
-                . "TO_CHAR(alx.{$dobCol}, 'YYYY-MM-DD') AS \"S_AL_USR_X.dob\" "
-                . 'FROM ' . $users . ' u '
-                . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid ' . $active;
-        }
-
-        return $queries;
     }
 }

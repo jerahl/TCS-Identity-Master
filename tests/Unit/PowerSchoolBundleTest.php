@@ -76,12 +76,12 @@ final class PowerSchoolBundleTest extends TestCase
 
     public function testSurfacesDobAndAlsid(): void
     {
-        // ALSID = S_USR_X.state_staffnumber; DOB = S_AL_USR_X.dob. Both are merged
-        // onto the USERS row by the reader; combine() must carry them onto the
-        // PsUser so the importer can store person.dob / person.alsde_id.
+        // ALSID = S_USR_X.state_staffnumber; DOB = UsersCoreFields.dob. Both are
+        // merged onto the USERS row by the reader; combine() must carry them onto
+        // the PsUser so the importer can store person.dob / person.alsde_id.
         $users = [
             ['USERS.dcid' => '1011', 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K', 'USERS.Last_Name' => 'Allen',
-             'S_AL_USR_X.dob' => '1985-03-09', 'S_USR_X.state_staffnumber' => 'AL-552201'],
+             'UsersCoreFields.dob' => '1985-03-09', 'S_USR_X.state_staffnumber' => 'AL-552201'],
         ];
         $teachers = [
             ['TEACHERS.ID' => '1011', 'TEACHERS.Users_DCID' => '1011', 'TEACHERS.TeacherNumber' => '12924',
