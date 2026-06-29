@@ -60,7 +60,11 @@ final class SamlProvider
     /** SP metadata XML (for handing to the IdP admin). */
     public function metadata(): string
     {
-        $settings = new SamlSettings($this->settings(), true);
+        // SP metadata depends only on SP config. The IdP admin needs this file
+        // BEFORE the IdP side is set up, so build SP-only settings here — don't
+        // require IdP config that legitimately isn't configured yet. The second
+        // arg ($spValidationOnly) tells php-saml to skip IdP validation too.
+        $settings = new SamlSettings($this->settings(true), true);
         $metadata = $settings->getSPMetadata();
         $errors = $settings->validateMetadata($metadata);
         if ($errors !== []) {
@@ -79,11 +83,22 @@ final class SamlProvider
         return new SamlAuth($this->settings());
     }
 
-    /** Build the onelogin settings array from config. */
-    private function settings(): array
+    /**
+     * Build the onelogin settings array from config.
+     *
+     * @param bool $spOnly When true (SP metadata generation), IdP fields are
+     *   optional — they may not be configured yet. For login/ACS leave it false
+     *   so missing IdP config fails loudly instead of producing a broken flow.
+     */
+    private function settings(bool $spOnly = false): array
     {
         $spKey = self::fileContents(Config::get('SAML_SP_PRIVATE_KEY_FILE'));
         $spCert = self::fileContents(Config::get('SAML_SP_CERT_FILE'));
+
+        // IdP values are required for SSO, but optional when we only need SP metadata.
+        $idp = static fn(string $key): string => $spOnly
+            ? (string) Config::get($key, '')
+            : Config::require($key);
 
         return [
             'strict' => true,
@@ -103,16 +118,16 @@ final class SamlProvider
                 'privateKey' => $spKey ?? '',
             ],
             'idp' => [
-                'entityId' => Config::require('SAML_IDP_ENTITY_ID'),
+                'entityId' => $idp('SAML_IDP_ENTITY_ID'),
                 'singleSignOnService' => [
-                    'url' => Config::require('SAML_IDP_SSO_URL'),
+                    'url' => $idp('SAML_IDP_SSO_URL'),
                     'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
                 ],
                 'singleLogoutService' => [
                     'url' => (string) Config::get('SAML_IDP_SLO_URL', ''),
                     'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
                 ],
-                'x509cert' => Config::require('SAML_IDP_X509_CERT'),
+                'x509cert' => $idp('SAML_IDP_X509_CERT'),
             ],
             'security' => [
                 'requestedAuthnContext' => false,

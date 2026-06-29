@@ -64,12 +64,17 @@ final class AuthController extends Controller
     /** SP metadata for the IdP admin. */
     public function metadata(): string
     {
-        header('Content-Type: text/xml');
+        header('Content-Type: application/samlmetadata+xml');
         try {
             return (new SamlProvider())->metadata();
         } catch (\Throwable $e) {
+            error_log('[idm] SAML metadata: ' . $e->getMessage());
             http_response_code(500);
-            return '<!-- SAML not configured: ' . htmlspecialchars($e->getMessage()) . ' -->';
+            // Return a well-formed XML document (a comment-only body is invalid
+            // XML and renders as a confusing parser error in the browser).
+            return '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+                . '<error>SAML SP metadata unavailable. Check SAML_SP_* configuration. '
+                . 'See the server log for details.</error>';
         }
     }
 
