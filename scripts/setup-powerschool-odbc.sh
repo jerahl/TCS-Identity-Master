@@ -107,12 +107,13 @@ else
         die "Set PS_SERVICE=<service name> (recommended) or PS_SID=<sid>, or PS_SERVERNAME=<TNS descriptor>."
     fi
     [[ "${PS_PORT}" =~ ^[0-9]+$ ]] || die "PS_PORT must be numeric (got '${PS_PORT}')."
-    # EZConnect connect string the Oracle ODBC driver resolves without tnsnames.ora.
-    #   service: //host:port/service     SID: //host:port:sid
     if [ -n "${PS_SERVICE}" ]; then
+        # EZConnect — the Oracle Net resolver handles this without tnsnames.ora.
         CONNECT_STR="//${PS_HOST}:${PS_PORT}/${PS_SERVICE}"
     else
-        CONNECT_STR="//${PS_HOST}:${PS_PORT}:${PS_SID}"
+        # SID has no EZConnect slot (//host:port:sid is JDBC-thin syntax, which the
+        # ODBC driver's Net resolver rejects) — use a full descriptor with SID.
+        CONNECT_STR="(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${PS_HOST})(PORT=${PS_PORT}))(CONNECT_DATA=(SID=${PS_SID})))"
     fi
 fi
 
