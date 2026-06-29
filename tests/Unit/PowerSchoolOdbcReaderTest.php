@@ -130,66 +130,76 @@ final class PowerSchoolOdbcReaderTest extends TestCase
         };
     }
 
-    public function testMergesExtendedDemographicsByDcid(): void
+    public function testMergesExtendedDemographicGroupsByDcid(): void
     {
-        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(false));
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(''));
         $data = $reader->read();
 
-        // The extended columns are merged onto the core USERS row by dcid.
+        // Each best-effort group is merged onto the core USERS row by dcid.
         self::assertSame('darby@tcs.k12.al.us', $data['users'][0]['USERS.Email_Addr']);
         self::assertSame('1985-03-09', $data['users'][0]['S_AL_USR_X.dob']);
+        self::assertSame('AL-552201', $data['users'][0]['S_USR_X.state_staffnumber']);
 
         $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
         self::assertSame('darby@tcs.k12.al.us', $ps->email, 'email surfaced for verification');
         self::assertSame('1985-03-09', $ps->dob);
-        self::assertSame('AL-552201', $ps->alsdeId);
+        self::assertSame('AL-552201', $ps->alsdeId, 'ALSID from S_USR_X.state_staffnumber');
     }
 
-    public function testExtendedDemographicsFailureDoesNotBreakCoreImport(): void
+    public function testOneFailingGroupDoesNotSinkTheOthers(): void
     {
-        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(true));
-        $data = $reader->read(); // must not throw
+        // The contact group's SQL errors (a column the schema lacks); DOB + ALSID
+        // are independent queries and must still come through, and the core import
+        // must not throw.
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics('contact'));
+        $data = $reader->read();
 
-        // Core import still produces the user; the optional fields are just absent.
-        self::assertCount(1, $data['users']);
         $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
         self::assertSame('Darby', $ps->firstName, 'core fields intact');
-        self::assertNull($ps->dob, 'optional fields blank when the extended query fails');
-        self::assertNull($ps->email);
+        self::assertNull($ps->email, 'failed contact group -> email blank');
+        self::assertSame('1985-03-09', $ps->dob, 'dob group unaffected');
+        self::assertSame('AL-552201', $ps->alsdeId, 'staff_number group unaffected');
     }
 
     /**
-     * Like fakeDb(), but distinguishes the extended-demographics query (matched on
-     * the USERS.Email_Addr alias, checked first) and can be told to throw on it to
-     * exercise the best-effort merge.
+     * Like fakeDb(), but answers each extended-demographics group query by its
+     * distinctive alias. Pass a group label ('contact' | 'staff_number' | 'dob')
+     * to make that group's query throw, exercising the independent best-effort merge.
      */
-    private function fakeDbWithDemographics(bool $extendedThrows): PDO
+    private function fakeDbWithDemographics(string $throwGroup): PDO
     {
-        return new class ('sqlite::memory:', $extendedThrows) extends PDO {
-            public function __construct(string $dsn, private bool $extendedThrows)
+        return new class ('sqlite::memory:', $throwGroup) extends PDO {
+            public function __construct(string $dsn, private string $throwGroup)
             {
                 parent::__construct($dsn);
             }
 
             public function query(string $query, ?int $fetchMode = null, mixed ...$args): \PDOStatement|false
             {
-                if (str_contains($query, '"USERS.Email_Addr"')) {
-                    if ($this->extendedThrows) {
-                        throw new \PDOException('ORA-00904: invalid identifier');
-                    }
-                    $rows = [['USERS.dcid' => 1011, 'USERS.Email_Addr' => 'darby@tcs.k12.al.us',
-                              'USERS.Gender' => 'F', 'S_AL_USR_X.dob' => '1985-03-09',
-                              'S_AL_USR_X.StaffStateID' => 'AL-552201']];
-                } elseif (str_contains($query, '"USERS.dcid"')) {
-                    $rows = [['USERS.dcid' => 1011, 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K',
-                              'USERS.Last_Name' => 'Allen']];
-                } elseif (str_contains($query, '"TEACHERS.ID"')) {
-                    $rows = [['TEACHERS.ID' => 1011, 'TEACHERS.Users_DCID' => 1011, 'TEACHERS.TeacherNumber' => 12924,
-                              'TEACHERS.First_Name' => 'Darby', 'TEACHERS.Last_Name' => 'Allen',
-                              'TEACHERS.HomeSchoolId' => 160, 'TEACHERS.SchoolID' => 160, 'TEACHERS.Title' => 'Teacher']];
-                } else {
-                    $rows = [];
+                $group = match (true) {
+                    str_contains($query, '"USERS.Email_Addr"')        => 'contact',
+                    str_contains($query, '"S_USR_X.state_staffnumber"') => 'staff_number',
+                    str_contains($query, '"S_AL_USR_X.dob"')           => 'dob',
+                    default                                            => '',
+                };
+                if ($group !== '' && $group === $this->throwGroup) {
+                    throw new \PDOException("ORA-00904: invalid identifier ({$group})");
                 }
+
+                $rows = match (true) {
+                    $group === 'contact' => [['USERS.dcid' => 1011, 'USERS.Email_Addr' => 'darby@tcs.k12.al.us', 'USERS.Gender' => 'F']],
+                    $group === 'staff_number' => [['USERS.dcid' => 1011, 'S_USR_X.state_staffnumber' => 'AL-552201']],
+                    $group === 'dob' => [['USERS.dcid' => 1011, 'S_AL_USR_X.dob' => '1985-03-09']],
+                    str_contains($query, '"USERS.dcid"') => [
+                        ['USERS.dcid' => 1011, 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K', 'USERS.Last_Name' => 'Allen'],
+                    ],
+                    str_contains($query, '"TEACHERS.ID"') => [
+                        ['TEACHERS.ID' => 1011, 'TEACHERS.Users_DCID' => 1011, 'TEACHERS.TeacherNumber' => 12924,
+                         'TEACHERS.First_Name' => 'Darby', 'TEACHERS.Last_Name' => 'Allen',
+                         'TEACHERS.HomeSchoolId' => 160, 'TEACHERS.SchoolID' => 160, 'TEACHERS.Title' => 'Teacher'],
+                    ],
+                    default => [],
+                };
 
                 if ($rows === []) {
                     $stmt = parent::query('SELECT 1 AS "x" WHERE 1 = 0');

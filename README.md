@@ -242,9 +242,11 @@ reconcile.
 > each PowerSchool import. **Records imported before this feature (or by a failed
 > pull) have no snapshot** — the panel says so and prompts a re-import rather than
 > flagging every field as a mismatch. Run `php bin/import_powerschool.php` once to
-> populate it. The demographic columns are pulled in a **best-effort** query
-> (`extendedUsersSql`), so if your PS schema names one of them differently the core
-> import still succeeds — only the comparison for that field is skipped (logged).
+> populate it. The demographic columns are pulled in **best-effort** queries
+> (`PowerSchoolOdbcReader::extendedQueries()` — one per group: contact, ALSID/
+> `state_staffnumber`, DOB), so if your PS schema names one differently the core
+> import still succeeds and the other groups still come through — only that group
+> is skipped (logged).
 
 **PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
 instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in
@@ -257,10 +259,12 @@ place and `PowerSchoolBundle::combine` joins them into one record per person:
   `TeacherNumber` and `Title` come from here too.
 - **USERS** (+ `U_DEF_EXT_USERS`, `S_USR_X`, `S_AL_USR_X`) adds only what isn't on
   TEACHERS — middle name, `staff_classification`, hire/exit dates, and the two
-  demographics NextGen doesn't carry: **date of birth** and the **Alabama State
-  ID (ALSID)**, both from the Alabama extension `S_AL_USR_X` (`dob`,
-  `staffstateid`) — joined by `users_dcid`. These land on `person.dob` /
-  `person.alsde_id`. Adjust those column names if your live PS schema differs.
+  demographics NextGen doesn't carry: **date of birth** (`S_AL_USR_X.dob`) and the
+  **Alabama State ID (ALSID)** (`S_USR_X.state_staffnumber`) — joined by
+  `usersdcid`. These land on `person.dob` / `person.alsde_id`. They're pulled in
+  separate **best-effort** queries (one per group), so a column your live PS schema
+  names differently only loses that group, not the whole import — adjust the names
+  in `PowerSchoolOdbcReader::extendedQueries()` to match.
 
 This mirrors the district's existing pull (`… FROM Teachers WHERE Status = 1`),
 widened to all active assignment rows for multi-school support. `Email_Addr` /

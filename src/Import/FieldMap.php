@@ -71,7 +71,7 @@ final class FieldMap
         ['key' => 'dob', 'label' => 'Date of Birth', 'group' => 'demographics',
          'nextgen' => null, 'powerschool' => 'S_AL_USR_X.dob', 'golden' => 'person.dob', 'origin' => 'powerschool', 'pii' => true],
         ['key' => 'alsde_id', 'label' => 'ALSID', 'group' => 'demographics',
-         'nextgen' => null, 'powerschool' => 'S_AL_USR_X.StaffStateID', 'golden' => 'person.alsde_id', 'origin' => 'powerschool', 'pii' => false],
+         'nextgen' => null, 'powerschool' => 'S_USR_X.state_staffnumber', 'golden' => 'person.alsde_id', 'origin' => 'powerschool', 'pii' => false],
 
         // --- Contact (PII) ----------------------------------------------------
         ['key' => 'phone', 'label' => 'Phone Number', 'group' => 'contact',

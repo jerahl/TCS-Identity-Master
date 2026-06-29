@@ -108,7 +108,7 @@ final class PowerSchoolBundle
                 teacherIds: array_map('strval', array_keys($teacherIds)),
                 schools: $schools,
                 dob: self::nz($u['S_AL_USR_X.dob'] ?? ''),
-                alsdeId: self::nz($u['S_AL_USR_X.StaffStateID'] ?? ''),
+                alsdeId: self::nz($u['S_USR_X.state_staffnumber'] ?? ''),
                 email: self::nz($u['USERS.Email_Addr'] ?? ''),
                 gender: self::nz($u['USERS.Gender'] ?? ''),
                 phone: self::nz($u['USERS.Home_Phone'] ?? ''),

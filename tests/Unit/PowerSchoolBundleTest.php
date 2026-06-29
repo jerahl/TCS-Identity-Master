@@ -74,14 +74,14 @@ final class PowerSchoolBundleTest extends TestCase
         self::assertCount(2, $out[0]->schools);
     }
 
-    public function testSurfacesDobAndAlsidFromAlabamaExtension(): void
+    public function testSurfacesDobAndAlsid(): void
     {
-        // DOB + ALSID live on the Alabama state extension (S_AL_USR_X), joined to
-        // USERS. combine() must carry them onto the PsUser so the importer can
-        // store person.dob / person.alsde_id.
+        // ALSID = S_USR_X.state_staffnumber; DOB = S_AL_USR_X.dob. Both are merged
+        // onto the USERS row by the reader; combine() must carry them onto the
+        // PsUser so the importer can store person.dob / person.alsde_id.
         $users = [
             ['USERS.dcid' => '1011', 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K', 'USERS.Last_Name' => 'Allen',
-             'S_AL_USR_X.dob' => '1985-03-09', 'S_AL_USR_X.StaffStateID' => 'AL-552201'],
+             'S_AL_USR_X.dob' => '1985-03-09', 'S_USR_X.state_staffnumber' => 'AL-552201'],
         ];
         $teachers = [
             ['TEACHERS.ID' => '1011', 'TEACHERS.Users_DCID' => '1011', 'TEACHERS.TeacherNumber' => '12924',

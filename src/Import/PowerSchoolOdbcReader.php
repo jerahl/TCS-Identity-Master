@@ -68,28 +68,31 @@ final class PowerSchoolOdbcReader
 
     /**
      * Merge the optional demographic/verification columns (DOB, ALSID, e-mail,
-     * gender, phone, address) into the USERS rows by dcid. Best-effort: if the
-     * query fails (a column the schema doesn't have), log and leave USERS as-is so
-     * the core import still succeeds — those fields simply won't be compared.
+     * gender, phone, address) into the USERS rows by dcid. Each group is its OWN
+     * best-effort query so one missing column can't blank the others: if a query
+     * fails (a column the schema doesn't have), it's logged and skipped, and the
+     * core import plus the other groups still succeed.
      *
      * @param array<int,array<string,string>> $users by-ref; extended columns added
      */
     private function mergeExtendedDemographics(array &$users): void
     {
-        try {
-            $extra = $this->query($this->extendedUsersSql());
-        } catch (\Throwable $e) {
-            error_log('[idm] PowerSchool extended demographics query skipped: ' . $e->getMessage());
-            return;
+        $index = [];
+        foreach ($users as $i => $u) {
+            $index[trim((string) ($u['USERS.dcid'] ?? ''))] = $i;
         }
-        $byDcid = [];
-        foreach ($extra as $row) {
-            $byDcid[trim((string) ($row['USERS.dcid'] ?? ''))] = $row;
-        }
-        foreach ($users as &$u) {
-            $row = $byDcid[trim((string) ($u['USERS.dcid'] ?? ''))] ?? null;
-            if ($row !== null) {
-                $u = array_merge($u, $row);
+        foreach ($this->extendedQueries() as $label => $sql) {
+            try {
+                $rows = $this->query($sql);
+            } catch (\Throwable $e) {
+                error_log("[idm] PowerSchool extended demographics ({$label}) skipped: " . $e->getMessage());
+                continue;
+            }
+            foreach ($rows as $row) {
+                $dcid = trim((string) ($row['USERS.dcid'] ?? ''));
+                if (isset($index[$dcid])) {
+                    $users[$index[$dcid]] = array_merge($users[$index[$dcid]], $row);
+                }
             }
         }
     }
@@ -206,30 +209,48 @@ final class PowerSchoolOdbcReader
     }
 
     /**
-     * Optional demographics pulled to VERIFY against NextGen (never written to the
+     * Optional value groups pulled to VERIFY against NextGen (never written to the
      * golden record), plus the two PowerSchool-sourced fields NextGen lacks — date
-     * of birth and the Alabama State ID (ALSID), from the Alabama extension
-     * S_AL_USR_X (`dob`, `staffstateid`). Run best-effort and merged by dcid, so a
-     * district whose schema names these columns differently (or lacks one) loses
-     * only the comparison, not the whole import — adjust the names to match your
-     * live PS schema.
+     * of birth and the Alabama State ID (ALSID). Each group is a SEPARATE query so
+     * a column one district lacks/renames only loses that group, not the rest:
+     *   - contact      USERS demographics (e-mail, gender, phone, address)
+     *   - staff_number ALSID = S_USR_X.state_staffnumber (joined on usersdcid)
+     *   - dob          date of birth from the Alabama extension S_AL_USR_X.dob
+     * Adjust the column names / joins to match your live PS schema.
+     *
+     * @return array<string,string> label => SQL (each selects USERS.dcid + columns)
      */
-    private function extendedUsersSql(): string
+    private function extendedQueries(): array
     {
-        return 'SELECT '
-            . 'u.dcid        AS "USERS.dcid", '
-            . 'u.email_addr  AS "USERS.Email_Addr", '
-            . 'u.gender      AS "USERS.Gender", '
-            . 'u.home_phone  AS "USERS.Home_Phone", '
-            . 'u.street      AS "USERS.Street", '
-            . 'u.city        AS "USERS.City", '
-            . 'u.state       AS "USERS.State", '
-            . 'u.zip         AS "USERS.Zip", '
-            . "TO_CHAR(alx.dob, 'YYYY-MM-DD')        AS \"S_AL_USR_X.dob\", "
-            . 'alx.staffstateid                      AS "S_AL_USR_X.StaffStateID" '
-            . 'FROM ' . $this->table('users') . ' u '
-            . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid '
-            . 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers') . ' t '
-            . 'WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
+        $users = $this->table('users');
+        $active = 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers')
+            . ' t WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
+
+        return [
+            'contact' => 'SELECT '
+                . 'u.dcid       AS "USERS.dcid", '
+                . 'u.email_addr AS "USERS.Email_Addr", '
+                . 'u.gender     AS "USERS.Gender", '
+                . 'u.home_phone AS "USERS.Home_Phone", '
+                . 'u.street     AS "USERS.Street", '
+                . 'u.city       AS "USERS.City", '
+                . 'u.state      AS "USERS.State", '
+                . 'u.zip        AS "USERS.Zip" '
+                . 'FROM ' . $users . ' u ' . $active,
+
+            // ALSID lives on S_USR_X (state_staffnumber), joined by usersdcid — the
+            // same join the core query already uses for S_USR_X.hiredate.
+            'staff_number' => 'SELECT '
+                . 'u.dcid              AS "USERS.dcid", '
+                . 'sx.state_staffnumber AS "S_USR_X.state_staffnumber" '
+                . 'FROM ' . $users . ' u '
+                . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid ' . $active,
+
+            'dob' => 'SELECT '
+                . 'u.dcid AS "USERS.dcid", '
+                . "TO_CHAR(alx.dob, 'YYYY-MM-DD') AS \"S_AL_USR_X.dob\" "
+                . 'FROM ' . $users . ' u '
+                . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid ' . $active,
+        ];
     }
 }
