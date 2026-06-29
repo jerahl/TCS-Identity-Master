@@ -109,6 +109,13 @@ final class PowerSchoolBundle
                 schools: $schools,
                 dob: self::nz($u['S_AL_USR_X.dob'] ?? ''),
                 alsdeId: self::nz($u['S_AL_USR_X.StaffStateID'] ?? ''),
+                email: self::nz($u['USERS.Email_Addr'] ?? ''),
+                gender: self::nz($u['USERS.Gender'] ?? ''),
+                phone: self::nz($u['USERS.Home_Phone'] ?? ''),
+                address1: self::nz($u['USERS.Street'] ?? ''),
+                city: self::nz($u['USERS.City'] ?? ''),
+                stateCode: self::nz($u['USERS.State'] ?? ''),
+                zipCode: self::nz($u['USERS.Zip'] ?? ''),
             );
         }
         return $out;

@@ -217,6 +217,47 @@ final class PersonService
         return $stmt->fetchAll();
     }
 
+    /**
+     * The most recent NextGen and PowerSchool values staged for this person, for
+     * the field-by-field verification panel. NextGen comes back as the raw feed
+     * row (keyed by CSV header); PowerSchool as the `fields` snapshot the importer
+     * stored (keyed by FieldMap key). Either side is null when that source has
+     * never staged a row for the person (e.g. an IDM-only intern/contractor, or a
+     * NextGen person not yet seen in PowerSchool).
+     *
+     * @return array{nextgen:?array<string,mixed>, powerschool:?array<string,mixed>}
+     */
+    public function latestSourceValues(int $personId): array
+    {
+        $out = ['nextgen' => null, 'powerschool' => null];
+        try {
+            $stmt = $this->db()->prepare(
+                "SELECT system, raw_json
+                   FROM staging_record
+                  WHERE matched_person_id = :id AND system IN ('nextgen', 'powerschool')
+                  ORDER BY id DESC"
+            );
+            $stmt->execute([':id' => $personId]);
+            foreach ($stmt->fetchAll() as $r) {
+                $sys = (string) $r['system'];
+                if ($out[$sys] !== null) {
+                    continue; // newest per system wins (DESC order)
+                }
+                $decoded = json_decode((string) ($r['raw_json'] ?? ''), true);
+                if (!is_array($decoded)) {
+                    continue;
+                }
+                // PowerSchool stores demographics under `fields`; NextGen is the raw row.
+                $out[$sys] = $sys === 'powerschool'
+                    ? (is_array($decoded['fields'] ?? null) ? $decoded['fields'] : [])
+                    : $decoded;
+            }
+        } catch (\PDOException) {
+            // No staging table / query issue — treat as no source data.
+        }
+        return $out;
+    }
+
     /** Lifecycle/audit timeline (newest first). */
     public function timeline(int $personId, int $limit = 25): array
     {

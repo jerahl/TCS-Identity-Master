@@ -1,5 +1,5 @@
 <?php
-/** @var array $p @var array $sourceIds @var array $assignments @var array $syncStatus @var array $timeline @var array $fieldMap @var array $fieldGroups */
+/** @var array $p @var array $sourceIds @var array $assignments @var array $syncStatus @var array $timeline @var array $fieldMap @var array $fieldGroups @var bool $hasNextGen @var bool $hasPowerSchool @var bool $idmOnly */
 use App\View\Present;
 
 $st = Present::status($p['status']);
@@ -174,31 +174,73 @@ $eventTitle = [
     </div>
   </div>
 
-  <!-- Source field mapping: NextGen ↔ PowerSchool for this person -->
+  <!-- Source field reconciliation: NextGen value vs PowerSchool value -->
+  <?php
+    // Reconciliation verdict styling + summary counts.
+    $verdict = [
+        'match'   => ['#1F7A3D', '#E7F4EC', '✓ match'],
+        'differ'  => ['#B42318', '#FDECEA', '✗ differs'],
+        'missing' => ['#B45309', '#FCF3E6', 'missing'],
+        'ng_only' => ['#7B8E9B', '#F4F7F9', 'NextGen only'],
+        'ps_only' => ['#3D6478', '#EAF1F5', 'PowerSchool only'],
+        'info'    => ['#7B8E9B', '#F4F7F9', 'info'],
+    ];
+    $differs = count(array_filter($fieldMap, static fn($f) => in_array($f['state'], ['differ', 'missing'], true)));
+    $ngLabel = $idmOnly ? 'IDM (current)' : 'NextGen';
+  ?>
   <div class="panel" style="margin-top:18px;">
     <div class="panel__head">
-      <h2 class="panel__title">Source field mapping</h2>
-      <span class="panel__note">— NextGen ↔ PowerSchool · <a href="<?= e(url('/reference', ['tab' => 'mapping'])) ?>">full crosswalk</a></span>
+      <h2 class="panel__title">Source field reconciliation</h2>
+      <span class="panel__note">— <?= e($ngLabel) ?> vs PowerSchool · <a href="<?= e(url('/reference', ['tab' => 'mapping'])) ?>">field crosswalk</a></span>
     </div>
+
+    <?php if ($idmOnly): ?>
+      <div class="identity-note" style="margin-bottom:14px;">
+        Maintained in <strong>IDM only</strong> (intern / contractor) — there is no NextGen or PowerSchool source to compare against. The NextGen column shows the current record values.
+      </div>
+    <?php elseif (!$hasPowerSchool): ?>
+      <div class="identity-note" style="margin-bottom:14px;">
+        No PowerSchool record is linked yet, so values can't be verified. NextGen is the source that drives provisioning.
+      </div>
+    <?php elseif (!$hasNextGen): ?>
+      <div class="identity-note" style="margin-bottom:14px;">
+        No NextGen record is linked — values shown are from PowerSchool only.
+      </div>
+    <?php elseif ($differs > 0): ?>
+      <div class="identity-note" style="margin-bottom:14px; color:#B42318;">
+        <strong><?= e((string) $differs) ?></strong> field<?= $differs === 1 ? '' : 's' ?> differ between NextGen and PowerSchool — review before the next OneSync run.
+      </div>
+    <?php else: ?>
+      <div class="identity-note" style="margin-bottom:14px; color:#1F7A3D;">
+        NextGen and PowerSchool agree on every comparable field.
+      </div>
+    <?php endif; ?>
+
     <table class="assign-table">
-      <thead><tr><th>Field</th><th>NextGen</th><th>Value</th><th>PowerSchool</th></tr></thead>
+      <thead><tr><th>Field</th><th><?= e($ngLabel) ?></th><th>PowerSchool</th><th>Verify</th></tr></thead>
       <tbody>
         <?php foreach ($fieldGroups as $gkey => $glabel):
             $groupRows = array_values(array_filter($fieldMap, static fn($f) => $f['group'] === $gkey));
             if ($groupRows === []) { continue; } ?>
           <tr><td colspan="4" style="font-weight:600; color:#22343F; background:#F4F7F9; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px;"><?= e($glabel) ?></td></tr>
-          <?php foreach ($groupRows as $f): ?>
-          <tr>
+          <?php foreach ($groupRows as $f):
+              $isDiff = in_array($f['state'], ['differ', 'missing'], true);
+              $v = $verdict[$f['state']] ?? null; ?>
+          <tr<?= $isDiff ? ' style="background:#FFF8F7;"' : '' ?>>
             <td>
               <span style="color:#22343F; font-weight:500;"><?= e($f['label']) ?></span>
               <?php if ($f['pii']): ?> <span class="pii-tag">PII</span><?php endif; ?>
+              <div class="mono" style="font-size:10.5px; color:#9AA9B4;"><?= e($f['nextgen'] ?? '—') ?> · <?= e($f['powerschool'] ?? '—') ?></div>
             </td>
-            <td class="mono" style="font-size:11.5px; color:#7B8E9B;"><?= e($f['nextgen'] ?? '—') ?></td>
+            <td><?= $f['ngValue'] === '' ? '<span class="value-missing">—</span>' : e($f['ngValue']) ?></td>
+            <td><?= $f['psValue'] === '' ? '<span class="value-missing">—</span>' : e($f['psValue']) ?></td>
             <td>
-              <?= $f['value'] === '' ? '<span class="value-missing">—</span>' : e($f['value']) ?>
-              <?php if ($f['origin'] === 'powerschool' && $f['value'] !== ''): ?> <span class="src-tag">from PowerSchool</span><?php endif; ?>
+              <?php if ($v !== null): ?>
+                <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; color:<?= e($v[0]) ?>; background:<?= e($v[1]) ?>;"><?= e($v[2]) ?></span>
+              <?php else: ?>
+                <span class="value-missing">—</span>
+              <?php endif; ?>
             </td>
-            <td class="mono" style="font-size:11.5px; color:#7B8E9B;"><?= e($f['powerschool'] ?? '—') ?></td>
           </tr>
           <?php endforeach; ?>
         <?php endforeach; ?>

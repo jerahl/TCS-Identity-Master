@@ -215,12 +215,28 @@ description, job code/desc, hire/position-start/end dates, ethnicity, gender, an
 the contact block (phone, address 1/2, city, state, zip) — all stored on the
 golden record (migration `0007`).
 
-**Field mapping (NextGen ↔ PowerSchool).** `src/Import/FieldMap.php` is the single
-crosswalk between each NextGen field, its PowerSchool counterpart, and where the
-value lands on the golden record. It drives two read-only views: a documented
-crosswalk at **`/reference` → Field mapping**, and a **Source field mapping** panel
-on each person's record showing that person's value field-by-field. DOB and ALSID
-have no NextGen column and are shown as PowerSchool-sourced.
+**Field mapping & reconciliation (NextGen ↔ PowerSchool).** NextGen is the source
+of record that drives provisioning through OneSync (create / update / disable in
+PowerSchool, AD, Google, …); PowerSchool is pulled to **verify the two systems
+agree** before that sync runs. `src/Import/FieldMap.php` is the single crosswalk
+between each NextGen field, its PowerSchool counterpart, and where the value lands
+on the golden record. It drives two read-only views:
+
+- **`/reference` → Field mapping** — the documented crosswalk (which NextGen field
+  maps to which PowerSchool field).
+- **Source field reconciliation** panel on each person's record — that person's
+  **NextGen value beside its PowerSchool value**, field by field, with a verdict
+  (match / differs / missing / NextGen-only / PowerSchool-only). The two sides come
+  from what each system actually staged (the latest NextGen and PowerSchool staging
+  rows), not the merged golden record, so a genuine mismatch is visible. Dates,
+  name case, and phone punctuation are normalized before comparison. PowerSchool's
+  contact/demographic fields are pulled **for comparison only** — NextGen stays the
+  source of record, so they are never written to the golden record (DOB and ALSID
+  are the exception: PowerSchool is their source and they *are* stored).
+
+Interns and contractors live **only in IDM** (manual records, no NextGen/PowerSchool
+feed); their panel shows the current IDM values and notes there is nothing to
+reconcile.
 
 **PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
 instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in

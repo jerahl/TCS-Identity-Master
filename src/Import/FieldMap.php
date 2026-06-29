@@ -130,6 +130,115 @@ final class FieldMap
         return $rows;
     }
 
+    /** Fields whose values are dates — normalized before comparison. */
+    private const DATE_KEYS = ['hire_date', 'position_start_date', 'end_date', 'dob'];
+
+    /**
+     * Build the per-person verification rows: each field's NextGen value beside
+     * its PowerSchool value, with a reconciliation verdict. This is the heart of
+     * the "do the two systems agree?" check — NextGen drives provisioning, and
+     * PowerSchool is pulled to confirm it matches.
+     *
+     * Values come from what each system actually staged (not the merged golden
+     * record): $ngRaw is the raw NextGen feed row (keyed by CSV header), $psFields
+     * is the PowerSchool snapshot (keyed by field key). A null side means that
+     * source has no staged row for this person. When neither feed exists — an
+     * IDM-only intern/contractor — pass $idmOnly=true and the NextGen column falls
+     * back to the current golden-record value so the panel still shows the record.
+     *
+     * @param array<string,mixed> $person       golden record row (+ primary_school_name)
+     * @param array<string,mixed>|null $primary  primary assignment row
+     * @param array<string,mixed>|null $ngRaw    raw NextGen feed row
+     * @param array<string,mixed>|null $psFields PowerSchool field snapshot
+     * @return array<int,array{key:string,label:string,group:string,nextgen:?string,powerschool:?string,pii:bool,ngValue:string,psValue:string,state:string}>
+     */
+    public static function reconcileRows(array $person, ?array $primary, ?array $ngRaw, ?array $psFields, bool $idmOnly = false): array
+    {
+        $hasNg = $ngRaw !== null;
+        $hasPs = $psFields !== null;
+
+        $rows = [];
+        foreach (self::FIELDS as $f) {
+            $ngValue = self::ngValueFor($f, $person, $primary, $ngRaw, $idmOnly);
+            $psValue = ($f['powerschool'] !== null && is_array($psFields))
+                ? trim((string) ($psFields[$f['key']] ?? ''))
+                : '';
+            $rows[] = [
+                'key'         => $f['key'],
+                'label'       => $f['label'],
+                'group'       => $f['group'],
+                'nextgen'     => $f['nextgen'],
+                'powerschool' => $f['powerschool'],
+                'pii'         => $f['pii'],
+                'ngValue'     => $ngValue,
+                'psValue'     => $psValue,
+                'state'       => self::reconcileState($f, $ngValue, $psValue, $hasNg, $hasPs),
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * NextGen-side value: the raw feed value when NextGen staged a row, else the
+     * golden-record value for an IDM-only record, else blank.
+     *
+     * @param array{key:string,nextgen:?string,golden:?string} $f
+     */
+    private static function ngValueFor(array $f, array $person, ?array $primary, ?array $ngRaw, bool $idmOnly): string
+    {
+        if (is_array($ngRaw)) {
+            return $f['nextgen'] === null ? '' : trim((string) ($ngRaw[$f['nextgen']] ?? ''));
+        }
+        return $idmOnly ? self::valueFor($f, $person, $primary) : '';
+    }
+
+    /**
+     * The reconciliation verdict for one field:
+     *   match    — both feeds agree
+     *   differ   — both present, values disagree
+     *   missing  — one feed has it, the other is blank
+     *   ng_only  — field exists only in NextGen (no PowerSchool counterpart)
+     *   ps_only  — field exists only in PowerSchool (DOB / ALSID)
+     *   info     — school code (different code spaces, not directly comparable)
+     *   ''       — can't verify (a feed is absent)
+     *
+     * @param array{key:string,nextgen:?string,powerschool:?string} $f
+     */
+    private static function reconcileState(array $f, string $ng, string $ps, bool $hasNg, bool $hasPs): string
+    {
+        if ($f['key'] === 'school_code') {
+            return 'info';
+        }
+        if ($f['nextgen'] === null) {
+            return 'ps_only';
+        }
+        if ($f['powerschool'] === null) {
+            return 'ng_only';
+        }
+        if (!$hasNg || !$hasPs) {
+            return '';
+        }
+        if ($ng === '' && $ps === '') {
+            return '';
+        }
+        if ($ng === '' || $ps === '') {
+            return 'missing';
+        }
+        return self::valuesEqual($f['key'], $ng, $ps) ? 'match' : 'differ';
+    }
+
+    /** Normalized equality: dates by parsed value, phone by digits, else case-insensitive. */
+    private static function valuesEqual(string $key, string $a, string $b): bool
+    {
+        if (in_array($key, self::DATE_KEYS, true)) {
+            return Normalizer::parseDate($a) === Normalizer::parseDate($b);
+        }
+        if ($key === 'phone') {
+            return preg_replace('/\D+/', '', $a) === preg_replace('/\D+/', '', $b);
+        }
+        return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+    }
+
     /**
      * Resolve a single field's display value from the golden record / assignment.
      *

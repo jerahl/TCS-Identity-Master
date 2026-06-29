@@ -85,4 +85,74 @@ final class FieldMapTest extends TestCase
         // Assignment-backed fields are empty when there's no primary assignment.
         self::assertSame('', $rows['title']['value']);
     }
+
+    /** @return array<string,array<string,mixed>> reconcile rows keyed by field key */
+    private function reconcile(?array $ngRaw, ?array $psFields, bool $idmOnly = false, array $person = [], ?array $primary = null): array
+    {
+        $rows = [];
+        foreach (FieldMap::reconcileRows($person, $primary, $ngRaw, $psFields, $idmOnly) as $r) {
+            $rows[$r['key']] = $r;
+        }
+        return $rows;
+    }
+
+    public function testReconcileMatchesAndFlagsDifferences(): void
+    {
+        $ngRaw = [
+            'Employee Number' => '15241', 'First Name' => 'Jennifer', 'Last Name' => 'Marsh',
+            'EMail Address' => 'jmarsh@example.org', 'Gender Type' => 'Female',
+            'Hire Date' => '08/18/2014', 'Phone Number' => '205-555-0100',
+            'Position Number' => 'P-7781',
+        ];
+        $psFields = [
+            'employee_id' => '15241', 'first_name' => 'Jennifer', 'last_name' => 'MARSH',
+            'hr_email' => 'different@example.org', 'gender' => 'Female',
+            'hire_date' => '2014-08-18', 'phone' => '(205) 555-0100',
+            'dob' => '1985-03-09', 'alsde_id' => 'AL-552201',
+        ];
+        $rows = $this->reconcile($ngRaw, $psFields);
+
+        self::assertSame('match', $rows['employee_id']['state']);
+        self::assertSame('match', $rows['last_name']['state'], 'case-insensitive name match');
+        self::assertSame('match', $rows['hire_date']['state'], 'dates match across formats');
+        self::assertSame('match', $rows['phone']['state'], 'phones match ignoring punctuation');
+        self::assertSame('differ', $rows['hr_email']['state'], 'emails disagree');
+        self::assertSame('match', $rows['gender']['state'], 'gender present on both sides');
+        // Structural verdicts independent of values.
+        self::assertSame('ng_only', $rows['position_number']['state']);
+        self::assertSame('ps_only', $rows['dob']['state']);
+        self::assertSame('AL-552201', $rows['alsde_id']['psValue']);
+        self::assertSame('info', $rows['school_code']['state']);
+        // Values surfaced from each side.
+        self::assertSame('Jennifer', $rows['first_name']['ngValue']);
+        self::assertSame('1985-03-09', $rows['dob']['psValue']);
+    }
+
+    public function testReconcileWithoutPowerSchoolGivesNoVerdict(): void
+    {
+        $ngRaw = ['Employee Number' => '15241', 'First Name' => 'Jennifer', 'Last Name' => 'Marsh'];
+        $rows = $this->reconcile($ngRaw, null);
+
+        self::assertSame('15241', $rows['employee_id']['ngValue']);
+        self::assertSame('', $rows['employee_id']['psValue']);
+        self::assertSame('', $rows['employee_id']['state'], 'no PS side -> cannot verify');
+        // Structural verdicts still hold.
+        self::assertSame('ps_only', $rows['dob']['state']);
+        self::assertSame('ng_only', $rows['position_number']['state']);
+    }
+
+    public function testIdmOnlyRecordFallsBackToGoldenForNextGenColumn(): void
+    {
+        $person = [
+            'first_name' => 'Elena', 'last_name' => 'Ruiz', 'gender' => 'Female',
+            'primary_school_id' => 7, 'primary_school_name' => 'Central High',
+        ];
+        $primary = ['title' => 'Student Teacher', 'job_code' => 'INTERN'];
+        $rows = $this->reconcile(null, null, true, $person, $primary);
+
+        self::assertSame('Elena', $rows['first_name']['ngValue'], 'IDM-only NextGen column shows golden value');
+        self::assertSame('Student Teacher', $rows['title']['ngValue']);
+        self::assertSame('', $rows['first_name']['psValue']);
+        self::assertSame('', $rows['first_name']['state'], 'nothing to verify for IDM-only');
+    }
 }

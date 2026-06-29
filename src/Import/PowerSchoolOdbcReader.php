@@ -165,6 +165,16 @@ final class PowerSchoolOdbcReader
             . 'u.first_name  AS "USERS.First_Name", '
             . 'u.middle_name AS "USERS.Middle_Name", '
             . 'u.last_name   AS "USERS.Last_Name", '
+            // Contact / demographic fields pulled for VERIFICATION against NextGen
+            // only — NextGen stays the source of record, so these are never written
+            // to the golden record (see PowerSchoolImporter).
+            . 'u.email_addr  AS "USERS.Email_Addr", '
+            . 'u.gender      AS "USERS.Gender", '
+            . 'u.home_phone  AS "USERS.Home_Phone", '
+            . 'u.street      AS "USERS.Street", '
+            . 'u.city        AS "USERS.City", '
+            . 'u.state       AS "USERS.State", '
+            . 'u.zip         AS "USERS.Zip", '
             . 'ext.staff_classification              AS "U_DEF_EXT_USERS.staff_classification", '
             . "TO_CHAR(sx.hiredate, 'YYYY-MM-DD')    AS \"S_USR_X.hiredate\", "
             . "TO_CHAR(alx.exit_date, 'YYYY-MM-DD')  AS \"S_AL_USR_X.exit_date\", "

@@ -57,16 +57,24 @@ final class PersonController extends Controller
 
         $assignments = $this->people->assignments($id);
 
+        // Per-person NextGen↔PowerSchool verification: compare what each system
+        // actually staged (assignments come back primary-first, so [0] is primary).
+        $src = $this->people->latestSourceValues($id);
+        $hasNextGen = $src['nextgen'] !== null;
+        $hasPowerSchool = $src['powerschool'] !== null;
+        $idmOnly = !$hasNextGen && !$hasPowerSchool;
+
         return $this->render('people/show', [
             'p'          => $person,
             'sourceIds'  => $this->people->sourceIds($id),
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
-            // Per-person NextGen↔PowerSchool field crosswalk (assignments come back
-            // primary-first, so $assignments[0] is the primary if any exist).
-            'fieldMap'    => FieldMap::personRows($person, $assignments[0] ?? null),
-            'fieldGroups' => FieldMap::GROUPS,
+            'fieldMap'       => FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly),
+            'fieldGroups'    => FieldMap::GROUPS,
+            'hasNextGen'     => $hasNextGen,
+            'hasPowerSchool' => $hasPowerSchool,
+            'idmOnly'        => $idmOnly,
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
 
