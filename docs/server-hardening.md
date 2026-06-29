@@ -14,6 +14,43 @@ sudo bash scripts/harden-debian12.sh
 The script is **idempotent** — safe to re-run any time. Re-run it after you
 change a tunable.
 
+## Set up SSH key auth first (MobaXterm)
+
+The hardening script can disable password login — so set up **key authentication
+from your MobaXterm client first**, or you'll lock yourself out. Two ways:
+
+### A. Scripted (recommended) — MobaXterm local terminal
+
+MobaXterm bundles OpenSSH, so run the helper in its **Local terminal** (the bash
+shell on the Start tab), *not* on the server:
+
+```sh
+bash scripts/setup-key-auth-mobaxterm.sh deploy@your.server 22
+```
+
+It generates `~/.ssh/id_ed25519` (if you don't have one), copies the public key
+to the server's `authorized_keys` (one password prompt), verifies key-only login
+works, and prints the MobaXterm session settings to use the key. Idempotent.
+
+### B. GUI — MobaKeyGen + server-side installer
+
+1. **MobaXterm → Tools → MobaKeyGen** → *Generate* an Ed25519 key → save the
+   private key, and copy the **"Public key for pasting into OpenSSH
+   authorized_keys file"** box (the single `ssh-ed25519 AAAA… comment` line).
+2. On the server, paste it in:
+   ```sh
+   bash scripts/install-authorized-key.sh "ssh-ed25519 AAAA…== moba@pc"
+   # or for another user, as root:
+   sudo bash scripts/install-authorized-key.sh --user deploy "ssh-ed25519 AAAA…=="
+   ```
+   It validates the key, creates `~/.ssh` (700) and `authorized_keys` (600) with
+   correct ownership, and won't duplicate an existing entry.
+3. In MobaXterm: **Session → SSH → Advanced SSH settings → Use private key** and
+   select your key. MobaXterm reads OpenSSH keys directly (no `.ppk` needed).
+
+Either way, **test a new connection with the key**, then run the hardening
+script with `DISABLE_PASSWORD_AUTH=1` (and `SSH_PORT=…` if you changed it).
+
 ## ⚠️ Don't lock yourself out
 
 You reach this server over SSH. Before running, make sure you can log in with an
