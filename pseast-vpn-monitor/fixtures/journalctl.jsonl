@@ -1,0 +1,4 @@
+{"__REALTIME_TIMESTAMP":"1782700274000000","PRIORITY":"6","MESSAGE":"Connected to HTTPS on pseastvpn.powerschool.com with ESP"}
+{"__REALTIME_TIMESTAMP":"1782700274500000","PRIORITY":"6","MESSAGE":"Configured as 10.123.45.67, with SSL disconnect and DTLS connect"}
+{"__REALTIME_TIMESTAMP":"1782700275000000","PRIORITY":"6","MESSAGE":"vpnc-script: route-guard kept 10.10.0.0/24 on physical NIC"}
+{"__REALTIME_TIMESTAMP":"1782700920000000","PRIORITY":"5","MESSAGE":"Established DTLS connection (using GnuTLS); ciphersuite (DTLS1.2)"}

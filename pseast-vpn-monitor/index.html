@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSEast VPN Monitor</title>
+  <style>
+    :root {
+      --bg: #0f1720; --panel: #16212e; --panel-2: #1c2937; --line: #243445;
+      --text: #e7eef5; --muted: #8aa0b4;
+      --ok: #2ecc71; --warn: #f5a623; --down: #e74c3c; --unknown: #7f8c9b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    header {
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--panel);
+    }
+    header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+    .overall {
+      display: inline-flex; align-items: center; gap: 8px; font-weight: 650;
+      padding: 5px 12px; border-radius: 999px; font-size: 13px; text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .spacer { flex: 1; }
+    .meta { color: var(--muted); font-size: 12px; text-align: right; }
+    .meta strong { color: var(--text); font-weight: 600; }
+    main { padding: 22px 24px; max-width: 1100px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--line); border-left-width: 4px;
+      border-radius: 10px; padding: 14px 16px;
+    }
+    .card h2 { font-size: 13px; margin: 0 0 2px; font-weight: 600; letter-spacing: .02em; }
+    .card .detail { color: var(--muted); font-size: 12.5px; }
+    .card .badge {
+      float: right; font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .05em; padding: 2px 8px; border-radius: 999px;
+    }
+    .kv { margin-top: 10px; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-all; }
+    .logs { margin-top: 10px; max-height: 220px; overflow: auto; border-top: 1px solid var(--line); }
+    .logline { display: grid; grid-template-columns: 132px 56px 1fr; gap: 8px; padding: 4px 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+      border-bottom: 1px solid var(--panel-2); }
+    .logline .t { color: var(--muted); }
+    .lvl { text-transform: uppercase; font-weight: 700; font-size: 10px; }
+    .lvl.err, .lvl.crit, .lvl.alert, .lvl.emerg { color: var(--down); }
+    .lvl.warning { color: var(--warn); }
+    .lvl.notice, .lvl.info, .lvl.debug { color: var(--muted); }
+    /* status colors */
+    .s-ok    { --c: var(--ok); }
+    .s-warn  { --c: var(--warn); }
+    .s-down  { --c: var(--down); }
+    .s-unknown { --c: var(--unknown); }
+    .card.s-ok, .card.s-warn, .card.s-down, .card.s-unknown { border-left-color: var(--c); }
+    .badge.s-ok, .badge.s-warn, .badge.s-down, .badge.s-unknown { background: var(--c); color: #0b1118; }
+    .overall.s-ok, .overall.s-warn, .overall.s-down, .overall.s-unknown { background: var(--c); color: #0b1118; }
+    .banner {
+      display: none; margin: 0 0 16px; padding: 10px 14px; border-radius: 8px;
+      background: #3a1f1f; border: 1px solid var(--down); color: #ffd9d3; font-size: 13px;
+    }
+    .banner.show { display: block; }
+    footer { color: var(--muted); font-size: 11.5px; padding: 10px 24px 26px; text-align: center; }
+    a { color: #6db3f2; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PSEast VPN Monitor</h1>
+    <span id="overall" class="overall s-unknown"><span class="dot" style="background:#0b1118"></span><span id="overall-text">…</span></span>
+    <span class="spacer"></span>
+    <div class="meta">
+      <div>updated <strong id="updated">—</strong></div>
+      <div id="modeline">read-only monitor</div>
+    </div>
+  </header>
+
+  <main>
+    <div id="banner" class="banner"></div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <footer>
+    Read-only — this page only observes the tunnel; it never starts, stops, or reconfigures it.
+    Polls <code>/api/status</code> every <span id="interval">30</span>s.
+  </footer>
+
+  <script>
+    "use strict";
+    const LABELS = {
+      service: "systemd service",
+      logs: "Recent logs",
+      tunnel: "Tunnel interface",
+      db_route: "DB route path",
+      db_reachability: "DB reachability",
+      portal: "Portal liveness",
+    };
+    // Render order (signals not listed still appear, after these).
+    const ORDER = ["service", "tunnel", "db_route", "db_reachability", "portal", "logs"];
+    let pollMs = 30000;
+    let timer = null;
+
+    function esc(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function kvRows(sig) {
+      const d = sig.data || {};
+      const rows = [];
+      const add = (k, v) => { if (v !== undefined && v !== null && v !== "") rows.push([k, v]); };
+      switch (sig.signal) {
+        case "service":
+          add("State", `${d.active_state || "?"} / ${d.sub_state || "?"}`);
+          add("Uptime", d.uptime); add("Restarts", d.n_restarts); add("PID", d.main_pid);
+          add("Started", d.started_local); break;
+        case "tunnel":
+          add("Present", d.present === false ? "no" : "yes");
+          add("Operstate", d.operstate); add("Address", (d.addresses || []).join(", ")); break;
+        case "db_route":
+          add("Destination", d.dest); add("Egress dev", d.dev); add("Gateway", d.gateway); break;
+        case "db_reachability":
+          add("Target", d.host && `${d.host}:${d.port}`); add("Probe", d.result); break;
+        case "portal":
+          add("Target", d.host && `${d.host}:${d.port}`); add("Probe", d.result); break;
+      }
+      if (!rows.length) return "";
+      return `<dl class="kv">${rows.map(([k, v]) =>
+        `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`;
+    }
+
+    function logsBlock(sig) {
+      const entries = (sig.data && sig.data.entries) || [];
+      if (!entries.length) return "";
+      return `<div class="logs">${entries.slice().reverse().map(e => `
+        <div class="logline">
+          <span class="t">${esc((e.time_local || "").replace("T", " "))}</span>
+          <span class="lvl ${esc(e.level)}">${esc(e.level)}</span>
+          <span>${esc(e.message)}</span>
+        </div>`).join("")}</div>`;
+    }
+
+    function card(sig) {
+      const cls = "s-" + (sig.status || "unknown");
+      const body = sig.signal === "logs" ? logsBlock(sig) : kvRows(sig);
+      return `<div class="card ${cls}">
+        <span class="badge ${cls}">${esc(sig.status)}</span>
+        <h2>${esc(LABELS[sig.signal] || sig.signal)}</h2>
+        <div class="detail">${esc(sig.detail)}</div>
+        ${body}
+      </div>`;
+    }
+
+    function render(snap) {
+      const ov = document.getElementById("overall");
+      ov.className = "overall s-" + snap.overall;
+      document.getElementById("overall-text").textContent = snap.overall;
+      document.getElementById("updated").textContent =
+        (snap.generated_local || "").replace("T", " ") + "  (" + (snap.timezone || "") + ")";
+      document.getElementById("modeline").textContent =
+        snap.mock ? "MOCK DATA — not live" : "read-only monitor";
+
+      const sigs = snap.signals || {};
+      const keys = ORDER.filter(k => k in sigs).concat(Object.keys(sigs).filter(k => !ORDER.includes(k)));
+      document.getElementById("grid").innerHTML = keys.map(k => card(sigs[k])).join("");
+    }
+
+    function banner(msg) {
+      const b = document.getElementById("banner");
+      if (msg) { b.textContent = msg; b.classList.add("show"); }
+      else { b.classList.remove("show"); }
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const snap = await res.json();
+        render(snap);
+        banner("");
+        // Adopt the server's poll interval if it differs from our default.
+        // (Derived from the snapshot freshness model; kept simple here.)
+      } catch (err) {
+        banner("Poll failed: " + err.message + " — showing last known state. Retrying…");
+      } finally {
+        timer = setTimeout(poll, pollMs);
+      }
+    }
+
+    // Allow the page to pick up an interval passed as ?interval=SECONDS for convenience.
+    const qs = new URLSearchParams(location.search);
+    const qi = parseInt(qs.get("interval"), 10);
+    if (qi > 0) { pollMs = qi * 1000; }
+    document.getElementById("interval").textContent = Math.round(pollMs / 1000);
+
+    poll();
+  </script>
+</body>
+</html>

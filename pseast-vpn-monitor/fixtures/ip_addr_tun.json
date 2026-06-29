@@ -1,0 +1,1 @@
+[{"ifindex":7,"ifname":"tun0","flags":["POINTOPOINT","MULTICAST","NOARP","UP","LOWER_UP"],"mtu":1406,"qdisc":"fq_codel","operstate":"UNKNOWN","group":"default","txqlen":500,"link_type":"none","addr_info":[{"family":"inet","local":"10.123.45.67","prefixlen":32,"scope":"global","label":"tun0","valid_life_time":4294967295,"preferred_life_time":4294967295}]}]

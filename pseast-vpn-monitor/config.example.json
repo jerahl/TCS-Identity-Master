@@ -1,0 +1,14 @@
+{
+  "unit_name": "openconnect-pseast.service",
+  "tun_device": "tun0",
+  "db_host": "REPLACE_ME",
+  "db_port": 3306,
+  "portal_host": "pseastvpn.powerschool.com",
+  "mgmt_subnet": "10.10.0.0/24",
+  "poll_interval_seconds": 30,
+  "log_lines": 50,
+  "listen_addr": "127.0.0.1",
+  "listen_port": 8787,
+  "timezone": "America/Chicago",
+  "probe_timeout_seconds": 3
+}
