@@ -112,8 +112,10 @@ With no `--file`, the importer uses the newest `*.csv` in the configured feed
 directory (`FEED_NEXTGEN_DIR` / `FEED_POWERSCHOOL_DIR`). `--dry-run` reads and
 matches but writes nothing.
 
-**Pull from SFTP.** The app can fetch feed CSVs straight from the district SFTP
-server (phpseclib — no PECL needed), then import them. Configure `SFTP_HOST` /
+**Pull & import feeds.** The app can fetch feed CSVs straight from the district
+SFTP server (phpseclib — no PECL needed) and import them, and it pulls PowerSchool
+directly from Oracle over ODBC (see below — no SFTP for PowerSchool). Configure
+`SFTP_HOST` /
 `SFTP_USER`, a key (`SFTP_PRIVATE_KEY_FILE`) or `SFTP_PASS`, the host
 `SFTP_FINGERPRINT` (verified), and a remote dir per source (`SFTP_<SOURCE>_DIR`);
 files land in `FEED_<SOURCE>_DIR`. Already-fetched files are tracked in
@@ -163,7 +165,7 @@ that drives the person type and crosswalk provenance:
 | Source | CLI | person_type | crosswalk system |
 |--------|-----|-------------|------------------|
 | NextGen (HR) | `bin/import_nextgen.php` | from feed | `nextgen` |
-| PowerSchool (TEACHERS export) | `bin/import_powerschool.php` | from feed | `powerschool` |
+| PowerSchool (Oracle/ODBC) | `bin/import_powerschool.php` | from feed | `powerschool` |
 | Intern | `bin/import_intern.php` | `intern` | `intern_csv` |
 | Long-term substitute | `bin/import_sub.php` | `sub` | `sub` |
 | Contract employee | `bin/import_contractor.php` | `contractor` | `contractor` |
@@ -209,8 +211,10 @@ first *or* last name is in `IMPORT_EXCLUDE_NAMES` (comma-separated, default
 logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
 the maps to match the district's real export headers.
 
-**PowerSchool is three files.** PowerSchool exports as USERS + TEACHERS +
-SCHOOLSTAFF, joined on the user DCID (`PowerSchoolBundle::combine`):
+**PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
+instead of exporting CSVs to SFTP, we query its three staff datasets in place over
+ODBC (`PowerSchoolOdbcReader`) and join them on the user DCID
+(`PowerSchoolBundle::combine`):
 - **USERS** — one row per user (`USERS.dcid`): demographics, `HomeSchoolId`,
   `Title`, `staff_classification`, `TeacherNumber`, hire/exit.
 - **TEACHERS** — one row per (user, school): `TEACHERS.ID` is the per-assignment
@@ -220,19 +224,30 @@ SCHOOLSTAFF, joined on the user DCID (`PowerSchoolBundle::combine`):
   `SCHOOLSTAFF.SchoolID` is that assignment's school → one assignment per school,
   primary = `HomeSchoolId`.
 
-Run it on a folder holding all three (auto-detected by header, any filename):
+Configure the connection in `.env` (`PS_ODBC_DSN`, `PS_ODBC_USER`, `PS_ODBC_PASS`,
+optional `PS_ODBC_SCHEMA`); it needs the `pdo_odbc` PHP extension plus an Oracle
+ODBC driver on the host. Grant the connecting user **SELECT only**.
+
+```sh
+php bin/import_powerschool.php --dry-run     # query Oracle, change nothing
+php bin/import_powerschool.php               # full import
+```
+
+`fetch_feeds.php` (and the **Pull & import feeds** button) run this import as part
+of the nightly job. Each person auto-links to the NextGen record by
+`TeacherNumber`, and AD usernames (`bin/import_ad_usernames.php`) link by
+`TEACHERS.ID`.
+
+CSV files remain a manual/offline fallback (auto-detected by header, any filename):
 
 ```sh
 php bin/import_powerschool.php --dir=/var/idm/feeds/powerschool --dry-run
-php bin/import_powerschool.php --dir=/var/idm/feeds/powerschool
 # or explicit: --users=… --teachers=… --schoolstaff=…
 ```
 
-`fetch_feeds.php` (and the **Pull from SFTP** button) pull all three from the
-PowerSchool SFTP dir and run the combined import once; a re-pull of any one file
-re-imports using the current trio. Each person auto-links to the NextGen record
-by `TeacherNumber`, and AD usernames (`bin/import_ad_usernames.php`) link by
-`TEACHERS.ID`.
+The SQL the reader runs mirrors the columns the old CSV export selected; adjust
+`src/Import/PowerSchoolOdbcReader.php` (or set `PS_ODBC_SCHEMA`) to match the
+district's live PS schema.
 
 **Reset for a clean import test.** To wipe imported person data (person, source
 ids, assignments, staging/batches, sync status, lifecycle/audit) while preserving

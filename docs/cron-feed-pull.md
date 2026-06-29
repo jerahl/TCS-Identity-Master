@@ -1,25 +1,31 @@
-# Cron: nightly SFTP feed pull + import
+# Cron: nightly feed pull + import
 
 `bin/fetch_feeds.php` pulls the configured feed CSVs from the district SFTP server
-into the local `FEED_*_DIR` folders and imports them (NextGen, and the three-file
-PowerSchool join). Run it on a schedule so the golden record stays current.
+into the local `FEED_*_DIR` folders and imports them (NextGen, interns, subs,
+contractors), and imports **PowerSchool directly from its Oracle DB over ODBC**
+(no SFTP). Run it on a schedule so the golden record stays current.
 
 ```sh
-php bin/fetch_feeds.php              # fetch + import all configured sources
-php bin/fetch_feeds.php --source=powerschool   # one source only
-php bin/fetch_feeds.php --dry-run    # list what would be downloaded, change nothing
-php bin/fetch_feeds.php --no-import  # download only
+php bin/fetch_feeds.php              # SFTP feeds + ODBC PowerSchool import
+php bin/fetch_feeds.php --source=powerschool   # only the ODBC PowerSchool import
+php bin/fetch_feeds.php --source=intern        # only one SFTP source
+php bin/fetch_feeds.php --dry-run    # list what would be downloaded/imported, change nothing
+php bin/fetch_feeds.php --no-import  # download only (also skips the PowerSchool import)
 ```
 
-A source is active when its `SFTP_<SOURCE>_DIR` is set. Already-fetched files are
-skipped unless the remote file is newer (by mtime) or the local copy is missing,
-so re-runs are cheap and safe.
+An SFTP source is active when its `SFTP_<SOURCE>_DIR` is set; already-fetched files
+are skipped unless the remote file is newer (by mtime) or the local copy is
+missing, so re-runs are cheap and safe. PowerSchool is active when `PS_ODBC_DSN`
+is set (and the `pdo_odbc` extension + an Oracle ODBC driver are installed).
 
 ---
 
 ## Prerequisites
 
-- `.env` configured (DB roles, `SFTP_*`, `FEED_*_DIR`). See `.env.example`.
+- `.env` configured (DB roles, `SFTP_*`, `FEED_*_DIR`, and `PS_ODBC_*` for the
+  PowerSchool Oracle connection). See `.env.example`.
+- For PowerSchool: the `pdo_odbc` PHP extension and an Oracle ODBC driver
+  installed on the host; the connecting user has SELECT on the PS tables.
 - SFTP key auth set up: `php bin/sftp_setup_key.php --host=… --user=…` (recommended
   over storing `SFTP_PASS`).
 - Reference data seeded: `php bin/seed.php` (schools, aliases, ethnicity map).
@@ -43,7 +49,7 @@ give you logs in the journal, no `MAILTO`/PATH surprises, and easy `status`.
 
 ```ini
 [Unit]
-Description=TCS Identity — pull SFTP feeds and import
+Description=TCS Identity — pull feeds (SFTP + PowerSchool ODBC) and import
 After=network-online.target mariadb.service
 Wants=network-online.target
 
@@ -113,8 +119,9 @@ given as an absolute path.
 1. Connects to SFTP (verifying the host fingerprint), lists each source dir.
 2. Downloads new/updated files into `FEED_<SOURCE>_DIR`, recording each in
    `feed_fetch_log`.
-3. Imports: NextGen per file; **PowerSchool joins USERS + TEACHERS + SCHOOLSTAFF
-   and imports once** (a re-pull of any one file re-imports the current trio).
+3. Imports: NextGen (and intern/sub/contractor) per file; **PowerSchool queries
+   USERS + TEACHERS + SCHOOLSTAFF directly from Oracle over ODBC and imports
+   once** (no SFTP).
 4. Updates `import_batch` (shown as "Last feed run" on the dashboard).
 
 It does **not** apply OneSync write-back — usernames/status come in via the

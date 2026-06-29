@@ -16,6 +16,10 @@ use RuntimeException;
  *   - writeback:  limited writer for the OneSync write-back importers
  *   - onesync:    READ-ONLY on v_onesync_source (handed to OneSync's ODBC source)
  *
+ * Two EXTERNAL sources are reached over their own connections (see methods
+ * below): OneSync's MariaDB (connectOneSyncSource) and PowerSchool's Oracle DB
+ * over ODBC (connectPowerSchoolSource) — both read-only intent.
+ *
  * Every connection uses utf8mb4, throws on error, and returns real prepared
  * statements (no emulation) — the whole app relies on prepared statements, never
  * string-built SQL.
@@ -97,6 +101,50 @@ final class Db
         ]);
 
         self::$connections['onesync_source'] = $pdo;
+        return $pdo;
+    }
+
+    /**
+     * Connect to PowerSchool's Oracle database over ODBC (read-only intent). This
+     * is the direct source for the PowerSchool import — it replaces the old SFTP
+     * CSV feed (USERS + TEACHERS + SCHOOLSTAFF are queried in place). Configured
+     * via PS_ODBC_* (independent of our app DB). Grant the connecting user SELECT
+     * only on the PS tables.
+     *
+     * PS_ODBC_DSN is either a registered ODBC DSN name or a full driver
+     * connection string, e.g.
+     *   Driver={Oracle 21 ODBC driver};DBQ=psprod.host:1521/PSPROD
+     * Requires the pdo_odbc PHP extension plus an Oracle ODBC driver on the host.
+     */
+    public static function connectPowerSchoolSource(): PDO
+    {
+        if (isset(self::$connections['powerschool_source'])) {
+            return self::$connections['powerschool_source'];
+        }
+
+        if (!extension_loaded('pdo_odbc')) {
+            throw new RuntimeException(
+                'PowerSchool ODBC import requires the pdo_odbc PHP extension. '
+                . 'Install it (e.g. php-odbc / pdo_odbc) and an Oracle ODBC driver, then set PS_ODBC_*.'
+            );
+        }
+
+        $dsn = Config::require('PS_ODBC_DSN');
+        $user = (string) Config::get('PS_ODBC_USER', '');
+        $pass = (string) Config::get('PS_ODBC_PASS', '');
+
+        // Accept either a bare DSN/connection string or one already prefixed with
+        // the PDO "odbc:" scheme, so ops can paste whatever their driver expects.
+        $pdoDsn = str_starts_with($dsn, 'odbc:') ? $dsn : 'odbc:' . $dsn;
+
+        // No emulation/stringify toggles here: the ODBC driver owns prepared
+        // statements, and the PS reader runs static, parameterless SELECTs.
+        $pdo = new PDO($pdoDsn, $user, $pass, [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+
+        self::$connections['powerschool_source'] = $pdo;
         return $pdo;
     }
 

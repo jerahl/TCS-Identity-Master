@@ -14,7 +14,10 @@ use PDO;
 use RuntimeException;
 
 /**
- * PowerSchool ingestion from the three exports (USERS + TEACHERS + SCHOOLSTAFF).
+ * PowerSchool ingestion from the three datasets (USERS + TEACHERS + SCHOOLSTAFF).
+ * The live source is PowerSchool's Oracle DB read directly over ODBC
+ * (runFromOdbc() -> PowerSchoolOdbcReader); run() still imports the same three
+ * datasets from CSV files for manual/offline use. Either way,
  * PowerSchoolBundle::combine() joins them into one record per person; this matches
  * each to a golden record and applies it:
  *   - links every TEACHERS.ID to the crosswalk (system 'powerschool') so AD
@@ -46,24 +49,72 @@ final class PowerSchoolImporter
         ));
     }
 
-    /** @return array<string,mixed> summary */
+    /**
+     * Import the three PowerSchool exports from CSV files. Retained as a manual /
+     * fallback path; the live feed now comes from Oracle via runFromOdbc().
+     *
+     * @return array<string,mixed> summary
+     */
     public function run(string $usersFile, string $teachersFile, string $schoolStaffFile, bool $dryRun = false, ?string $actor = null): array
     {
-        $actor ??= 'system:import_powerschool';
         foreach (['users' => $usersFile, 'teachers' => $teachersFile, 'schoolstaff' => $schoolStaffFile] as $label => $f) {
             if (!is_file($f) || !is_readable($f)) {
                 throw new RuntimeException("PowerSchool {$label} file not found or unreadable: {$f}");
             }
         }
 
-        $people = PowerSchoolBundle::combine(Csv::read($usersFile), Csv::read($teachersFile), Csv::read($schoolStaffFile));
+        return $this->importRows(
+            Csv::read($usersFile),
+            Csv::read($teachersFile),
+            Csv::read($schoolStaffFile),
+            basename($usersFile) . ' + teachers + schoolstaff',
+            $dryRun,
+            $actor,
+        );
+    }
+
+    /**
+     * Import PowerSchool directly from its Oracle database over ODBC — the live
+     * source of record (replaces the SFTP CSV feed). USERS + TEACHERS +
+     * SCHOOLSTAFF are queried in place and joined exactly as the CSV path does.
+     *
+     * @return array<string,mixed> summary
+     */
+    public function runFromOdbc(bool $dryRun = false, ?string $actor = null, ?PowerSchoolOdbcReader $reader = null): array
+    {
+        $reader ??= new PowerSchoolOdbcReader();
+        $data = $reader->read();
+        return $this->importRows(
+            $data['users'],
+            $data['teachers'],
+            $data['schoolstaff'],
+            'oracle odbc (USERS + TEACHERS + SCHOOLSTAFF)',
+            $dryRun,
+            $actor ?? 'system:import_powerschool_odbc',
+        );
+    }
+
+    /**
+     * Shared core: join the three raw datasets, match each person, and apply.
+     * $fileLabel is recorded on import_batch so the dashboard shows the source.
+     *
+     * @param array<int,array<string,string>> $users
+     * @param array<int,array<string,string>> $teachers
+     * @param array<int,array<string,string>> $schoolStaff
+     * @return array<string,mixed> summary
+     */
+    private function importRows(array $users, array $teachers, array $schoolStaff, string $fileLabel, bool $dryRun, ?string $actor): array
+    {
+        $actor ??= 'system:import_powerschool';
+
+        $people = PowerSchoolBundle::combine($users, $teachers, $schoolStaff);
         $normalizer = Normalizer::fromDb($this->db);
         $lookup = new PdoMatchLookup($this->db);
 
         $batchId = null;
         if (!$dryRun) {
             $stmt = $this->db->prepare("INSERT INTO import_batch (system, file_name, status) VALUES ('powerschool', :file, 'running')");
-            $stmt->execute([':file' => basename($usersFile) . ' + teachers + schoolstaff']);
+            $stmt->execute([':file' => $fileLabel]);
             $batchId = (int) $this->db->lastInsertId();
         }
 

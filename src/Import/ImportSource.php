@@ -56,9 +56,9 @@ final class ImportSource
     }
 
     /**
-     * Sources that require SFTP / multi-file ingestion and are NOT offered as a
-     * single-file web upload: NextGen and PowerSchool (PowerSchool is 3 joined
-     * files; NextGen comes from the SFTP feed).
+     * Sources that are NOT offered as a single-file web upload: NextGen (SFTP
+     * feed) and PowerSchool (read directly from Oracle over ODBC — three datasets
+     * joined into one record).
      */
     private const NO_WEB_UPLOAD = ['nextgen', 'powerschool'];
 

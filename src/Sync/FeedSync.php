@@ -19,6 +19,11 @@ use RuntimeException;
  * (cron) and the web "Pull from SFTP" action. A source is enabled when its
  * SFTP_<SOURCE>_DIR is configured; files land in FEED_<SOURCE>_DIR and are
  * de-duplicated via feed_fetch_log.
+ *
+ * PowerSchool is no longer pulled over SFTP: it now reads directly from
+ * PowerSchool's Oracle DB via ODBC (importPowerSchoolOdbc(), gated on
+ * PS_ODBC_DSN). The legacy SFTP three-file path below is kept only as a fallback
+ * for sites still dropping CSVs in SFTP_POWERSCHOOL_DIR.
  */
 final class FeedSync
 {
@@ -55,6 +60,42 @@ final class FeedSync
             passphrase: Config::get('SFTP_PASSPHRASE'),
             fingerprint: Config::get('SFTP_FINGERPRINT'),
         );
+    }
+
+    /** True when PowerSchool's direct Oracle ODBC connection is configured. */
+    public static function powerSchoolOdbcEnabled(): bool
+    {
+        return trim((string) Config::get('PS_ODBC_DSN', '')) !== '';
+    }
+
+    /**
+     * Run the PowerSchool import directly from Oracle over ODBC (no SFTP / no
+     * CSV). Returns a source-result entry shaped like the entries in run(), or
+     * null when PS_ODBC_DSN isn't configured.
+     *
+     * @return array<string,mixed>|null
+     */
+    public static function importPowerSchoolOdbc(bool $dryRun = false, ?string $actor = null): ?array
+    {
+        if (!self::powerSchoolOdbcEnabled()) {
+            return null;
+        }
+        $entry = ['key' => 'powerschool', 'source' => 'oracle-odbc', 'downloaded' => 0, 'imported' => 0, 'errors' => 0, 'files' => []];
+        if ($dryRun) {
+            $entry['files'][] = ['name' => '(oracle odbc)', 'imported' => false, 'reason' => 'dry-run — would query USERS + TEACHERS + SCHOOLSTAFF'];
+            return $entry;
+        }
+        try {
+            $res = (new PowerSchoolImporter())->runFromOdbc(false, $actor);
+            $c = $res['counts'];
+            $entry['imported'] = 1;
+            $entry['files'][] = ['name' => '(oracle odbc PowerSchool import)', 'imported' => true,
+                'reason' => "batch #{$res['batch_id']} · auto {$c['auto_match']} · new {$c['new']} · review {$c['needs_review']} · assignments {$c['assignments']}"];
+        } catch (\Throwable $e) {
+            $entry['errors'] = 1;
+            $entry['files'][] = ['name' => '(oracle odbc PowerSchool import)', 'imported' => false, 'reason' => 'import failed: ' . $e->getMessage()];
+        }
+        return $entry;
     }
 
     /** Import-source keys that have an SFTP remote directory configured. */
