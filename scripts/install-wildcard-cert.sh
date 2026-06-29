@@ -166,6 +166,17 @@ if [ -f "${SITE_AVAIL}" ]; then
     log "Backed up existing vhost to ${BAK}"
 fi
 
+# Avoid duplicating http-level SSL directives. harden-debian12.sh sets
+# ssl_protocols / ssl_prefer_server_ciphers in /etc/nginx/conf.d/99-hardening.conf;
+# restating them in the server block makes nginx -t fail ("directive is
+# duplicate"). Emit each TLS-tuning line in the vhost ONLY if it isn't already
+# set at the http level. Session settings below aren't set globally, so they stay.
+http_has() { grep -rqsE "^[[:space:]]*$1[[:space:]]" /etc/nginx/nginx.conf /etc/nginx/conf.d/ 2>/dev/null; }
+SSL_TUNING=""
+http_has 'ssl_protocols'             || SSL_TUNING+=$'    ssl_protocols TLSv1.2 TLSv1.3;\n'
+http_has 'ssl_prefer_server_ciphers' || SSL_TUNING+=$'    ssl_prefer_server_ciphers off;\n'
+http_has 'ssl_ciphers'               || SSL_TUNING+=$'    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;\n'
+
 # Use the security-headers snippet from harden-debian12.sh if present; otherwise
 # emit the essential headers inline (so HTTPS is still hardened on its own).
 if [ -f /etc/nginx/snippets/security-headers.conf ]; then
@@ -204,11 +215,9 @@ server {
     ssl_certificate     ${FULLCHAIN};
     ssl_certificate_key ${PRIVKEY};
 
-    # Modern TLS (also set globally by harden-debian12.sh; restated for safety).
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers off;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
-    ssl_session_timeout 1d;
+    # TLS protocol/cipher tuning is inherited from the http level (set by
+    # harden-debian12.sh) when present; only emitted here otherwise.
+${SSL_TUNING}    ssl_session_timeout 1d;
     ssl_session_cache shared:IDMSSL:10m;
     ssl_session_tickets off;
 
