@@ -44,6 +44,11 @@
 #   sudo PS_HOST=psprod.example.org PS_PORT=1522 PS_SERVICE=PSPROD \
 #        PS_ODBC_SCHEMA=PSNAVIGATOR bash scripts/setup-powerschool-odbc.sh
 #
+#   # EZConnect rejected (ORA-12514)? Pass a full TNS descriptor verbatim — e.g.
+#   # copy the one OneSync already uses from its tnsnames.ora:
+#   sudo PS_SERVERNAME='(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=172.23.169.131)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=psprod.tcs)))' \
+#        PS_ODBC_USER=idm_ro PS_ODBC_PASS='…' bash scripts/setup-powerschool-odbc.sh
+#
 set -euo pipefail
 
 # ----------------------------------------------------------------------------
@@ -53,6 +58,7 @@ PS_HOST="${PS_HOST:-}"                         # REQUIRED: PowerSchool Oracle ho
 PS_PORT="${PS_PORT:-1521}"                     # Oracle listener port
 PS_SERVICE="${PS_SERVICE:-}"                   # Oracle service name (e.g. PSPROD) …
 PS_SID="${PS_SID:-}"                           # … OR an Oracle SID (one of the two)
+PS_SERVERNAME="${PS_SERVERNAME:-}"             # … OR a full TNS alias/descriptor used verbatim (overrides the above)
 PS_DSN_NAME="${PS_DSN_NAME:-PowerSchool}"      # name of the DSN written to odbc.ini / .env
 PS_ODBC_USER="${PS_ODBC_USER:-}"               # optional: written to .env + used to test
 PS_ODBC_PASS="${PS_ODBC_PASS:-}"               # optional: written to .env + used to test
@@ -89,18 +95,25 @@ die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 # Preflight
 # ----------------------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "Run as root: sudo bash scripts/setup-powerschool-odbc.sh"
-[ -n "${PS_HOST}" ] || die "PS_HOST is required (the PowerSchool Oracle host)."
-if [ -z "${PS_SERVICE}" ] && [ -z "${PS_SID}" ]; then
-    die "Set PS_SERVICE=<service name> (recommended) or PS_SID=<sid>."
-fi
-[[ "${PS_PORT}" =~ ^[0-9]+$ ]] || die "PS_PORT must be numeric (got '${PS_PORT}')."
 
-# EZConnect connect string the Oracle ODBC driver resolves without tnsnames.ora.
-#   service: //host:port/service     SID: //host:port:sid
-if [ -n "${PS_SERVICE}" ]; then
-    CONNECT_STR="//${PS_HOST}:${PS_PORT}/${PS_SERVICE}"
+# The DSN's ServerName can be a full connect string (PS_SERVERNAME) — a TNS alias
+# or descriptor, e.g. when EZConnect by service/SID is rejected (ORA-12514). When
+# given it wins and PS_HOST/PS_SERVICE/PS_SID/PS_PORT are not required.
+if [ -n "${PS_SERVERNAME}" ]; then
+    CONNECT_STR="${PS_SERVERNAME}"
 else
-    CONNECT_STR="//${PS_HOST}:${PS_PORT}:${PS_SID}"
+    [ -n "${PS_HOST}" ] || die "PS_HOST is required (the PowerSchool Oracle host)."
+    if [ -z "${PS_SERVICE}" ] && [ -z "${PS_SID}" ]; then
+        die "Set PS_SERVICE=<service name> (recommended) or PS_SID=<sid>, or PS_SERVERNAME=<TNS descriptor>."
+    fi
+    [[ "${PS_PORT}" =~ ^[0-9]+$ ]] || die "PS_PORT must be numeric (got '${PS_PORT}')."
+    # EZConnect connect string the Oracle ODBC driver resolves without tnsnames.ora.
+    #   service: //host:port/service     SID: //host:port:sid
+    if [ -n "${PS_SERVICE}" ]; then
+        CONNECT_STR="//${PS_HOST}:${PS_PORT}/${PS_SERVICE}"
+    else
+        CONNECT_STR="//${PS_HOST}:${PS_PORT}:${PS_SID}"
+    fi
 fi
 
 # ----------------------------------------------------------------------------
@@ -283,7 +296,6 @@ fi
 
 log "Done."
 echo "  Driver:  ${DRIVER_NAME} -> ${DRIVER_LIB}"
-echo "  Server:  ${PS_HOST}:${PS_PORT} / ${PS_SERVICE:-${PS_SID}}"
 echo "  DSN:     ${PS_DSN_NAME} -> ${CONNECT_STR}   (${ODBC_INI})"
 echo "  .env:    PS_ODBC_DSN=${PS_DSN_NAME}$([ -n "${PS_ODBC_USER}" ] && echo " · PS_ODBC_USER set")$([ -n "${PS_ODBC_SCHEMA}" ] && echo " · PS_ODBC_SCHEMA=${PS_ODBC_SCHEMA}")"
 echo
