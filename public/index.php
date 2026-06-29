@@ -90,6 +90,7 @@ try {
     $router->get('/review', $guard('view', static fn() => $review->index()));
     $router->get('/reference', $guard('view', static fn() => $reference->index()));
     $router->get('/import', $guard('view', static fn() => $import->index()));
+    $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
 
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));

@@ -64,6 +64,11 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v8M5.5 7L9 10.5 12.5 7"/><path d="M2.5 12.5v2a1 1 0 001 1h11a1 1 0 001-1v-2"/></svg>
         <span>Import / feeds</span>
       </a>
+      <a class="nav-item<?= $nav('vpn') ?>" href="<?= e(url('/vpn')) ?>">
+        <span class="nav-item__bar"></span>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 1.5l6.5 2.6v4.3c0 4-2.8 6.6-6.5 8.1C5.3 15 2.5 12.4 2.5 8.4V4.1L9 1.5z" stroke-linejoin="round"/><path d="M6.2 9.2l2 2 3.6-3.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>VPN status</span>
+      </a>
 <?php if (!empty($canAdmin)): ?>
       <a class="nav-item<?= $nav('users') ?>" href="<?= e(url('/users')) ?>">
         <span class="nav-item__bar"></span>
