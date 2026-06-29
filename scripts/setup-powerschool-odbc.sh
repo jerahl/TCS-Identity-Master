@@ -7,10 +7,11 @@
 # things on this host, which this script installs and wires together:
 #
 #   1. unixODBC + PHP's pdo_odbc extension (apt).
-#   2. Oracle Instant Client (Basic + ODBC) — Oracle's driver, NOT in apt. If the
-#      host already has one (e.g. the instantclient_19_12 OneSync uses) the script
-#      detects and REUSES it; otherwise it downloads the public packages or uses
-#      zips you downloaded yourself (offline / air-gapped hosts).
+#   2. Oracle Instant Client (Basic + ODBC) — Oracle's driver, NOT in apt. By
+#      default the script downloads the latest client (zips, unpacked under
+#      /opt/oracle). To reuse one already on the host (e.g. the instantclient_19_12
+#      OneSync uses) pass INSTANTCLIENT_DIR=<path>; for offline installs point
+#      INSTANTCLIENT_ZIP_DIR at a folder of downloaded Basic+ODBC zips or rpms.
 #   3. The driver registered in /etc/odbcinst.ini and a DSN in /etc/odbc.ini that
 #      points at your PowerSchool host, then PS_ODBC_* written into .env.
 #
@@ -52,10 +53,15 @@ PS_DSN_NAME="${PS_DSN_NAME:-PowerSchool}"      # name of the DSN written to odbc
 PS_ODBC_USER="${PS_ODBC_USER:-}"               # optional: written to .env + used to test
 PS_ODBC_PASS="${PS_ODBC_PASS:-}"               # optional: written to .env + used to test
 
-INSTANTCLIENT_DIR="${INSTANTCLIENT_DIR:-}"     # explicit path to an existing Instant Client (skips detect/download)
-INSTANTCLIENT_ZIP_DIR="${INSTANTCLIENT_ZIP_DIR:-}"  # dir with pre-downloaded basic+odbc zips (offline)
-IC_VERSION="${IC_VERSION:-19.12.0.0.0}"        # Instant Client version to auto-download (fallback only)
-IC_DIR_BASE="${IC_DIR_BASE:-/opt/oracle}"      # where Instant Client is unpacked (download fallback)
+# Instant Client acquisition. Default: download the latest client as zips (plain
+# unzip — simplest on Debian). Override to reuse one already on the host, or to
+# install from local files (zip or rpm).
+INSTANTCLIENT_DIR="${INSTANTCLIENT_DIR:-}"     # reuse an existing Instant Client at this path (skip download)
+INSTANTCLIENT_ZIP_DIR="${INSTANTCLIENT_ZIP_DIR:-}"  # offline: dir with pre-downloaded basic+odbc .zip OR .rpm files
+IC_VERSION="${IC_VERSION:-23.26.2.0.0}"        # Instant Client version to download
+IC_BASE_URL="${IC_BASE_URL:-https://download.oracle.com/otn_software/linux/instantclient/2326200v2}"
+IC_BASIC_URL="${IC_BASIC_URL:-${IC_BASE_URL}/instantclient-basic-linux.x64-${IC_VERSION}.zip}"
+IC_ODBC_URL="${IC_ODBC_URL:-${IC_BASE_URL}/instantclient-odbc-linux.x64-${IC_VERSION}.zip}"
 PHP_VERSION="${PHP_VERSION:-8.2}"              # for the phpX.Y-odbc package name
 
 WRITE_ENV="${WRITE_ENV:-1}"                    # 1 = write PS_ODBC_* into .env
@@ -105,69 +111,79 @@ apt-get install -y --no-install-recommends \
 php -m | grep -qi '^pdo_odbc$' || die "pdo_odbc still missing after install — check your PHP CLI/FPM build."
 
 # ----------------------------------------------------------------------------
-# 2) Oracle Instant Client (Basic + ODBC) — reuse an existing one if present
+# 2) Oracle Instant Client (Basic + ODBC)
 # ----------------------------------------------------------------------------
-# Prefer a client already on the host (e.g. the instantclient_19_12 OneSync uses)
-# over downloading a second copy. Search order: explicit INSTANTCLIENT_DIR, then
-# common locations, then (last resort) download.
-find_driver_in() { find "$1" -maxdepth 4 -name 'libsqora.so*' 2>/dev/null | sort | tail -n1; }
+# Default: download the latest client. Oracle ships these as RPMs (built for
+# Oracle Linux); on Debian we extract the RPM payload to its canonical location
+# (/usr/lib/oracle/...) rather than dpkg-installing. Reuse an existing client with
+# INSTANTCLIENT_DIR, or install from local .rpm/.zip files with INSTANTCLIENT_ZIP_DIR.
+find_driver_in() { find "$1" -maxdepth 6 -name 'libsqora.so*' 2>/dev/null | sort | tail -n1; }
 
-detect_existing_driver() {
-    if [ -n "${INSTANTCLIENT_DIR}" ]; then
-        [ -d "${INSTANTCLIENT_DIR}" ] || die "INSTANTCLIENT_DIR '${INSTANTCLIENT_DIR}' not found."
-        find_driver_in "${INSTANTCLIENT_DIR}"
-        return
-    fi
-    local base hit
-    for base in "${IC_DIR_BASE}" /opt/oracle /opt /usr/lib/oracle /usr/local/oracle /opt/instantclient*; do
-        [ -d "${base}" ] || continue
-        hit="$(find_driver_in "${base}")"
+# Extract an Oracle Instant Client .rpm to / (so files land in /usr/lib/oracle/...).
+extract_rpm() {
+    command -v rpm2cpio >/dev/null || apt-get install -y --no-install-recommends rpm cpio \
+        || die "Need rpm2cpio + cpio to unpack the RPM (apt install rpm cpio)."
+    ( cd / && rpm2cpio "$1" | cpio -idmu --quiet ) || die "Failed to extract $(basename "$1")."
+}
+
+# Locate the ODBC driver after install (RPM -> /usr/lib/oracle; zip -> IC_DIR_BASE).
+locate_driver() {
+    local b hit
+    for b in /usr/lib/oracle "${IC_DIR_BASE}" /opt/oracle; do
+        [ -d "${b}" ] || continue
+        hit="$(find_driver_in "${b}")"
         [ -n "${hit}" ] && { printf '%s\n' "${hit}"; return; }
     done
 }
 
-DRIVER_LIB="$(detect_existing_driver || true)"
-if [ -n "${DRIVER_LIB}" ]; then
-    log "Reusing the Oracle Instant Client already on this host (e.g. OneSync's): ${DRIVER_LIB}"
-else
-    warn "No existing Oracle Instant Client found — acquiring one (set INSTANTCLIENT_DIR to reuse OneSync's)."
+DRIVER_LIB=""
+if [ -n "${INSTANTCLIENT_DIR}" ]; then
+    log "Reusing the Oracle Instant Client at ${INSTANTCLIENT_DIR}"
+    [ -d "${INSTANTCLIENT_DIR}" ] || die "INSTANTCLIENT_DIR '${INSTANTCLIENT_DIR}' not found."
+    DRIVER_LIB="$(find_driver_in "${INSTANTCLIENT_DIR}" || true)"
+    [ -n "${DRIVER_LIB}" ] || die "No libsqora.so* under ${INSTANTCLIENT_DIR} (is the ODBC package present there?)."
+
+elif [ -n "${INSTANTCLIENT_ZIP_DIR}" ]; then
+    log "Installing Instant Client from local files in ${INSTANTCLIENT_ZIP_DIR}"
+    [ -d "${INSTANTCLIENT_ZIP_DIR}" ] || die "INSTANTCLIENT_ZIP_DIR '${INSTANTCLIENT_ZIP_DIR}' not found."
     mkdir -p "${IC_DIR_BASE}"
-    TMP_ZIPS="$(mktemp -d)"
-    trap 'rm -rf "${TMP_ZIPS}"' EXIT
+    found_any=0
+    for f in "${INSTANTCLIENT_ZIP_DIR}"/*instantclient*basic*.rpm "${INSTANTCLIENT_ZIP_DIR}"/*instantclient*odbc*.rpm; do
+        [ -e "${f}" ] || continue
+        log "  extracting $(basename "${f}")"; extract_rpm "${f}"; found_any=1
+    done
+    for f in "${INSTANTCLIENT_ZIP_DIR}"/instantclient-basic-*.zip "${INSTANTCLIENT_ZIP_DIR}"/instantclient-odbc-*.zip; do
+        [ -e "${f}" ] || continue
+        log "  unzipping $(basename "${f}")"; unzip -oq "${f}" -d "${IC_DIR_BASE}"; found_any=1
+    done
+    [ "${found_any}" = "1" ] || die "No instantclient basic/odbc .rpm or .zip files in ${INSTANTCLIENT_ZIP_DIR}."
+    DRIVER_LIB="$(locate_driver || true)"
+    [ -n "${DRIVER_LIB}" ] || die "Installed local files but libsqora.so* not found."
 
-    if [ -n "${INSTANTCLIENT_ZIP_DIR}" ]; then
-        log "Using pre-downloaded Instant Client zips from ${INSTANTCLIENT_ZIP_DIR}"
-        [ -d "${INSTANTCLIENT_ZIP_DIR}" ] || die "INSTANTCLIENT_ZIP_DIR '${INSTANTCLIENT_ZIP_DIR}' not found."
-        basic_zip="$(find "${INSTANTCLIENT_ZIP_DIR}" -iname 'instantclient-basic-*.zip' | head -n1)"
-        odbc_zip="$(find "${INSTANTCLIENT_ZIP_DIR}" -iname 'instantclient-odbc-*.zip' | head -n1)"
-        [ -n "${basic_zip}" ] || die "No instantclient-basic-*.zip in ${INSTANTCLIENT_ZIP_DIR}."
-        [ -n "${odbc_zip}" ]  || die "No instantclient-odbc-*.zip in ${INSTANTCLIENT_ZIP_DIR}."
-    else
-        # Public Instant Client downloads (no login). IC_REL is the version with dots
-        # stripped, e.g. 21.13.0.0.0 -> 2113000.
-        IC_REL="${IC_VERSION//./}"
-        base_url="https://download.oracle.com/otn_software/linux/instantclient/${IC_REL}"
-        log "Downloading Oracle Instant Client ${IC_VERSION} (Basic + ODBC)"
-        warn "If this fails (network blocked / version retired), download the Basic and"
-        warn "ODBC zips for Linux x86-64 from oracle.com and re-run with INSTANTCLIENT_ZIP_DIR=<dir>."
-        basic_zip="${TMP_ZIPS}/basic.zip"
-        odbc_zip="${TMP_ZIPS}/odbc.zip"
-        curl -fSL "${base_url}/instantclient-basic-linux.x64-${IC_VERSION}dbru.zip" -o "${basic_zip}" \
-            || die "Could not download Instant Client Basic — see INSTANTCLIENT_ZIP_DIR note above."
-        curl -fSL "${base_url}/instantclient-odbc-linux.x64-${IC_VERSION}dbru.zip" -o "${odbc_zip}" \
-            || die "Could not download Instant Client ODBC — see INSTANTCLIENT_ZIP_DIR note above."
-    fi
-
-    log "Unpacking Instant Client into ${IC_DIR_BASE}"
-    unzip -oq "${basic_zip}" -d "${IC_DIR_BASE}"
-    unzip -oq "${odbc_zip}"  -d "${IC_DIR_BASE}"
-    DRIVER_LIB="$(find_driver_in "${IC_DIR_BASE}" || true)"
-    [ -n "${DRIVER_LIB}" ] || die "Instant Client unpacked but libsqora.so* not found under ${IC_DIR_BASE}."
+else
+    log "Downloading Oracle Instant Client ${IC_VERSION} (Basic + ODBC zips)"
+    warn "If this fails (network blocked / version moved), download the Basic + ODBC"
+    warn "packages for Linux x86-64 from oracle.com and re-run with INSTANTCLIENT_ZIP_DIR=<dir>,"
+    warn "or reuse an existing client with INSTANTCLIENT_DIR=<dir>."
+    mkdir -p "${IC_DIR_BASE}"
+    TMP_DL="$(mktemp -d)"
+    trap 'rm -rf "${TMP_DL}"' EXIT
+    curl -fSL "${IC_BASIC_URL}" -o "${TMP_DL}/basic.zip" \
+        || die "Could not download Instant Client Basic zip (${IC_BASIC_URL})."
+    curl -fSL "${IC_ODBC_URL}" -o "${TMP_DL}/odbc.zip" \
+        || die "Could not download Instant Client ODBC zip (${IC_ODBC_URL})."
+    log "Unpacking into ${IC_DIR_BASE}"
+    unzip -oq "${TMP_DL}/basic.zip" -d "${IC_DIR_BASE}"
+    unzip -oq "${TMP_DL}/odbc.zip"  -d "${IC_DIR_BASE}"
+    DRIVER_LIB="$(locate_driver || true)"
+    [ -n "${DRIVER_LIB}" ] || die "Unpacked zips but libsqora.so* not found under ${IC_DIR_BASE}."
 fi
 
 IC_HOME="$(dirname "${DRIVER_LIB}")"
-# Display version: from an instantclient_XX_YY dir name when present, else IC_VERSION.
+# Display version: from an instantclient_XX_YY dir name (zip layout) when present,
+# else from the driver soname (libsqora.so.23.1 -> 23), else IC_VERSION.
 DESC_VERSION="$(basename "${IC_HOME}" | sed -n 's/^instantclient_\([0-9]\{1,\}\)_\([0-9]\{1,\}\)$/\1.\2/p')"
+DESC_VERSION="${DESC_VERSION:-$(printf '%s' "${DRIVER_LIB}" | sed -n 's/.*libsqora\.so\.\([0-9.]\{1,\}\)$/\1/p')}"
 DESC_VERSION="${DESC_VERSION:-${IC_VERSION}}"
 log "Oracle ODBC driver: ${DRIVER_LIB} (Instant Client ${DESC_VERSION})"
 
