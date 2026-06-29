@@ -75,17 +75,19 @@ final class PowerSchoolImporter
             try {
                 $row = $this->primaryRow($ps, $normalizer);
                 $resolved = $this->resolve($ps, $row, $lookup);
-                $counts[$resolved['action']]++;
 
+                $action = $resolved['action'];
+                $reason = $resolved['reason'];
                 if (!$dryRun) {
-                    $this->apply($ps, $row, $resolved, $normalizer, $actor, $batchId, $counts);
+                    [$action, $reason] = $this->apply($ps, $row, $resolved, $normalizer, $actor, $batchId, $counts);
                 }
+                $counts[$action]++;
                 $outcomes[] = [
                     'name' => trim($ps->firstName . ' ' . $ps->lastName),
                     'source_key' => $row->sourceKey,
-                    'action' => $resolved['action'],
+                    'action' => $action,
                     'schools' => count($ps->schools),
-                    'reason' => $resolved['reason'],
+                    'reason' => $reason,
                 ];
             } catch (\Throwable $e) {
                 $counts['errors']++;
@@ -126,9 +128,17 @@ final class PowerSchoolImporter
         return ['action' => $d->action, 'personId' => $d->personId, 'candidates' => $d->candidates, 'reason' => $d->reason];
     }
 
-    /** Persist one combined user (transactional): person + all source ids + assignments. */
-    private function apply(PsUser $ps, NormalizedRow $row, array $resolved, Normalizer $norm, string $actor, ?int $batchId, array &$counts): void
+    /**
+     * Persist one combined user (transactional): person + all source ids + assignments.
+     *
+     * @return array{0:string,1:string} the effective [action, reason] — normally the
+     *   resolver's, but a review row whose source already has a pending case is
+     *   reported as 'skipped' rather than re-queued (idempotent re-import).
+     */
+    private function apply(PsUser $ps, NormalizedRow $row, array $resolved, Normalizer $norm, string $actor, ?int $batchId, array &$counts): array
     {
+        $action = $resolved['action'];
+        $reason = $resolved['reason'];
         $this->db->beginTransaction();
         try {
             $stagingId = $this->insertStaging($batchId, $ps, $row, self::stagingStatus($resolved['action']), $resolved['reason']);
@@ -137,19 +147,30 @@ final class PowerSchoolImporter
             if ($resolved['action'] === MatchDecision::NEW) {
                 $personId = $this->writer->createPerson($row, $actor);
             } elseif ($resolved['action'] === MatchDecision::REVIEW) {
-                foreach ($resolved['candidates'] as $c) {
-                    $this->writer->createMatchCandidate($stagingId, $c['person_id'], $c['score'], $c['basis']);
+                // Idempotent re-import: a review row carries no source id, so the
+                // tier-1 source-id match can't catch it on a re-run. If this source
+                // already has an unresolved review case, re-queuing it would
+                // duplicate the case in the review queue — so skip it instead.
+                if (Importer::hasPendingReview($this->db, 'powerschool', $row->sourceKey, $stagingId)) {
+                    $reason = 'Already pending review from an earlier import — not re-queued.';
+                    $action = MatchDecision::SKIPPED;
+                    $this->db->prepare("UPDATE staging_record SET match_status = 'skipped', reason = :reason WHERE id = :id")
+                        ->execute([':reason' => $reason, ':id' => $stagingId]);
+                } else {
+                    foreach ($resolved['candidates'] as $c) {
+                        $this->writer->createMatchCandidate($stagingId, $c['person_id'], $c['score'], $c['basis']);
+                    }
                 }
                 $this->db->commit();
-                return;
+                return [$action, $reason];
             } elseif ($resolved['action'] === MatchDecision::SKIPPED) {
                 $this->db->commit();
-                return;
+                return [$action, $reason];
             }
 
             if ($personId === null) {
                 $this->db->commit();
-                return;
+                return [$action, $reason];
             }
 
             // Link every TEACHERS.ID, refresh HR, and upsert one assignment per school.
@@ -177,6 +198,8 @@ final class PowerSchoolImporter
             }
             throw $e;
         }
+
+        return [$action, $reason];
     }
 
     /** The person-level row (primary school) used for matching + create/update. */
