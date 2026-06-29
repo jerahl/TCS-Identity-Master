@@ -154,16 +154,65 @@ the matching `onesync_ro@'<ip>'` user.
 > is the reverse — IDM reading OneSync's own database *outbound* — which needs no
 > inbound rule since the firewall leaves egress open.
 
+## Enable HTTPS with your wildcard certificate
+
+If you have a wildcard cert (e.g. `*.tuscaloosacityschools.com`) from your CA —
+not Let's Encrypt — `scripts/install-wildcard-cert.sh` installs it and rewrites
+the `tcs-identity` nginx vhost for HTTPS with modern TLS, security headers, and
+an HTTP→HTTPS redirect:
+
+```sh
+sudo CERT_FILE=/path/star_tcs.crt \
+     KEY_FILE=/path/star_tcs.key \
+     CHAIN_FILE=/path/ca-bundle.crt \
+     bash scripts/install-wildcard-cert.sh
+```
+
+It will:
+
+1. **Validate** — confirms the key matches the cert (RSA *or* EC), the cert
+   isn't expired (and warns if it expires within 30 days), and that its SANs
+   cover the hostname (wildcard-aware). Refuses to install an expired or
+   mismatched cert.
+2. **Install** — writes `fullchain.pem` (644) and `privkey.pem` (600, root-only)
+   to `/etc/ssl/idm`, normalizing an encrypted key to the unencrypted PEM nginx
+   needs (supply `KEY_PASSPHRASE=` for that).
+3. **Configure** — backs up the existing vhost, then writes a 443 server (HTTP/2,
+   TLS 1.2/1.3, the `security-headers.conf` snippet) plus an 80→443 redirect,
+   opens 443 in `ufw`, runs `nginx -t`, and reloads.
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `CERT_FILE` / `KEY_FILE` | *(required)* | Cert (leaf or leaf+intermediates) and matching key. |
+| `CHAIN_FILE` | *(none)* | Intermediate/CA bundle if your CA ships it separately. |
+| `KEY_PASSPHRASE` | *(none)* | Set if `KEY_FILE` is encrypted. |
+| `SERVER_NAME` | `.env` `APP_BASE_URL` host | The vhost hostname. |
+| `REDIRECT_HTTP` | `1` | Add the 80→443 redirect server. |
+| `WEBROOT` | existing site root → `public/` | App document root. |
+
+Verify:
+
+```sh
+curl -sS -I https://identity.tuscaloosacityschools.com/ | head
+echo | openssl s_client -servername identity.tuscaloosacityschools.com \
+  -connect identity.tuscaloosacityschools.com:443 2>/dev/null \
+  | openssl x509 -noout -subject -enddate
+```
+
+Wildcard certs expire — re-run the script with the renewed cert (idempotent)
+before the printed expiry date.
+
 ## After running — not automated
 
 These need your domain, certificate, and IdP, so the script leaves them to you:
 
-1. **TLS**: install a cert (`certbot --nginx`) and add
-   `include snippets/security-headers.conf;` to the HTTPS `server {}` block. The
-   `Strict-Transport-Security` header only makes sense once TLS is live.
+1. **TLS**: install your wildcard cert with `scripts/install-wildcard-cert.sh`
+   (see above). The `Strict-Transport-Security` header only takes effect once
+   TLS is live.
 2. **Verify SSH**: open a *new* session (on the new port if you changed it)
    before closing your current one.
 3. **App health**: `nginx -t`, `systemctl status php8.2-fpm mariadb`.
-4. **DB not public**: `ss -ltnp | grep 3306` should show `127.0.0.1` only.
+4. **DB not public**: `ss -ltnp | grep 3306` should show `127.0.0.1` only —
+   unless you ran `allow-db-access.sh`, in which case it's the OneSync path.
 5. **SAML/feeds**: confirm outbound 443 (SAML, composer) and SFTP (port 234)
    still work — `ufw` allows all egress by default.
