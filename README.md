@@ -242,10 +242,12 @@ sudo PS_HOST=psprod.example.org PS_SERVICE=PSPROD \
      bash scripts/setup-powerschool-odbc.sh
 ```
 
-It reuses an Oracle Instant Client already on the host (e.g. the
-`instantclient_19_12` OneSync uses) when one is present; otherwise it downloads
-one. Point it at a specific client with `INSTANTCLIENT_DIR=…`, or supply
-pre-downloaded Basic+ODBC zips offline with `INSTANTCLIENT_ZIP_DIR=…`.
+Set `PS_PORT` if the listener isn't on 1521, and `PS_ODBC_SCHEMA` if the PS tables
+live under a specific owner (it's written to `.env` and prefixed onto the table
+names). By default it downloads the latest Instant Client; point it at a client
+already on the host with `INSTANTCLIENT_DIR=…` (e.g. the `instantclient_19_12`
+OneSync uses), or supply pre-downloaded Basic+ODBC zips/rpms offline with
+`INSTANTCLIENT_ZIP_DIR=…`.
 
 ```sh
 php bin/import_powerschool.php --dry-run     # query Oracle, change nothing

@@ -40,6 +40,10 @@
 #   # Use an Oracle SID instead of a service name:
 #   sudo PS_HOST=psprod.example.org PS_SID=PSPROD bash scripts/setup-powerschool-odbc.sh
 #
+#   # Non-default port and a table-owner schema prefix:
+#   sudo PS_HOST=psprod.example.org PS_PORT=1522 PS_SERVICE=PSPROD \
+#        PS_ODBC_SCHEMA=PSNAVIGATOR bash scripts/setup-powerschool-odbc.sh
+#
 set -euo pipefail
 
 # ----------------------------------------------------------------------------
@@ -52,6 +56,7 @@ PS_SID="${PS_SID:-}"                           # … OR an Oracle SID (one of th
 PS_DSN_NAME="${PS_DSN_NAME:-PowerSchool}"      # name of the DSN written to odbc.ini / .env
 PS_ODBC_USER="${PS_ODBC_USER:-}"               # optional: written to .env + used to test
 PS_ODBC_PASS="${PS_ODBC_PASS:-}"               # optional: written to .env + used to test
+PS_ODBC_SCHEMA="${PS_ODBC_SCHEMA:-}"           # optional: PS table owner/schema prefix (e.g. PSNAVIGATOR)
 
 # Instant Client acquisition. Default: download the latest client as zips (plain
 # unzip — simplest on Debian). Override to reuse one already on the host, or to
@@ -244,9 +249,12 @@ if [ "${WRITE_ENV}" = "1" ]; then
     set_env PS_ODBC_DSN "${PS_DSN_NAME}"
     [ -n "${PS_ODBC_USER}" ] && set_env PS_ODBC_USER "${PS_ODBC_USER}"
     [ -n "${PS_ODBC_PASS}" ] && set_env PS_ODBC_PASS "${PS_ODBC_PASS}"
+    # Schema/owner prefix the reader prepends to the PS table names. Write it when
+    # given; clear any stale value when explicitly set empty so .env matches intent.
+    set_env PS_ODBC_SCHEMA "${PS_ODBC_SCHEMA}"
 else
     log "Skipping .env (WRITE_ENV=0). Set these yourself:"
-    printf '  PS_ODBC_DSN=%s\n  PS_ODBC_USER=…\n  PS_ODBC_PASS=…\n' "${PS_DSN_NAME}"
+    printf '  PS_ODBC_DSN=%s\n  PS_ODBC_USER=…\n  PS_ODBC_PASS=…\n  PS_ODBC_SCHEMA=%s\n' "${PS_DSN_NAME}" "${PS_ODBC_SCHEMA}"
 fi
 
 # ----------------------------------------------------------------------------
@@ -274,7 +282,8 @@ fi
 
 log "Done."
 echo "  Driver:  ${DRIVER_NAME} -> ${DRIVER_LIB}"
+echo "  Server:  ${PS_HOST}:${PS_PORT} / ${PS_SERVICE:-${PS_SID}}"
 echo "  DSN:     ${PS_DSN_NAME} -> ${CONNECT_STR}   (${ODBC_INI})"
-echo "  .env:    PS_ODBC_DSN=${PS_DSN_NAME}$([ -n "${PS_ODBC_USER}" ] && echo " · PS_ODBC_USER set" )"
+echo "  .env:    PS_ODBC_DSN=${PS_DSN_NAME}$([ -n "${PS_ODBC_USER}" ] && echo " · PS_ODBC_USER set")$([ -n "${PS_ODBC_SCHEMA}" ] && echo " · PS_ODBC_SCHEMA=${PS_ODBC_SCHEMA}")"
 echo
 echo "  Next:  php bin/import_powerschool.php --dry-run     # verify the import end-to-end"
