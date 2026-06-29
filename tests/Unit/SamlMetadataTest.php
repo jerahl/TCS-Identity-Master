@@ -75,4 +75,16 @@ final class SamlMetadataTest extends TestCase
         $this->expectExceptionMessage('SAML_IDP_ENTITY_ID');
         $this->invokeSettings(false);
     }
+
+    /**
+     * Default signature policy: require the message (response) signature, which
+     * is what ClassLink sends and which covers the assertion. A regression here
+     * would re-break SSO login with "Assertion … is not signed".
+     */
+    public function testDefaultSignaturePolicyRequiresMessageSignature(): void
+    {
+        $security = $this->invokeSettings(true)['security'];
+        self::assertTrue($security['wantMessagesSigned'], 'message signature must be required by default');
+        self::assertFalse($security['wantAssertionsSigned'], 'assertion signature must be optional by default');
+    }
 }

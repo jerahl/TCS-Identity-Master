@@ -213,17 +213,23 @@ A browser SAML tracer extension (to capture the AuthnRequest/Response) and the
 IdP's own sign-in logs are the other essential tools. **Do not** enable
 `APP_DEBUG=true` in production to chase this — use the logs above.
 
-### A note on ClassLink (and IdPs that sign the message, not the assertion)
+### Signature policy (assertion vs message) — ClassLink
 
-The app sets `wantAssertionsSigned = true`, so it requires the **assertion**
-inside the response to be signed. Some IdPs (ClassLink among them, depending on
-connector settings) sign the **response/message** instead, producing
-*"The Assertion of the Response is not signed…"* in the SAML debug log. Fixes, in
-order of preference: configure the IdP connector to **sign the assertion**, or
-have it **sign both**. If you must accept message-level signing instead, that's a
-`security` settings change in `SamlProvider::settings()` (`wantAssertionsSigned`
-↔ `wantMessagesSigned`) — confirm the reason in the log first, then adjust
-deliberately rather than relaxing signature checks blindly.
+SAML signatures can be on the **assertion** element or on the enveloping
+**response/message**. ClassLink (verified against a live response) signs the
+**response**, whose enveloped signature cryptographically covers the assertion
+inside it. The app requires the **message** signature by default, which matches:
+
+```ini
+SAML_WANT_MESSAGES_SIGNED=true      # response signature required (ClassLink default)
+SAML_WANT_ASSERTIONS_SIGNED=false
+```
+
+If a future IdP signs the **assertion element** instead, you'll see
+*"The Assertion of the Response is not signed and the SP requires it"* in the
+SAML debug log — flip the two flags (`MESSAGES=false`, `ASSERTIONS=true`). Always
+keep at least one `true`; setting both `false` would accept unsigned responses.
+(The defaults live in `SamlProvider::settings()`.)
 
 ### Symptom → cause → fix
 

@@ -131,7 +131,13 @@ final class SamlProvider
             ],
             'security' => [
                 'requestedAuthnContext' => false,
-                'wantAssertionsSigned' => true,
+                // Require a valid signature on the response, OR on the assertion.
+                // Default to message (response) signing: ClassLink — and many IdPs
+                // — sign the enveloping <Response> (which cryptographically covers
+                // the assertion) rather than the assertion element itself. An IdP
+                // that signs the assertion instead can flip these via .env.
+                'wantMessagesSigned' => Config::bool('SAML_WANT_MESSAGES_SIGNED', true),
+                'wantAssertionsSigned' => Config::bool('SAML_WANT_ASSERTIONS_SIGNED', false),
             ],
         ];
     }
