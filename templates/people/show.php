@@ -1,5 +1,5 @@
 <?php
-/** @var array $p @var array $sourceIds @var array $assignments @var array $syncStatus @var array $timeline */
+/** @var array $p @var array $sourceIds @var array $assignments @var array $syncStatus @var array $timeline @var array $fieldMap @var array $fieldGroups */
 use App\View\Present;
 
 $st = Present::status($p['status']);
@@ -202,5 +202,37 @@ $eventTitle = [
         <p style="margin:0; font-size:13px; color:#3D5462; line-height:1.5;"><?= $p['notes'] ? e($p['notes']) : '<span class="muted">No notes.</span>' ?></p>
       </div>
     </div>
+  </div>
+
+  <!-- Source field mapping: NextGen ↔ PowerSchool for this person -->
+  <div class="panel" style="margin-top:18px;">
+    <div class="panel__head">
+      <h2 class="panel__title">Source field mapping</h2>
+      <span class="panel__note">— NextGen ↔ PowerSchool · <a href="<?= e(url('/reference', ['tab' => 'mapping'])) ?>">full crosswalk</a></span>
+    </div>
+    <table class="assign-table">
+      <thead><tr><th>Field</th><th>NextGen</th><th>Value</th><th>PowerSchool</th></tr></thead>
+      <tbody>
+        <?php foreach ($fieldGroups as $gkey => $glabel):
+            $groupRows = array_values(array_filter($fieldMap, static fn($f) => $f['group'] === $gkey));
+            if ($groupRows === []) { continue; } ?>
+          <tr><td colspan="4" style="font-weight:600; color:#22343F; background:#F4F7F9; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px;"><?= e($glabel) ?></td></tr>
+          <?php foreach ($groupRows as $f): ?>
+          <tr>
+            <td>
+              <span style="color:#22343F; font-weight:500;"><?= e($f['label']) ?></span>
+              <?php if ($f['pii']): ?> <span class="pii-tag">PII</span><?php endif; ?>
+            </td>
+            <td class="mono" style="font-size:11.5px; color:#7B8E9B;"><?= e($f['nextgen'] ?? '—') ?></td>
+            <td>
+              <?= $f['value'] === '' ? '<span class="value-missing">—</span>' : e($f['value']) ?>
+              <?php if ($f['origin'] === 'powerschool' && $f['value'] !== ''): ?> <span class="src-tag">from PowerSchool</span><?php endif; ?>
+            </td>
+            <td class="mono" style="font-size:11.5px; color:#7B8E9B;"><?= e($f['powerschool'] ?? '—') ?></td>
+          </tr>
+          <?php endforeach; ?>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
   </div>
 </div>

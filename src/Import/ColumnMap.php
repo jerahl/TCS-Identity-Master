@@ -13,7 +13,9 @@ use InvalidArgumentException;
  *
  * Logical fields: source_key, employee_id, first, middle, last, preferred, dob,
  * gender, ethnicity, school_code, person_type, title, job_code, fte, hire_date,
- * end_date, is_primary.
+ * position_start_date, end_date, is_primary, and the NextGen HR contact/position
+ * fields hr_email, position_number, cctr_description, phone, address1, address2,
+ * city, state_code, zip_code.
  */
 final class ColumnMap
 {
@@ -21,17 +23,27 @@ final class ColumnMap
         // NextGen HR export (ITExtract.csv) — real district headers.
         // No DOB / middle / preferred / type columns in this feed.
         'nextgen' => [
-            'source_key'  => 'Employee Number',
-            'employee_id' => 'Employee Number',
-            'first'       => 'First Name',
-            'last'        => 'Last Name',
-            'gender'      => 'Gender Type',
-            'ethnicity'   => 'Ethnicity Description',
-            'school_code' => 'Location Code',
-            'title'       => 'Job Code Desc',
-            'job_code'    => 'JOB CODE',
-            'hire_date'   => 'Hire Date',
-            'end_date'    => 'Position End Date',
+            'source_key'          => 'Employee Number',
+            'employee_id'         => 'Employee Number',
+            'first'               => 'First Name',
+            'last'                => 'Last Name',
+            'hr_email'            => 'EMail Address',
+            'gender'              => 'Gender Type',
+            'ethnicity'           => 'Ethnicity Description',
+            'school_code'         => 'Location Code',
+            'position_number'     => 'Position Number',
+            'cctr_description'    => 'CCTR Description',
+            'title'               => 'Job Code Desc',
+            'job_code'            => 'JOB CODE',
+            'hire_date'           => 'Hire Date',
+            'position_start_date' => 'Position Start Date',
+            'end_date'            => 'Position End Date',
+            'phone'               => 'Phone Number',
+            'address1'            => 'Address 1',
+            'address2'            => 'Address 2',
+            'city'                => 'City',
+            'state_code'          => 'State Code',
+            'zip_code'            => 'Zip Code',
         ],
         // PowerSchool TEACHERS export. source_key = TEACHERS.ID — the stable PS
         // identity that AD mirrors as its uniqueId ("T" + TEACHERS.ID), so AD

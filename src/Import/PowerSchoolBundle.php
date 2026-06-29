@@ -107,6 +107,8 @@ final class PowerSchoolBundle
                 endDate: self::nz($u['S_AL_USR_X.exit_date'] ?? ''),
                 teacherIds: array_map('strval', array_keys($teacherIds)),
                 schools: $schools,
+                dob: self::nz($u['S_AL_USR_X.dob'] ?? ''),
+                alsdeId: self::nz($u['S_AL_USR_X.StaffStateID'] ?? ''),
             );
         }
         return $out;

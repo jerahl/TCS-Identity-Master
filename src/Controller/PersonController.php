@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Db;
+use App\Import\FieldMap;
 use App\Import\NormalizedRow;
 use App\Import\PersonWriter;
 use App\Service\AuditService;
@@ -54,12 +55,18 @@ final class PersonController extends Controller
             ], 'people', 'People  /  Not found', 'Not found — TCS Identity Master');
         }
 
+        $assignments = $this->people->assignments($id);
+
         return $this->render('people/show', [
             'p'          => $person,
             'sourceIds'  => $this->people->sourceIds($id),
-            'assignments' => $this->people->assignments($id),
+            'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
+            // Per-person NextGen↔PowerSchool field crosswalk (assignments come back
+            // primary-first, so $assignments[0] is the primary if any exist).
+            'fieldMap'    => FieldMap::personRows($person, $assignments[0] ?? null),
+            'fieldGroups' => FieldMap::GROUPS,
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
 

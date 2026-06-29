@@ -1,4 +1,4 @@
-Employee Number,First Name,Last Name,Gender Type,Ethnicity Description,Location Code,Job Code Desc,JOB CODE,Hire Date,Position End Date
-15241,Jennifer,Marsh,Female,White,401,Teacher Mathematics,TCH,08/18/2014,
-16100,Brandon,Nguyen,Male,Asian,402,Teacher Science,TCH,08/10/2026,
-16200,Dana,Reed,Female,Caucasian,999,Instructional Aide,AIDE,08/01/2026,
+Employee Number,Last Name,First Name,EMail Address,Position Number,Location Code,CCTR Description,JOB CODE,Job Code Desc,Hire Date,Position Start Date,Position End Date,Ethnicity Description,Gender Type,Phone Number,Address 1,Address 2,City,State Code,Zip Code
+15241,Marsh,Jennifer,jmarsh@example.org,P-7781,401,Central High Mathematics,TCH,Teacher Mathematics,08/18/2014,08/01/2020,,White,Female,205-555-0100,12 Oak Street,,Tuscaloosa,AL,35401
+16100,Nguyen,Brandon,bnguyen@example.org,P-8042,402,Northridge Science,TCH,Teacher Science,08/10/2026,08/10/2026,,Asian,Male,205-555-0142,448 Maple Avenue,Apt 6,Tuscaloosa,AL,35404
+16200,Reed,Dana,dreed@example.org,P-3310,999,Unassigned Cost Center,AIDE,Instructional Aide,08/01/2026,08/01/2026,,Caucasian,Female,205-555-0188,77 Pine Court,,Northport,AL,35476

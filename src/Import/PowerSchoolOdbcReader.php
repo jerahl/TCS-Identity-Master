@@ -149,8 +149,14 @@ final class PowerSchoolOdbcReader
     /**
      * USERS + extension tables — only the fields not on TEACHERS (middle name,
      * staff_classification, hire/exit dates), one row per active staff user.
-     * Dates are TO_CHAR'd to a canonical Y-m-d so Normalizer::parseDate gets a
-     * stable format regardless of the session's NLS_DATE_FORMAT.
+     * The Alabama state extension (S_AL_USR_X) also supplies the two demographics
+     * NextGen doesn't carry: the staff date of birth and the Alabama State ID
+     * (ALSID). Dates are TO_CHAR'd to a canonical Y-m-d so Normalizer::parseDate
+     * gets a stable format regardless of the session's NLS_DATE_FORMAT.
+     *
+     * NOTE: the DOB / ALSID column names (alx.dob, alx.staffstateid) mirror this
+     * district's Alabama extension; adjust them to your live PS schema if they
+     * differ — the same "adjust to your schema" caveat as the rest of this reader.
      */
     private function usersSql(): string
     {
@@ -161,7 +167,9 @@ final class PowerSchoolOdbcReader
             . 'u.last_name   AS "USERS.Last_Name", '
             . 'ext.staff_classification              AS "U_DEF_EXT_USERS.staff_classification", '
             . "TO_CHAR(sx.hiredate, 'YYYY-MM-DD')    AS \"S_USR_X.hiredate\", "
-            . "TO_CHAR(alx.exit_date, 'YYYY-MM-DD')  AS \"S_AL_USR_X.exit_date\" "
+            . "TO_CHAR(alx.exit_date, 'YYYY-MM-DD')  AS \"S_AL_USR_X.exit_date\", "
+            . "TO_CHAR(alx.dob, 'YYYY-MM-DD')        AS \"S_AL_USR_X.dob\", "
+            . 'alx.staffstateid                      AS "S_AL_USR_X.StaffStateID" '
             . 'FROM ' . $this->table('users') . ' u '
             . 'LEFT JOIN ' . $this->table('u_def_ext_users') . ' ext ON ext.usersdcid = u.dcid '
             . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid '

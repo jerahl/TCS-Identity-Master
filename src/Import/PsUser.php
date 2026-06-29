@@ -26,6 +26,9 @@ final class PsUser
         public readonly ?string $endDate,
         public readonly array $teacherIds,
         public readonly array $schools,
+        // PowerSchool-sourced demographics NextGen doesn't carry.
+        public readonly ?string $dob = null,       // Y-m-d (from PS)
+        public readonly ?string $alsdeId = null,   // Alabama State ID (ALSID)
     ) {
     }
 

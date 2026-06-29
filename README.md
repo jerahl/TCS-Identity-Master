@@ -209,7 +209,18 @@ first *or* last name is in `IMPORT_EXCLUDE_NAMES` (comma-separated, default
 
 **Column maps.** `src/Import/ColumnMap.php` maps each feed's CSV headers to the
 logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
-the maps to match the district's real export headers.
+the maps to match the district's real export headers. The NextGen map captures the
+full ITExtract column set — employee #, name, e-mail, position #, location, CCTR
+description, job code/desc, hire/position-start/end dates, ethnicity, gender, and
+the contact block (phone, address 1/2, city, state, zip) — all stored on the
+golden record (migration `0007`).
+
+**Field mapping (NextGen ↔ PowerSchool).** `src/Import/FieldMap.php` is the single
+crosswalk between each NextGen field, its PowerSchool counterpart, and where the
+value lands on the golden record. It drives two read-only views: a documented
+crosswalk at **`/reference` → Field mapping**, and a **Source field mapping** panel
+on each person's record showing that person's value field-by-field. DOB and ALSID
+have no NextGen column and are shown as PowerSchool-sourced.
 
 **PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
 instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in
@@ -221,8 +232,11 @@ place and `PowerSchoolBundle::combine` joins them into one record per person:
   `TEACHERS.SchoolID`; the primary is the row where `SchoolID = HomeSchoolId`.
   `TeacherNumber` and `Title` come from here too.
 - **USERS** (+ `U_DEF_EXT_USERS`, `S_USR_X`, `S_AL_USR_X`) adds only what isn't on
-  TEACHERS — middle name, `staff_classification`, hire/exit dates — joined by
-  `users_dcid`.
+  TEACHERS — middle name, `staff_classification`, hire/exit dates, and the two
+  demographics NextGen doesn't carry: **date of birth** and the **Alabama State
+  ID (ALSID)**, both from the Alabama extension `S_AL_USR_X` (`dob`,
+  `staffstateid`) — joined by `users_dcid`. These land on `person.dob` /
+  `person.alsde_id`. Adjust those column names if your live PS schema differs.
 
 This mirrors the district's existing pull (`… FROM Teachers WHERE Status = 1`),
 widened to all active assignment rows for multi-school support. `Email_Addr` /
@@ -365,10 +379,11 @@ changes, and all data mutations are written to `audit_log`.
   username, unmapped values, **failed syncs**, last feed) that link to the
   filtered views; recent activity; last feed per source; and the failed-sync
   rollup (accounts whose last OneSync sync failed).
-- **Reference data** (`/reference`): the school map (codes + AD/Google OUs) and
-  ethnicity map, with **unmapped values surfaced** — ethnicity values seen on
-  records and school codes seen in feeds that have no mapping (they block clean
-  provisioning). Read-only in M6; editing + RBAC in M7.
+- **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
+  ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
+  **unmapped values surfaced** — ethnicity values seen on records and school codes
+  seen in feeds that have no mapping (they block clean provisioning). Read-only in
+  M6; editing + RBAC in M7.
 - **Import / feeds** (`/import`): batch history with a drill-in to each batch's
   staged rows and how each one matched (auto / new / review / skipped). Editors
   can **upload a CSV** here (pick the source system, optional dry-run) to run the
