@@ -70,9 +70,14 @@ final class AuthService
     /** SAML usable only when the IdP is fully configured. */
     public function isSamlConfigured(): bool
     {
+        // The IdP signing cert may be inline or supplied as a PEM file.
+        $certFile = (string) Config::get('SAML_IDP_X509_CERT_FILE', '');
+        $certPresent = Config::get('SAML_IDP_X509_CERT') !== null
+            || ($certFile !== '' && is_file($certFile) && is_readable($certFile));
+
         return Config::get('SAML_IDP_ENTITY_ID') !== null
             && Config::get('SAML_IDP_SSO_URL') !== null
-            && Config::get('SAML_IDP_X509_CERT') !== null;
+            && $certPresent;
     }
 
     /** Dev login is allowed ONLY outside production and when SAML isn't configured. */

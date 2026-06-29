@@ -72,7 +72,7 @@ final class SamlMetadataTest extends TestCase
     public function testLoginSettingsStillRequireIdpConfig(): void
     {
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('SAML_IDP_ENTITY_ID');
+        $this->expectExceptionMessage('Missing required config');
         $this->invokeSettings(false);
     }
 
@@ -86,5 +86,25 @@ final class SamlMetadataTest extends TestCase
         $security = $this->invokeSettings(true)['security'];
         self::assertTrue($security['wantMessagesSigned'], 'message signature must be required by default');
         self::assertFalse($security['wantAssertionsSigned'], 'assertion signature must be optional by default');
+    }
+
+    /**
+     * The IdP signing cert may be supplied as a PEM file instead of inline
+     * base64 (avoids the multi-line-in-.env "Unable to extract public key" trap).
+     */
+    public function testIdpCertCanComeFromAFile(): void
+    {
+        $certFile = sys_get_temp_dir() . '/idm_idp_cert_' . getmypid() . '.crt';
+        file_put_contents($certFile, "-----BEGIN CERTIFICATE-----\nMIIBfakecert\n-----END CERTIFICATE-----\n");
+        putenv('SAML_IDP_X509_CERT');           // inline empty
+        putenv('SAML_IDP_X509_CERT_FILE=' . $certFile);
+
+        try {
+            $settings = $this->invokeSettings(true); // SP-only build never throws
+            self::assertStringContainsString('MIIBfakecert', $settings['idp']['x509cert']);
+        } finally {
+            putenv('SAML_IDP_X509_CERT_FILE');
+            @unlink($certFile);
+        }
     }
 }

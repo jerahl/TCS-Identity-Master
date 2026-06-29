@@ -100,6 +100,18 @@ final class SamlProvider
             ? (string) Config::get($key, '')
             : Config::require($key);
 
+        // IdP signing cert: an inline base64 value (SAML_IDP_X509_CERT) OR a PEM
+        // file (SAML_IDP_X509_CERT_FILE). The file form avoids the fragile
+        // single-line-base64-in-.env trap that yields "Unable to extract public
+        // key". php-saml's formatCert tolerates PEM headers and line breaks.
+        $idpCert = (string) Config::get('SAML_IDP_X509_CERT', '');
+        if ($idpCert === '') {
+            $idpCert = (string) (self::fileContents(Config::get('SAML_IDP_X509_CERT_FILE')) ?? '');
+        }
+        if (!$spOnly && trim($idpCert) === '') {
+            throw new RuntimeException('Missing required config: SAML_IDP_X509_CERT (or SAML_IDP_X509_CERT_FILE)');
+        }
+
         return [
             'strict' => true,
             'baseurl' => Config::get('APP_BASE_URL'),
@@ -127,7 +139,7 @@ final class SamlProvider
                     'url' => (string) Config::get('SAML_IDP_SLO_URL', ''),
                     'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
                 ],
-                'x509cert' => $idp('SAML_IDP_X509_CERT'),
+                'x509cert' => $idpCert,
             ],
             'security' => [
                 'requestedAuthnContext' => false,

@@ -123,8 +123,15 @@ From the IdP's federation metadata:
 SAML_IDP_ENTITY_ID=...        # the IdP's entityID / issuer
 SAML_IDP_SSO_URL=...          # IdP HTTP-Redirect SSO endpoint
 SAML_IDP_SLO_URL=...          # (optional) single logout endpoint
-SAML_IDP_X509_CERT=MIID...    # the IdP token-SIGNING cert, base64 (no PEM header lines)
+SAML_IDP_X509_CERT=MIID...    # the IdP token-SIGNING cert, base64, ONE LINE
 ```
+
+> **Certificate gotcha:** `.env` is line-based, so the inline cert must be a
+> **single unbroken line** — no `-----BEGIN/END-----`, no wrapping. A multi-line
+> paste is silently truncated and login fails with *"Unable to extract public
+> key."* If you'd rather keep the cert as a normal multi-line PEM file, leave
+> `SAML_IDP_X509_CERT` blank and set `SAML_IDP_X509_CERT_FILE=/var/idm/saml/idp.crt`
+> instead.
 
 The login button appears only once all three required IdP values
 (`SAML_IDP_ENTITY_ID`, `SAML_IDP_SSO_URL`, `SAML_IDP_X509_CERT`) are set —
@@ -248,7 +255,8 @@ keep at least one `true`; setting both `false` would accept unsigned responses.
 | 500 (or now a "couldn't start SSO" flash) when clicking the SSO button | Missing SP config (`SAML_SP_ENTITY_ID`/`SAML_SP_ACS_URL`) or `onelogin/php-saml` not installed. | Set SP vars; run `composer install`. Check the `[idm] SAML login:` log line. |
 | Logged in but every page is 403 / can't open `/users` | Account is `readonly` — `ADMIN_EMAILS` wasn't set before first login. | `php bin/set_role.php --email=<you> --role=admin`, then re-login. |
 | New account created with a weird username/key, email empty | IdP NameID isn't email-format and no email attribute was released. | Set NameID to Email-Address format, or release an `email`/`mail` claim. |
-| `idp_cert_or_fingerprint_not_found_and_required` | `wantAssertionsSigned = true` but no IdP cert configured. | Set `SAML_IDP_X509_CERT`. |
+| *"Unable to extract public key"* | `SAML_IDP_X509_CERT` is malformed — usually a multi-line paste truncated by the line-based `.env`. | Put the cert on one unbroken line (no BEGIN/END), or use `SAML_IDP_X509_CERT_FILE`. |
+| `idp_cert_or_fingerprint_not_found_and_required` | No IdP cert configured at all. | Set `SAML_IDP_X509_CERT` (or `SAML_IDP_X509_CERT_FILE`). |
 
 ### Diagnostic checklist
 
