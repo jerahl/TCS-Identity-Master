@@ -19,8 +19,12 @@ use RuntimeException;
  * first), and apply the decision — auto-link, create-new, or queue for review.
  *
  * Idempotent: a re-run of the same file matches rows it previously created via
- * their now-existing source id (tier 1), so no duplicate persons appear. Supports
- * --dry-run (reads + matches, writes nothing).
+ * their now-existing source id (tier 1), so no duplicate persons appear. Rows
+ * still awaiting human review carry no source id yet (nothing was linked), so
+ * they would otherwise re-queue on every import — we guard against that by
+ * skipping any incoming source that already has a pending review case, instead
+ * of duplicating it in the queue. Supports --dry-run (reads + matches, writes
+ * nothing).
  */
 final class Importer
 {
@@ -146,16 +150,18 @@ final class Importer
                         'Excluded system account (name in IMPORT_EXCLUDE_NAMES).')
                     : $this->matcher->match($row, $lookup);
 
+                $action = $decision->action;
+                $reason = $decision->reason;
                 if (!$dryRun) {
-                    $this->applyRow($batchId, $source, $row, $decision, $actor);
+                    [$action, $reason] = $this->applyRow($batchId, $source, $row, $decision, $actor);
                 }
 
-                $counts[$decision->action]++;
+                $counts[$action]++;
                 $outcomes[] = [
                     'name' => trim($row->firstName . ' ' . $row->lastName),
                     'source_key' => $row->sourceKey,
-                    'action' => $decision->action,
-                    'reason' => $decision->reason,
+                    'action' => $action,
+                    'reason' => $reason,
                     'warnings' => $row->warnings,
                 ];
             } catch (\Throwable $e) {
@@ -177,10 +183,18 @@ final class Importer
         return ['batch_id' => $batchId, 'dry_run' => $dryRun, 'counts' => $counts, 'outcomes' => $outcomes];
     }
 
-    /** Persist one staged row and apply its match decision (transactional). */
-    private function applyRow(?int $batchId, ImportSource $source, NormalizedRow $row, MatchDecision $decision, string $actor): void
+    /**
+     * Persist one staged row and apply its match decision (transactional).
+     *
+     * @return array{0:string,1:string} the effective [action, reason] — normally
+     *   the matcher's, but a review row whose source already has a pending case is
+     *   reported as 'skipped' instead of re-queued.
+     */
+    private function applyRow(?int $batchId, ImportSource $source, NormalizedRow $row, MatchDecision $decision, string $actor): array
     {
         $crosswalk = $row->sourceSystem();
+        $action = $decision->action;
+        $reason = $decision->reason;
         $this->db->beginTransaction();
         try {
             $stagingId = $this->insertStaging($batchId, $source->batchSystem, $row, $decision);
@@ -201,8 +215,21 @@ final class Importer
                     break;
 
                 case MatchDecision::REVIEW:
-                    foreach ($decision->candidates as $c) {
-                        $this->writer->createMatchCandidate($stagingId, $c['person_id'], $c['score'], $c['basis']);
+                    // Idempotent re-import: a review row carries no source id (nothing
+                    // is linked until a human decides), so it can't be caught by the
+                    // tier-1 source-id match on a re-run. If this incoming source
+                    // already has an unresolved review case, re-queuing it would
+                    // duplicate the case in the review queue — so skip it instead.
+                    if (self::hasPendingReview($this->db, $source->batchSystem, $row->sourceKey, $stagingId)) {
+                        $reason = 'Already pending review from an earlier import — not re-queued.';
+                        $action = MatchDecision::SKIPPED;
+                        $this->db->prepare(
+                            "UPDATE staging_record SET match_status = 'skipped', reason = :reason WHERE id = :id"
+                        )->execute([':reason' => $reason, ':id' => $stagingId]);
+                    } else {
+                        foreach ($decision->candidates as $c) {
+                            $this->writer->createMatchCandidate($stagingId, $c['person_id'], $c['score'], $c['basis']);
+                        }
                     }
                     break;
 
@@ -223,6 +250,37 @@ final class Importer
             }
             throw $e;
         }
+
+        return [$action, $reason];
+    }
+
+    /**
+     * True if this incoming source (batch system + source key) already has at
+     * least one pending review case — i.e. a prior import queued it and no human
+     * has resolved it yet. The just-inserted staging row is excluded via
+     * $excludeStagingId (it has no candidates yet, but we exclude it for clarity).
+     *
+     * Shared by both importers (combined-PowerSchool and the generic CSV path) so
+     * an unresolved review case is never re-queued, no matter which feed it came
+     * from. Static + PDO-injected so it's directly unit-testable.
+     */
+    public static function hasPendingReview(PDO $db, string $system, string $sourceKey, int $excludeStagingId): bool
+    {
+        if (trim($sourceKey) === '') {
+            return false;
+        }
+        $stmt = $db->prepare(
+            "SELECT 1
+               FROM match_candidate mc
+               JOIN staging_record s ON s.id = mc.staging_id
+              WHERE mc.status = 'pending'
+                AND s.system = :system
+                AND s.n_source_key = :key
+                AND s.id <> :exclude
+              LIMIT 1"
+        );
+        $stmt->execute([':system' => $system, ':key' => $sourceKey, ':exclude' => $excludeStagingId]);
+        return $stmt->fetchColumn() !== false;
     }
 
     private function insertStaging(?int $batchId, string $system, NormalizedRow $row, MatchDecision $decision): int
