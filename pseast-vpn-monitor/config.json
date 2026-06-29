@@ -10,5 +10,18 @@
   "listen_addr": "127.0.0.1",
   "listen_port": 8787,
   "timezone": "America/Chicago",
-  "probe_timeout_seconds": 3
+  "probe_timeout_seconds": 3,
+
+  "history_enabled": true,
+  "history_db": "history.sqlite3",
+  "history_retention_days": 7,
+  "history_recent": 20,
+
+  "alerts": {
+    "enabled": false,
+    "on_status": ["down", "warn"],
+    "command": null,
+    "webhook_url": null,
+    "min_interval_seconds": 300
+  }
 }

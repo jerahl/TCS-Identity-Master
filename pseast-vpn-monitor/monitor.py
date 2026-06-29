@@ -495,6 +495,8 @@ def main(argv=None) -> int:
                         help="use seeded fixtures instead of live commands")
     parser.add_argument("--fixtures", default=DEFAULT_FIXTURES, help="fixtures dir for --mock")
     parser.add_argument("--serve", action="store_true", help="run the web dashboard")
+    parser.add_argument("--history", action="store_true",
+                        help="print the uptime/last-flap history summary and exit")
     args = parser.parse_args(argv)
 
     try:
@@ -505,6 +507,17 @@ def main(argv=None) -> int:
     except json.JSONDecodeError as exc:
         print(f"invalid config JSON: {exc}", file=sys.stderr)
         return 2
+
+    if args.history:
+        # Imported lazily so the Phase-1 CLI has no sqlite/history dependency.
+        import history as history_mod
+        store = history_mod.from_config(cfg)
+        if store is None or not store.record_history:
+            print(json.dumps({"enabled": False}, indent=2))
+            return 0
+        print(json.dumps({"summary": store.summary(), "recent": store.recent(
+            int(cfg.get("history_recent", 20)))}, indent=2))
+        return 0
 
     if args.serve:
         # Imported lazily so the Phase-1 CLI has no web dependency at all.

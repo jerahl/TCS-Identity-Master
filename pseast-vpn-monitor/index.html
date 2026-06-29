@@ -66,6 +66,20 @@
       background: #3a1f1f; border: 1px solid var(--down); color: #ffd9d3; font-size: 13px;
     }
     .banner.show { display: block; }
+    .history {
+      display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 16px;
+    }
+    .stat {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px 14px; min-width: 120px;
+    }
+    .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    .stat .value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+    .stat .value small { font-size: 12px; font-weight: 400; color: var(--muted); }
+    .spark { display: inline-flex; gap: 2px; margin-top: 4px; }
+    .spark i { width: 6px; height: 14px; border-radius: 2px; background: var(--unknown); display: inline-block; }
+    .spark i.s-ok { background: var(--ok); } .spark i.s-warn { background: var(--warn); }
+    .spark i.s-down { background: var(--down); } .spark i.s-unknown { background: var(--unknown); }
     footer { color: var(--muted); font-size: 11.5px; padding: 10px 24px 26px; text-align: center; }
     a { color: #6db3f2; }
   </style>
@@ -83,6 +97,7 @@
 
   <main>
     <div id="banner" class="banner"></div>
+    <div id="history" class="history" style="display:none"></div>
     <div id="grid" class="grid"></div>
   </main>
 
@@ -171,6 +186,40 @@
       document.getElementById("grid").innerHTML = keys.map(k => card(sigs[k])).join("");
     }
 
+    function fmtDur(secs) {
+      secs = Math.max(0, Math.floor(secs || 0));
+      const d = Math.floor(secs / 86400); secs -= d * 86400;
+      const h = Math.floor(secs / 3600); secs -= h * 3600;
+      const m = Math.floor(secs / 60);
+      return (d ? d + "d " : "") + (h || d ? h + "h " : "") + m + "m";
+    }
+
+    function renderHistory(h) {
+      const el = document.getElementById("history");
+      if (!h || !h.enabled || !h.summary || !h.summary.samples) { el.style.display = "none"; return; }
+      const s = h.summary;
+      const spark = (h.recent || []).slice().reverse()
+        .map(r => `<i class="s-${esc(r.overall)}" title="${esc((r.time_local||'').replace('T',' '))} — ${esc(r.overall)}"></i>`).join("");
+      el.innerHTML = `
+        <div class="stat"><div class="label">Uptime (window)</div>
+          <div class="value">${s.uptime_pct == null ? "—" : s.uptime_pct + "<small>%</small>"}</div></div>
+        <div class="stat"><div class="label">Current state</div>
+          <div class="value" style="color:var(--${s.current})">${esc(s.current)} <small>for ${fmtDur(s.current_for_seconds)}</small></div></div>
+        <div class="stat"><div class="label">Flaps (window)</div>
+          <div class="value">${esc(s.flaps)}</div></div>
+        <div class="stat"><div class="label">Samples</div>
+          <div class="value">${esc(s.samples)}</div>
+          <div class="spark">${spark}</div></div>`;
+      el.style.display = "flex";
+    }
+
+    async function pollHistory() {
+      try {
+        const res = await fetch("/api/history", { cache: "no-store" });
+        if (res.ok) renderHistory(await res.json());
+      } catch (_) { /* history is best-effort; never blocks status */ }
+    }
+
     function banner(msg) {
       const b = document.getElementById("banner");
       if (msg) { b.textContent = msg; b.classList.add("show"); }
@@ -184,8 +233,7 @@
         const snap = await res.json();
         render(snap);
         banner("");
-        // Adopt the server's poll interval if it differs from our default.
-        // (Derived from the snapshot freshness model; kept simple here.)
+        pollHistory();
       } catch (err) {
         banner("Poll failed: " + err.message + " — showing last known state. Retrying…");
       } finally {

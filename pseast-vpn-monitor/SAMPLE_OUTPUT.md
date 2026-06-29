@@ -126,3 +126,26 @@ status is the worst of the parts.
 When `tun0` is absent the tunnel reports `down`; if the DB route egresses the
 physical NIC instead of `tun0` the `db_route` signal reports `warn` (leak), and
 the overall status follows the worst signal.
+
+## `GET /api/history` (Phase 3)
+
+The uptime/last-flap view derived from the recorded snapshots. `{"enabled": false}`
+when `history_enabled` is off.
+
+```json
+{
+  "enabled": true,
+  "summary": {
+    "samples": 240,
+    "window_start_local": "2026-06-22T14:00:00-05:00",
+    "current": "ok",
+    "current_since_local": "2026-06-26T02:31:14-05:00",
+    "current_for_seconds": 298126,
+    "flaps": 2,
+    "uptime_pct": 99.71
+  },
+  "recent": [
+    { "time_local": "2026-06-29T13:59:22-05:00", "overall": "ok" }
+  ]
+}
+```
