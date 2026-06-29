@@ -232,6 +232,21 @@ Configure the connection in `.env` (`PS_ODBC_DSN`, `PS_ODBC_USER`, `PS_ODBC_PASS
 optional `PS_ODBC_SCHEMA`); it needs the `pdo_odbc` PHP extension plus an Oracle
 ODBC driver on the host. Grant the connecting user **SELECT only**.
 
+`scripts/setup-powerschool-odbc.sh` does the host setup end-to-end — installs
+unixODBC + `pdo_odbc` and the Oracle Instant Client, registers the driver and a
+DSN, writes `PS_ODBC_*` to `.env`, and opens a test connection:
+
+```sh
+sudo PS_HOST=psprod.example.org PS_SERVICE=PSPROD \
+     PS_ODBC_USER=idm_ro PS_ODBC_PASS='…' \
+     bash scripts/setup-powerschool-odbc.sh
+```
+
+It reuses an Oracle Instant Client already on the host (e.g. the
+`instantclient_19_12` OneSync uses) when one is present; otherwise it downloads
+one. Point it at a specific client with `INSTANTCLIENT_DIR=…`, or supply
+pre-downloaded Basic+ODBC zips offline with `INSTANTCLIENT_ZIP_DIR=…`.
+
 ```sh
 php bin/import_powerschool.php --dry-run     # query Oracle, change nothing
 php bin/import_powerschool.php               # full import
