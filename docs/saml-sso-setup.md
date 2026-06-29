@@ -171,20 +171,59 @@ still have an active session at the IdP. (SLO can be wired via
 
 ### First: read the real error
 
-The ACS handler logs the underlying reason and shows the user a generic message.
-The detail is in the **php-fpm error log / journal**, prefixed `[idm] SAML`:
+The ACS handler shows the user a generic *"Single sign-on failed"* but records
+the underlying reason. There are two channels:
 
-```sh
-sudo journalctl -u php8.2-fpm -n 100 --no-pager | grep -i saml
-# or your PHP error_log target
+**1. The SAML debug log (most reliable).** php-fpm worker `error_log()` output is
+often NOT routed to the journal on a stock Debian pool — so "nothing in the log"
+usually means the message was written to a discarded stream, not that the app
+stayed silent. Capture it to a known file instead:
+
+```ini
+# .env — enable, reload php-fpm, reproduce the login, then read the file:
+SAML_DEBUG=true
+SAML_LOG=/var/idm/saml/saml_debug.log
 ```
 
-- `AuthController::acs()` logs `[idm] SAML ACS: <reason>` on any failure.
-- `AuthController::samlLogin()` logs `[idm] SAML login: <reason>`.
+```sh
+sudo systemctl reload php8.2-fpm
+# attempt the SSO login, then:
+sudo tail -n 5 /var/idm/saml/saml_debug.log | python3 -m json.tool
+```
+
+Each failure is one JSON line with the `reason` (e.g. *"The response was received
+at … instead of …"*, *"Signature validation failed"*, *"The Assertion … is not
+signed"*) plus the decoded SAML response. **Turn `SAML_DEBUG` back off afterward**
+— the decoded response contains identity attributes (PII).
+
+**2. The PHP error log.** `acs()` also logs `[idm] SAML ACS: <reason>` and
+`samlLogin()` logs `[idm] SAML login: <reason>` via `error_log()`. To make those
+visible in the journal, ensure the pool captures worker output —
+`/etc/php/8.2/fpm/pool.d/www.conf`:
+
+```ini
+catch_workers_output = yes
+php_admin_value[error_log] = /var/log/php8.2-fpm-www.log
+php_admin_flag[log_errors] = on
+```
+
+then `sudo systemctl restart php8.2-fpm` and watch `/var/log/php8.2-fpm-www.log`.
 
 A browser SAML tracer extension (to capture the AuthnRequest/Response) and the
-IdP's own sign-in logs are the other two essential tools. **Do not** enable
-`APP_DEBUG=true` in production to chase this — use the logs.
+IdP's own sign-in logs are the other essential tools. **Do not** enable
+`APP_DEBUG=true` in production to chase this — use the logs above.
+
+### A note on ClassLink (and IdPs that sign the message, not the assertion)
+
+The app sets `wantAssertionsSigned = true`, so it requires the **assertion**
+inside the response to be signed. Some IdPs (ClassLink among them, depending on
+connector settings) sign the **response/message** instead, producing
+*"The Assertion of the Response is not signed…"* in the SAML debug log. Fixes, in
+order of preference: configure the IdP connector to **sign the assertion**, or
+have it **sign both**. If you must accept message-level signing instead, that's a
+`security` settings change in `SamlProvider::settings()` (`wantAssertionsSigned`
+↔ `wantMessagesSigned`) — confirm the reason in the log first, then adjust
+deliberately rather than relaxing signature checks blindly.
 
 ### Symptom → cause → fix
 

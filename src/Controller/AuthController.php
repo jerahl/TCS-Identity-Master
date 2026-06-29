@@ -43,6 +43,7 @@ final class AuthController extends Controller
             // e.g. missing SP config or php-saml not installed — surface a logged
             // reason and a friendly message instead of a raw 500 (mirrors acs()).
             error_log('[idm] SAML login: ' . $e->getMessage());
+            \App\Support\SamlLog::failure('login', $e);
             $this->flash('Could not start single sign-on. Contact IT if this persists.');
             return $this->redirect(url('/login'));
         }
@@ -56,6 +57,9 @@ final class AuthController extends Controller
             $attrs = (new SamlProvider())->acs();
         } catch (\Throwable $e) {
             error_log('[idm] SAML ACS: ' . $e->getMessage());
+            // Reliable capture even when php-fpm worker error_log isn't in the
+            // journal; records the reason (and, if SAML_DEBUG, the response).
+            \App\Support\SamlLog::failure('acs', $e, $_POST['SAMLResponse'] ?? null);
             $this->flash('Single sign-on failed. Contact IT if this persists.');
             return $this->redirect(url('/login'));
         }
