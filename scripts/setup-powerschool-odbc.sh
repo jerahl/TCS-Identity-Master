@@ -67,6 +67,7 @@ IC_VERSION="${IC_VERSION:-23.26.2.0.0}"        # Instant Client version to downl
 IC_BASE_URL="${IC_BASE_URL:-https://download.oracle.com/otn_software/linux/instantclient/2326200v2}"
 IC_BASIC_URL="${IC_BASIC_URL:-${IC_BASE_URL}/instantclient-basic-linux.x64-${IC_VERSION}.zip}"
 IC_ODBC_URL="${IC_ODBC_URL:-${IC_BASE_URL}/instantclient-odbc-linux.x64-${IC_VERSION}.zip}"
+IC_DIR_BASE="${IC_DIR_BASE:-/opt/oracle}"      # where downloaded/zip clients are unpacked
 PHP_VERSION="${PHP_VERSION:-8.2}"              # for the phpX.Y-odbc package name
 
 WRITE_ENV="${WRITE_ENV:-1}"                    # 1 = write PS_ODBC_* into .env
