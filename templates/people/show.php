@@ -171,36 +171,6 @@ $eventTitle = [
         </div>
       </div>
 
-      <!-- Lifecycle & audit -->
-      <div class="panel">
-        <h2 class="panel__title" style="margin-bottom:16px;">Lifecycle &amp; audit</h2>
-        <div class="timeline">
-          <?php foreach ($timeline as $i => $ev):
-              $detail = $ev['detail'] ? json_decode((string) $ev['detail'], true) : null;
-              $detailText = is_array($detail) ? ($detail['summary'] ?? $detail['text'] ?? '') : (string) ($ev['detail'] ?? '');
-              $last = $i === array_key_last($timeline);
-          ?>
-          <div class="tl-item">
-            <div class="tl-rail">
-              <span class="tl-dot tl-dot--<?= e($ev['event_type']) ?>"></span>
-              <?php if (!$last): ?><span class="tl-line"></span><?php endif; ?>
-            </div>
-            <div style="flex:1;">
-              <div class="tl-title"><?= e($eventTitle[$ev['event_type']] ?? ucfirst($ev['event_type'])) ?></div>
-              <?php if ($detailText !== ''): ?><div class="tl-detail"><?= e($detailText) ?></div><?php endif; ?>
-              <div class="tl-meta"><?= e($dash($ev['actor'])) ?> · <?= e($dash($ev['occurred_at'])) ?></div>
-            </div>
-          </div>
-          <?php endforeach; ?>
-          <?php if ($timeline === []): ?><div class="muted" style="font-size:12.5px;">No lifecycle events recorded.</div><?php endif; ?>
-        </div>
-      </div>
-
-      <!-- Notes -->
-      <div class="panel">
-        <h2 class="panel__title" style="margin-bottom:12px;">Notes</h2>
-        <p style="margin:0; font-size:13px; color:#3D5462; line-height:1.5;"><?= $p['notes'] ? e($p['notes']) : '<span class="muted">No notes.</span>' ?></p>
-      </div>
     </div>
   </div>
 
@@ -234,5 +204,36 @@ $eventTitle = [
         <?php endforeach; ?>
       </tbody>
     </table>
+  </div>
+
+  <!-- Lifecycle & audit -->
+  <div class="panel" style="margin-top:18px;">
+    <h2 class="panel__title" style="margin-bottom:16px;">Lifecycle &amp; audit</h2>
+    <div class="timeline">
+      <?php foreach ($timeline as $i => $ev):
+          $detail = $ev['detail'] ? json_decode((string) $ev['detail'], true) : null;
+          $detailText = is_array($detail) ? ($detail['summary'] ?? $detail['text'] ?? '') : (string) ($ev['detail'] ?? '');
+          $last = $i === array_key_last($timeline);
+      ?>
+      <div class="tl-item">
+        <div class="tl-rail">
+          <span class="tl-dot tl-dot--<?= e($ev['event_type']) ?>"></span>
+          <?php if (!$last): ?><span class="tl-line"></span><?php endif; ?>
+        </div>
+        <div style="flex:1;">
+          <div class="tl-title"><?= e($eventTitle[$ev['event_type']] ?? ucfirst($ev['event_type'])) ?></div>
+          <?php if ($detailText !== ''): ?><div class="tl-detail"><?= e($detailText) ?></div><?php endif; ?>
+          <div class="tl-meta"><?= e($dash($ev['actor'])) ?> · <?= e($dash($ev['occurred_at'])) ?></div>
+        </div>
+      </div>
+      <?php endforeach; ?>
+      <?php if ($timeline === []): ?><div class="muted" style="font-size:12.5px;">No lifecycle events recorded.</div><?php endif; ?>
+    </div>
+  </div>
+
+  <!-- Notes -->
+  <div class="panel" style="margin-top:18px;">
+    <h2 class="panel__title" style="margin-bottom:12px;">Notes</h2>
+    <p style="margin:0; font-size:13px; color:#3D5462; line-height:1.5;"><?= $p['notes'] ? e($p['notes']) : '<span class="muted">No notes.</span>' ?></p>
   </div>
 </div>
