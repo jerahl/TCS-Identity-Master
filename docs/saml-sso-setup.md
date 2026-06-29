@@ -187,8 +187,12 @@ SAML_LOG=/var/idm/saml/saml_debug.log
 
 ```sh
 sudo systemctl reload php8.2-fpm
-# attempt the SSO login, then:
-sudo tail -n 5 /var/idm/saml/saml_debug.log | python3 -m json.tool
+# attempt the SSO login, then read the latest entry. The file is JSON-LINES
+# (one object per line), so pretty-print a single line — `python3 -m json.tool`
+# on the whole file errors with "Extra data" because it expects one document:
+sudo tail -n 1 /var/idm/saml/saml_debug.log | python3 -m json.tool
+# all recent entries (jq streams JSON-lines fine):
+sudo tail -n 5 /var/idm/saml/saml_debug.log | jq .
 ```
 
 Each failure is one JSON line with the `reason` (e.g. *"The response was received
