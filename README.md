@@ -247,7 +247,13 @@ database is normally **SID/service `PSPRODDB`** on port **1521**, reached with a
 read-only account — **`PSNavigator`** (broad table access) or **`DataMiner`**.
 Those accounts see the tables through synonyms (“Only User’s Schema / Include
 Synonyms”), so `PS_ODBC_SCHEMA` is usually left blank. If the service form is
-rejected, the same name often works as a SID (`PS_SID=PSPRODDB`).
+rejected, the same name often works as a SID (`PS_SID=…`).
+
+Your hosted instance may use a **district-specific** service name rather than the
+generic `PSPRODDB` (e.g. an Alabama district code like `AL018`). The reliable
+source is the connection OneSync already uses — copy the host, port, and
+service/SID from its Oracle account config (the field OneSync labels “Schema
+Name” is the value after `host:port/` in the connect string).
 
 Set `PS_PORT` if the listener isn't on 1521, and `PS_ODBC_SCHEMA` if the PS tables
 live under a specific owner (it's written to `.env` and prefixed onto the table
