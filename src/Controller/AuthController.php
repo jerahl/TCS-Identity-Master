@@ -37,7 +37,16 @@ final class AuthController extends Controller
             $this->flash('SSO is not configured.');
             return $this->redirect(url('/login'));
         }
-        (new SamlProvider())->login(url('/'));
+        try {
+            (new SamlProvider())->login(url('/'));
+        } catch (\Throwable $e) {
+            // e.g. missing SP config or php-saml not installed — surface a logged
+            // reason and a friendly message instead of a raw 500 (mirrors acs()).
+            error_log('[idm] SAML login: ' . $e->getMessage());
+            \App\Support\SamlLog::failure('login', $e);
+            $this->flash('Could not start single sign-on. Contact IT if this persists.');
+            return $this->redirect(url('/login'));
+        }
         return ''; // SamlProvider issued a redirect to the IdP
     }
 
@@ -48,6 +57,9 @@ final class AuthController extends Controller
             $attrs = (new SamlProvider())->acs();
         } catch (\Throwable $e) {
             error_log('[idm] SAML ACS: ' . $e->getMessage());
+            // Reliable capture even when php-fpm worker error_log isn't in the
+            // journal; records the reason (and, if SAML_DEBUG, the response).
+            \App\Support\SamlLog::failure('acs', $e, $_POST['SAMLResponse'] ?? null);
             $this->flash('Single sign-on failed. Contact IT if this persists.');
             return $this->redirect(url('/login'));
         }
@@ -64,12 +76,17 @@ final class AuthController extends Controller
     /** SP metadata for the IdP admin. */
     public function metadata(): string
     {
-        header('Content-Type: text/xml');
+        header('Content-Type: application/samlmetadata+xml');
         try {
             return (new SamlProvider())->metadata();
         } catch (\Throwable $e) {
+            error_log('[idm] SAML metadata: ' . $e->getMessage());
             http_response_code(500);
-            return '<!-- SAML not configured: ' . htmlspecialchars($e->getMessage()) . ' -->';
+            // Return a well-formed XML document (a comment-only body is invalid
+            // XML and renders as a confusing parser error in the browser).
+            return '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+                . '<error>SAML SP metadata unavailable. Check SAML_SP_* configuration. '
+                . 'See the server log for details.</error>';
         }
     }
 
