@@ -73,12 +73,13 @@ final class PersonController extends Controller
         // simply explains how to turn it on. The lookup only fires when enabled.
         $adaxes = $this->adaxes->verify($person, $sourceIds);
 
-        // Backfill: when the live match found an objectGUID we don't already hold
-        // (e.g. the account matched by username/email/employee id, or only the
-        // legacy "T#####" id was on file), link it into the crosswalk so future
-        // verifications resolve directly by GUID. Idempotent + audited; best-effort.
-        if (!empty($adaxes['found']) && !empty($adaxes['guid'])) {
-            $sourceIds = $this->linkAdGuid($id, (string) $adaxes['guid'], $sourceIds);
+        // Backfill from the live match: record the objectGUID and fill the
+        // username (locked) / email / UPN where the golden record is empty, so
+        // future lookups resolve by GUID and the record reflects the real AD
+        // account. Only fires when something is actually missing; idempotent,
+        // audited, best-effort (never breaks the page).
+        if (!empty($adaxes['found']) && $this->needsAdBackfill($person, $sourceIds, $adaxes)) {
+            [$person, $sourceIds] = $this->backfillFromAd($id, $adaxes, $person, $sourceIds);
         }
 
         // Per-person NextGen↔PowerSchool verification: compare what each system
@@ -107,31 +108,57 @@ final class PersonController extends Controller
     }
 
     /**
-     * Link an AD objectGUID discovered by live verification into the crosswalk
-     * if the person doesn't already carry it. Idempotent and audited; never lets
-     * a write failure break the page. Returns the (possibly refreshed) sourceIds.
+     * Is there anything to backfill from the matched AD account — a GUID we don't
+     * hold, or an empty username/email on the golden record?
      *
+     * @param array<string,mixed> $person
      * @param array<int,array<string,mixed>> $sourceIds
-     * @return array<int,array<string,mixed>>
+     * @param array<string,mixed> $adaxes
      */
-    private function linkAdGuid(int $personId, string $guid, array $sourceIds): array
+    private function needsAdBackfill(array $person, array $sourceIds, array $adaxes): bool
     {
-        foreach ($sourceIds as $s) {
-            if (($s['system'] ?? '') === 'ad' && (string) ($s['source_key'] ?? '') === $guid) {
-                return $sourceIds; // already linked — nothing to do
+        $guid = (string) ($adaxes['guid'] ?? '');
+        if ($guid !== '') {
+            $haveGuid = false;
+            foreach ($sourceIds as $s) {
+                if (($s['system'] ?? '') === 'ad' && (string) ($s['source_key'] ?? '') === $guid) {
+                    $haveGuid = true;
+                    break;
+                }
+            }
+            if (!$haveGuid) {
+                return true;
             }
         }
+        return trim((string) ($person['username'] ?? '')) === ''
+            || trim((string) ($person['email'] ?? '')) === '';
+    }
+
+    /**
+     * Record the matched AD account's objectGUID + fill empty username/email/UPN
+     * on the golden record (PersonWriter::linkAdAccount). Idempotent and audited;
+     * a write failure is logged and never breaks the page. Returns the refreshed
+     * [person, sourceIds].
+     *
+     * @param array<string,mixed> $person
+     * @param array<int,array<string,mixed>> $sourceIds
+     * @return array{0:array<string,mixed>, 1:array<int,array<string,mixed>>}
+     */
+    private function backfillFromAd(int $personId, array $adaxes, array $person, array $sourceIds): array
+    {
         try {
+            $attrs = $adaxes['attributes'] ?? [];
             $db = Db::connect(Db::ROLE_APP);
-            $audit = new AuditService($db);
-            (new PersonWriter($db, $audit))->attachSourceId($personId, 'ad', $guid, $this->currentUser()['name']);
-            $audit->lifecycle($personId, 'update',
-                ['summary' => "Linked AD account objectGUID {$guid} (matched via live verification)."],
-                $this->currentUser()['name']);
-            return $this->people->sourceIds($personId);
+            (new PersonWriter($db, new AuditService($db)))->linkAdAccount($personId, [
+                'guid'     => $adaxes['guid'] ?? null,
+                'username' => $attrs['samaccountname'] ?? null,
+                'email'    => $attrs['mail'] ?? null,
+                'upn'      => $attrs['userprincipalname'] ?? null,
+            ], $this->currentUser()['name']);
+            return [$this->people->find($personId) ?? $person, $this->people->sourceIds($personId)];
         } catch (\Throwable $e) {
-            error_log('[idm] adaxes guid link: ' . $e->getMessage());
-            return $sourceIds;
+            error_log('[idm] adaxes backfill: ' . $e->getMessage());
+            return [$person, $sourceIds];
         }
     }
 

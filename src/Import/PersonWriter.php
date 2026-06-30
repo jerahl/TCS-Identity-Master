@@ -100,6 +100,98 @@ final class PersonWriter
     }
 
     /**
+     * Backfill a person's golden record from a matched AD account (live
+     * verification): record the objectGUID in the crosswalk and fill the
+     * username (set + LOCKED), email and UPN — but ONLY where the golden record
+     * is currently empty, so an existing value is never overwritten. Setting a
+     * username activates a pending person. Idempotent: a fully-populated record
+     * yields no writes. Unique clashes (username/email already used) leave the
+     * golden record untouched; the GUID link still stands. Returns change notes.
+     *
+     * @param array{guid?:?string, username?:?string, email?:?string, upn?:?string} $ad
+     * @return list<string>
+     */
+    public function linkAdAccount(int $personId, array $ad, string $actor): array
+    {
+        $stmt = $this->db->prepare('SELECT username, email, upn, status FROM person WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        $p = $stmt->fetch();
+        if ($p === false) {
+            return [];
+        }
+
+        $username = trim((string) ($ad['username'] ?? ''));
+        $email    = trim((string) ($ad['email'] ?? ''));
+        $upn      = trim((string) ($ad['upn'] ?? ''));
+        $guid     = trim((string) ($ad['guid'] ?? ''));
+        $notes = [];
+
+        // The stable link first (idempotent; audited only when new).
+        if ($guid !== '') {
+            $this->attachSourceId($personId, 'ad', $guid, $actor);
+        }
+
+        $sets = [];
+        $params = [':id' => $personId];
+        $before = [];
+        $after = [];
+        $setUsername = false;
+
+        if ($username !== '' && trim((string) $p['username']) === '') {
+            $sets[] = 'username = :u';
+            $sets[] = 'username_assigned_at = CURRENT_TIMESTAMP';
+            $sets[] = 'username_locked = 1';
+            $params[':u'] = $username;
+            $before['username'] = $p['username'];
+            $after['username'] = $username;
+            $notes[] = "username set to {$username} (locked)";
+            $setUsername = true;
+        }
+        if ($email !== '' && trim((string) $p['email']) === '') {
+            $sets[] = 'email = :e';
+            $params[':e'] = $email;
+            $before['email'] = $p['email'];
+            $after['email'] = $email;
+            $notes[] = "email set to {$email}";
+        }
+        if ($upn !== '' && trim((string) $p['upn']) === '') {
+            $sets[] = 'upn = :pn';
+            $params[':pn'] = $upn;
+            $before['upn'] = $p['upn'];
+            $after['upn'] = $upn;
+            $notes[] = "UPN set to {$upn}";
+        }
+
+        if ($sets !== []) {
+            try {
+                $this->db->prepare('UPDATE person SET ' . implode(', ', $sets) . ' WHERE person_id = :id')->execute($params);
+                $this->audit->log('person', $personId, 'update', $before, $after, $actor);
+            } catch (\PDOException $e) {
+                if ((int) $e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
+                    // username/email already used by another record — leave the
+                    // golden record as-is; the GUID link above still stands.
+                    return ['AD username/email already in use by another record — golden record left unchanged'];
+                }
+                throw $e;
+            }
+        }
+
+        if ($setUsername && ($p['status'] ?? '') === 'pending') {
+            $this->db->prepare("UPDATE person SET status = 'active' WHERE person_id = :id AND status = 'pending'")
+                ->execute([':id' => $personId]);
+            $this->audit->log('person', $personId, 'update', ['status' => 'pending'], ['status' => 'active'], $actor);
+            $notes[] = 'activated';
+        }
+
+        if ($notes !== []) {
+            $this->audit->lifecycle($personId, 'username_assigned',
+                ['summary' => 'AD account linked via live verification: ' . implode('; ', $notes) . '.'], $actor);
+        }
+
+        return $notes;
+    }
+
+    /**
      * Update HR-owned fields on an existing person from an incoming row. Only
      * fields the feed actually provides are written (never blank out existing
      * data); username/email/status are left untouched. Returns true if changed.
