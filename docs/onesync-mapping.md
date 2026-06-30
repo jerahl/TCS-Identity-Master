@@ -28,14 +28,16 @@ faculty profile consumes, under OneSync's own names.
 | `Title`          | `Title`          | VARCHAR(120)| same source as `Job Code Desc` (primary assignment `title`); exposed under both names. |
 | `FirstName`      | `FirstName`      | VARCHAR(80) | |
 | `LastName`       | `LastName`       | VARCHAR(80) | |
+| `StatusActive`   | `StatusActive`   | 1 / 0       | 1 when status ∈ (active, pending). |
+| `Ethnicity`      | `Ethnicity`      | VARCHAR(10) | resolved ALSDE code; nullable. |
 
 Row filter: the view returns people with status ∈ (active, pending, disabled)
-— `disabled` are kept so OneSync can disable, not orphan, the account. (The view
-no longer carries a `StatusActive` flag.)
+— `disabled` are kept so OneSync can disable, not orphan, the account
+(`StatusActive` = 0 marks them).
 
 ```sql
 SELECT ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber,
-       Email, username, Title, FirstName, LastName
+       Email, username, Title, FirstName, LastName, StatusActive, Ethnicity
 FROM v_onesync_source;
 ```
 

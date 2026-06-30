@@ -259,7 +259,9 @@ SELECT
     ORDER BY a.id
     LIMIT 1)                            AS Title,
   p.first_name                          AS FirstName,
-  p.last_name                           AS LastName
+  p.last_name                           AS LastName,
+  CASE WHEN p.status IN ('active','pending') THEN 1 ELSE 0 END AS StatusActive,
+  p.ethnicity_code                      AS Ethnicity
 FROM person p
 LEFT JOIN school s ON s.school_id = p.primary_school_id
 WHERE p.status IN ('active','pending','disabled');  -- disabled kept so OneSync can disable, not orphan

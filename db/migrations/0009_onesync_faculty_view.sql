@@ -5,7 +5,7 @@
 -- to expose exactly what OneSync consumes, under OneSync's own column names:
 --
 --   ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber,
---   Email, username, Title, FirstName, LastName
+--   Email, username, Title, FirstName, LastName, StatusActive, Ethnicity
 --
 -- Mapping to the golden record:
 --   ID            = person.person_uuid          (the stable uniqueId)
@@ -18,11 +18,13 @@
 --   username      = person.username              (NULL until OneSync mints it)
 --   FirstName     = person.first_name
 --   LastName      = person.last_name
+--   StatusActive  = 1 when status in (active, pending), else 0 (so OneSync can
+--                   disable, not orphan, disabled people)
+--   Ethnicity     = person.ethnicity_code        (resolved ALSDE code)
 --
 -- Row scope is unchanged: active, pending and disabled people are returned (the
 -- only object OneSync should read; still one row per person). The previous
--- StatusActive / PersonType / PreferredName / Ethnicity columns are no longer
--- exposed.
+-- PersonType / PreferredName columns are no longer exposed.
 -- ============================================================================
 
 CREATE OR REPLACE VIEW v_onesync_source AS
@@ -52,7 +54,9 @@ SELECT
     ORDER BY a.id
     LIMIT 1)                            AS Title,
   p.first_name                          AS FirstName,
-  p.last_name                           AS LastName
+  p.last_name                           AS LastName,
+  CASE WHEN p.status IN ('active','pending') THEN 1 ELSE 0 END AS StatusActive,
+  p.ethnicity_code                      AS Ethnicity
 FROM person p
 LEFT JOIN school s ON s.school_id = p.primary_school_id
 WHERE p.status IN ('active','pending','disabled');  -- disabled kept so OneSync can disable, not orphan
