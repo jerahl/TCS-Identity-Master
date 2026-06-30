@@ -23,6 +23,7 @@ faculty profile consumes, under OneSync's own names.
 | `Job Code Desc`  | `Job Code Desc`  | VARCHAR(120)| **primary** assignment's `title`; nullable. (Column name contains a space — quote it.) |
 | `HomeSchoolID`   | `HomeSchoolID`   | VARCHAR(20) | PowerSchool `SchoolID` of the **primary** assignment. |
 | `TeacherNumber`  | `TeacherNumber`  | VARCHAR(40) | = `employee_id`, nullable (subs/contractors/interns may lack one). |
+| `EmployeeID`     | `EmployeeID`     | VARCHAR(40) | same source as `TeacherNumber` (`employee_id`); exposed under both names. |
 | `Email`          | `Email`          | VARCHAR(160)| nullable until assigned. |
 | `username`       | `username`       | VARCHAR(64) | = `username`. **NULL until minted** → fires OneSync's `BlankSAMAccountName` rule for new people. |
 | `Title`          | `Title`          | VARCHAR(120)| same source as `Job Code Desc` (primary assignment `title`); exposed under both names. |
@@ -36,7 +37,7 @@ Row filter: the view returns people with status ∈ (active, pending, disabled)
 (`StatusActive` = 0 marks them).
 
 ```sql
-SELECT ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber,
+SELECT ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber, EmployeeID,
        Email, username, Title, FirstName, LastName, StatusActive, Ethnicity
 FROM v_onesync_source;
 ```

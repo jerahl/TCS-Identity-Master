@@ -250,6 +250,7 @@ SELECT
     LIMIT 1)                            AS `Job Code Desc`,
   s.ps_school_id                        AS HomeSchoolID,
   p.employee_id                         AS TeacherNumber,
+  p.employee_id                         AS EmployeeID,
   p.email                               AS Email,
   p.username                            AS username,          -- NULL until minted
   (SELECT a.title

@@ -4,7 +4,7 @@
 -- OneSync's faculty profile reads a fixed column set. Redefine v_onesync_source
 -- to expose exactly what OneSync consumes, under OneSync's own column names:
 --
---   ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber,
+--   ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber, EmployeeID,
 --   Email, username, Title, FirstName, LastName, StatusActive, Ethnicity
 --
 -- Mapping to the golden record:
@@ -13,7 +13,8 @@
 --   `Job Code Desc` / Title = primary assignment.title (one golden field; OneSync
 --                   wants it under both names)
 --   HomeSchoolID  = primary school's PowerSchool SchoolID (school.ps_school_id)
---   TeacherNumber = person.employee_id           (NULL for subs/contractors/interns)
+--   TeacherNumber / EmployeeID = person.employee_id (one golden field; OneSync
+--                   wants it under both names; NULL for subs/contractors/interns)
 --   Email         = person.email                 (NULL until assigned)
 --   username      = person.username              (NULL until OneSync mints it)
 --   FirstName     = person.first_name
@@ -45,6 +46,7 @@ SELECT
     LIMIT 1)                            AS `Job Code Desc`,
   s.ps_school_id                        AS HomeSchoolID,
   p.employee_id                         AS TeacherNumber,
+  p.employee_id                         AS EmployeeID,
   p.email                               AS Email,
   p.username                            AS username,          -- NULL until minted
   (SELECT a.title
