@@ -90,6 +90,18 @@ try {
     $c = $result['counts'];
     echo "rows {$c['total']}  ·  auto {$c['auto_match']}  ·  new {$c['new']}  ·  review {$c['needs_review']}"
         . "  ·  skipped {$c['skipped']}  ·  assignments {$c['assignments']}  ·  unmapped-school {$c['unmapped_school']}  ·  errors {$c['errors']}\n";
+
+    // Surface a sample of per-row errors so failures are diagnosable (e.g. a
+    // pending migration -> "Unknown column"), not just a count.
+    if ($c['errors'] > 0) {
+        $errs = array_values(array_filter($result['outcomes'], static fn($o) => ($o['action'] ?? '') === 'error'));
+        fwrite(STDERR, "\nFirst errors (of {$c['errors']}):\n");
+        foreach (array_slice($errs, 0, 5) as $o) {
+            $who = trim((string) ($o['name'] ?? '')) ?: '(row)';
+            fwrite(STDERR, "  - {$who} [{$o['source_key']}]: {$o['reason']}\n");
+        }
+        fwrite(STDERR, "\nIf this is \"Unknown column …\", run pending migrations: php bin/migrate.php\n");
+    }
     exit($c['errors'] > 0 ? 1 : 0);
 } catch (\Throwable $e) {
     fwrite(STDERR, 'PowerSchool import failed: ' . $e->getMessage() . "\n");

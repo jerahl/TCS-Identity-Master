@@ -217,6 +217,64 @@ final class PersonService
         return $stmt->fetchAll();
     }
 
+    /**
+     * The most recent NextGen and PowerSchool values staged for this person, for
+     * the field-by-field verification panel. NextGen comes back as the raw feed
+     * row (keyed by CSV header); PowerSchool as the `fields` snapshot the importer
+     * stored (keyed by FieldMap key). Either side is null when that source has no
+     * comparable staged values for the person (an IDM-only intern/contractor, a
+     * NextGen person not yet seen in PowerSchool, or a PowerSchool row imported
+     * before field-level capture existed / by a failed pull).
+     *
+     * `powerschool_stale` is true when a PowerSchool row IS linked but carries no
+     * usable field snapshot — the cue to re-run the PowerSchool import — so the
+     * panel can say that instead of flagging every field as a mismatch.
+     *
+     * @return array{nextgen:?array<string,mixed>, powerschool:?array<string,mixed>, powerschool_stale:bool}
+     */
+    public function latestSourceValues(int $personId): array
+    {
+        $out = ['nextgen' => null, 'powerschool' => null, 'powerschool_stale' => false];
+        $seen = ['nextgen' => false, 'powerschool' => false];
+        try {
+            $stmt = $this->db()->prepare(
+                "SELECT system, raw_json
+                   FROM staging_record
+                  WHERE matched_person_id = :id AND system IN ('nextgen', 'powerschool')
+                  ORDER BY id DESC"
+            );
+            $stmt->execute([':id' => $personId]);
+            foreach ($stmt->fetchAll() as $r) {
+                $sys = (string) $r['system'];
+                if ($seen[$sys]) {
+                    continue; // newest per system wins (DESC order)
+                }
+                $seen[$sys] = true;
+                $decoded = json_decode((string) ($r['raw_json'] ?? ''), true);
+                if (!is_array($decoded)) {
+                    continue;
+                }
+                if ($sys === 'nextgen') {
+                    $out['nextgen'] = $decoded;
+                    continue;
+                }
+                // PowerSchool stores its comparable values under `fields`. Treat an
+                // absent or all-empty snapshot as "stale" (older/failed import)
+                // rather than a populated-but-blank record.
+                $fields = is_array($decoded['fields'] ?? null) ? $decoded['fields'] : [];
+                $hasValue = array_filter($fields, static fn($v) => trim((string) $v) !== '') !== [];
+                if ($hasValue) {
+                    $out['powerschool'] = $fields;
+                } else {
+                    $out['powerschool_stale'] = true;
+                }
+            }
+        } catch (\PDOException) {
+            // No staging table / query issue — treat as no source data.
+        }
+        return $out;
+    }
+
     /** Lifecycle/audit timeline (newest first). */
     public function timeline(int $personId, int $limit = 25): array
     {

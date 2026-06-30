@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Db;
+use App\Import\FieldMap;
 use App\Import\NormalizedRow;
 use App\Import\PersonWriter;
 use App\Service\AuditService;
@@ -54,12 +55,29 @@ final class PersonController extends Controller
             ], 'people', 'People  /  Not found', 'Not found — TCS Identity Master');
         }
 
+        $assignments = $this->people->assignments($id);
+
+        // Per-person NextGen↔PowerSchool verification: compare what each system
+        // actually staged (assignments come back primary-first, so [0] is primary).
+        $src = $this->people->latestSourceValues($id);
+        $hasNextGen = $src['nextgen'] !== null;
+        $hasPowerSchool = $src['powerschool'] !== null;
+        $psStale = !empty($src['powerschool_stale']) && !$hasPowerSchool;
+        // IDM-only = neither feed has a usable record (and PS isn't merely stale).
+        $idmOnly = !$hasNextGen && !$hasPowerSchool && !$psStale;
+
         return $this->render('people/show', [
             'p'          => $person,
             'sourceIds'  => $this->people->sourceIds($id),
-            'assignments' => $this->people->assignments($id),
+            'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
+            'fieldMap'       => FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly),
+            'fieldGroups'    => FieldMap::GROUPS,
+            'hasNextGen'     => $hasNextGen,
+            'hasPowerSchool' => $hasPowerSchool,
+            'psStale'        => $psStale,
+            'idmOnly'        => $idmOnly,
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
 

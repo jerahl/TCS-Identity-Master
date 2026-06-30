@@ -209,7 +209,44 @@ first *or* last name is in `IMPORT_EXCLUDE_NAMES` (comma-separated, default
 
 **Column maps.** `src/Import/ColumnMap.php` maps each feed's CSV headers to the
 logical fields; sample files in `db/seeds/feeds/` show the expected format. Adjust
-the maps to match the district's real export headers.
+the maps to match the district's real export headers. The NextGen map captures the
+full ITExtract column set — employee #, name, e-mail, position #, location, CCTR
+description, job code/desc, hire/position-start/end dates, ethnicity, gender, and
+the contact block (phone, address 1/2, city, state, zip) — all stored on the
+golden record (migration `0007`).
+
+**Field mapping & reconciliation (NextGen ↔ PowerSchool).** NextGen is the source
+of record that drives provisioning through OneSync (create / update / disable in
+PowerSchool, AD, Google, …); PowerSchool is pulled to **verify the two systems
+agree** before that sync runs. `src/Import/FieldMap.php` is the single crosswalk
+between each NextGen field, its PowerSchool counterpart, and where the value lands
+on the golden record. It drives two read-only views:
+
+- **`/reference` → Field mapping** — the documented crosswalk (which NextGen field
+  maps to which PowerSchool field).
+- **Source field reconciliation** panel on each person's record — that person's
+  **NextGen value beside its PowerSchool value**, field by field, with a verdict
+  (match / differs / missing / NextGen-only / PowerSchool-only). The two sides come
+  from what each system actually staged (the latest NextGen and PowerSchool staging
+  rows), not the merged golden record, so a genuine mismatch is visible. Dates,
+  name case, and phone punctuation are normalized before comparison. PowerSchool's
+  contact/demographic fields are pulled **for comparison only** — NextGen stays the
+  source of record, so they are never written to the golden record (DOB and ALSID
+  are the exception: PowerSchool is their source and they *are* stored).
+
+Interns and contractors live **only in IDM** (manual records, no NextGen/PowerSchool
+feed); their panel shows the current IDM values and notes there is nothing to
+reconcile.
+
+> The PowerSchool side of the comparison comes from a field snapshot captured on
+> each PowerSchool import. **Records imported before this feature (or by a failed
+> pull) have no snapshot** — the panel says so and prompts a re-import rather than
+> flagging every field as a mismatch. Run `php bin/import_powerschool.php` once to
+> populate it. The demographic columns are pulled in **best-effort** queries
+> (`PowerSchoolOdbcReader::extendedQueries()` — one per group: contact, core_fields
+> for DOB/gender, and ALSID/`state_staffnumber`), so if your PS schema names one
+> differently the core import still succeeds and the other groups still come
+> through — only that group is skipped (logged).
 
 **PowerSchool reads directly from Oracle (ODBC).** PowerSchool runs on Oracle;
 instead of exporting CSVs to SFTP, `PowerSchoolOdbcReader` queries the tables in
@@ -220,9 +257,17 @@ place and `PowerSchoolBundle::combine` joins them into one record per person:
   N IDs — **all** linked to the crosswalk. The assignment's school is
   `TEACHERS.SchoolID`; the primary is the row where `SchoolID = HomeSchoolId`.
   `TeacherNumber` and `Title` come from here too.
-- **USERS** (+ `U_DEF_EXT_USERS`, `S_USR_X`, `S_AL_USR_X`) adds only what isn't on
-  TEACHERS — middle name, `staff_classification`, hire/exit dates — joined by
-  `users_dcid`.
+- **USERS** (+ `U_DEF_EXT_USERS`, `S_USR_X`, `S_AL_USR_X`, `UsersCoreFields`) adds
+  only what isn't on TEACHERS — middle name, `staff_classification`, hire/exit
+  dates, and the demographics NextGen doesn't carry. The **Alabama State ID
+  (ALSID)** comes from `S_USR_X.state_staffnumber` and lands on `person.alsde_id`;
+  **date of birth + gender** come from the `UsersCoreFields` staff extension
+  (`dob`, `gender`); and the contact fields for the comparison come from `USERS`
+  (`email_addr`, `home_phone`, `street`, `city`, `state`, `zip`) — all joined by
+  `usersdcid`. These are pulled in separate **best-effort** queries (one per group),
+  so a column your live PS schema names differently only loses that group, not the
+  whole import — adjust the names in `PowerSchoolOdbcReader::extendedQueries()` to
+  match.
 
 This mirrors the district's existing pull (`… FROM Teachers WHERE Status = 1`),
 widened to all active assignment rows for multi-school support. `Email_Addr` /
@@ -365,10 +410,11 @@ changes, and all data mutations are written to `audit_log`.
   username, unmapped values, **failed syncs**, last feed) that link to the
   filtered views; recent activity; last feed per source; and the failed-sync
   rollup (accounts whose last OneSync sync failed).
-- **Reference data** (`/reference`): the school map (codes + AD/Google OUs) and
-  ethnicity map, with **unmapped values surfaced** — ethnicity values seen on
-  records and school codes seen in feeds that have no mapping (they block clean
-  provisioning). Read-only in M6; editing + RBAC in M7.
+- **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
+  ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
+  **unmapped values surfaced** — ethnicity values seen on records and school codes
+  seen in feeds that have no mapping (they block clean provisioning). Read-only in
+  M6; editing + RBAC in M7.
 - **Import / feeds** (`/import`): batch history with a drill-in to each batch's
   staged rows and how each one matched (auto / new / review / skipped). Editors
   can **upload a CSV** here (pick the source system, optional dry-run) to run the

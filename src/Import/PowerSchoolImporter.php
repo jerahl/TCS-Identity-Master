@@ -264,9 +264,11 @@ final class PowerSchoolImporter
             lastName: $ps->lastName,
             crosswalkSystem: 'powerschool',
             middleName: $ps->middleName !== '' ? $ps->middleName : null,
+            dob: Normalizer::parseDate($ps->dob),
             employeeId: $ps->employeeId !== '' ? $ps->employeeId : null,
             schoolCode: $primaryCode,
             schoolId: $primaryCode !== null ? $norm->resolveSchool('powerschool', $primaryCode) : null,
+            alsdeId: $ps->alsdeId,
             title: $ps->title,
             hireDate: Normalizer::parseDate($ps->hireDate),
             endDate: Normalizer::parseDate($ps->endDate),
@@ -297,7 +299,7 @@ final class PowerSchoolImporter
         $stmt = $this->db->prepare(
             'INSERT INTO staging_record
                (batch_id, system, raw_json, n_first, n_last, n_dob, n_employee_id, n_source_key, n_school_code, match_status, reason)
-             VALUES (:batch, :system, :raw, :first, :last, NULL, :emp, :key, :school, :status, :reason)'
+             VALUES (:batch, :system, :raw, :first, :last, :dob, :emp, :key, :school, :status, :reason)'
         );
         $stmt->execute([
             ':batch' => $batchId,
@@ -305,9 +307,31 @@ final class PowerSchoolImporter
             ':raw' => json_encode([
                 'usersDcid' => $ps->usersDcid, 'teacherIds' => $ps->teacherIds,
                 'schools' => $ps->schools, 'employeeId' => $ps->employeeId,
+                'dob' => $row->dob, 'alsdeId' => $ps->alsdeId,
+                // PowerSchool values keyed by FieldMap key, for the per-person
+                // NextGen↔PowerSchool verification panel (read-only; not golden).
+                'fields' => [
+                    'employee_id' => $ps->employeeId,
+                    'first_name'  => $ps->firstName,
+                    'last_name'   => $ps->lastName,
+                    'hr_email'    => $ps->email,
+                    'school_code' => $ps->primarySchoolCode(),
+                    'title'       => $ps->title,
+                    'hire_date'   => $row->hireDate,
+                    'end_date'    => $row->endDate,
+                    'gender'      => $ps->gender,
+                    'dob'         => $row->dob,
+                    'alsde_id'    => $ps->alsdeId,
+                    'phone'       => $ps->phone,
+                    'address1'    => $ps->address1,
+                    'city'        => $ps->city,
+                    'state_code'  => $ps->stateCode,
+                    'zip_code'    => $ps->zipCode,
+                ],
             ], JSON_UNESCAPED_SLASHES),
             ':first' => $ps->firstName,
             ':last' => $ps->lastName,
+            ':dob' => $row->dob,
             ':emp' => $ps->employeeId !== '' ? $ps->employeeId : null,
             ':key' => $row->sourceKey,
             ':school' => $ps->primarySchoolCode(),

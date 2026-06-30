@@ -41,6 +41,40 @@ final class NormalizerTest extends TestCase
         self::assertSame([], $row->warnings);
     }
 
+    public function testCarriesFullNextGenContactAndPositionFields(): void
+    {
+        // The full NextGen ITExtract column set — contact + position fields that
+        // were previously dropped must now be normalized onto the row.
+        $map = ColumnMap::for('nextgen');
+        $raw = [
+            'Employee Number' => '15241', 'First Name' => 'Jennifer', 'Last Name' => 'Marsh',
+            'EMail Address' => 'jmarsh@example.org', 'Position Number' => 'P-7781',
+            'Location Code' => '401', 'CCTR Description' => 'Central High Math',
+            'JOB CODE' => 'TCH', 'Job Code Desc' => 'Teacher Mathematics',
+            'Hire Date' => '08/18/2014', 'Position Start Date' => '08/01/2020',
+            'Position End Date' => '', 'Ethnicity Description' => 'White', 'Gender Type' => 'Female',
+            'Phone Number' => '205-555-0100', 'Address 1' => '12 Oak St', 'Address 2' => 'Apt 4',
+            'City' => 'Tuscaloosa', 'State Code' => 'AL', 'Zip Code' => '35401',
+        ];
+        $row = $this->normalizer()->normalize($raw, 'nextgen', $map);
+
+        self::assertSame('jmarsh@example.org', $row->hrEmail);
+        self::assertSame('P-7781', $row->positionNumber);
+        self::assertSame('Central High Math', $row->cctrDescription);
+        self::assertSame('TCH', $row->jobCode);
+        self::assertSame('Teacher Mathematics', $row->title);
+        self::assertSame('2020-08-01', $row->positionStartDate, 'm/d/Y parses to Y-m-d');
+        self::assertSame('205-555-0100', $row->phone);
+        self::assertSame('12 Oak St', $row->address1);
+        self::assertSame('Apt 4', $row->address2);
+        self::assertSame('Tuscaloosa', $row->city);
+        self::assertSame('AL', $row->stateCode);
+        self::assertSame('35401', $row->zipCode);
+        // NextGen carries no DOB/ALSID — those come from PowerSchool.
+        self::assertNull($row->dob);
+        self::assertNull($row->alsdeId);
+    }
+
     public function testUnmappedValuesProduceWarningsNotFailures(): void
     {
         $map = ColumnMap::for('nextgen');

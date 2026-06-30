@@ -28,12 +28,24 @@ final class NormalizedRow
         public readonly ?int $schoolId = null,         // resolved
         public readonly ?string $ethnicitySource = null,
         public readonly ?string $ethnicityCode = null, // resolved ALSDE code
+        public readonly ?string $alsdeId = null,        // Alabama State ID (ALSID), from PowerSchool
         public readonly ?string $personType = null,
         public readonly ?string $title = null,
         public readonly ?string $jobCode = null,
         public readonly ?string $fte = null,
         public readonly ?string $hireDate = null,
+        public readonly ?string $positionStartDate = null,
         public readonly ?string $endDate = null,
+        // NextGen HR contact / position fields (informational on the golden record).
+        public readonly ?string $hrEmail = null,        // HR e-mail — NOT the OneSync-minted person.email
+        public readonly ?string $positionNumber = null,
+        public readonly ?string $cctrDescription = null,
+        public readonly ?string $phone = null,
+        public readonly ?string $address1 = null,
+        public readonly ?string $address2 = null,
+        public readonly ?string $city = null,
+        public readonly ?string $stateCode = null,
+        public readonly ?string $zipCode = null,
         public readonly bool $isPrimary = true,
         public readonly array $warnings = [],
         public readonly array $raw = [],

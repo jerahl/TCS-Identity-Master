@@ -30,12 +30,18 @@ final class PersonWriter
         $stmt = $this->db->prepare(
             'INSERT INTO person
                (person_uuid, person_type, status, first_name, middle_name, last_name, preferred_name,
-                dob, gender, ethnicity_source, ethnicity_code, employee_id, primary_school_id,
-                hire_date, end_date, source_of_record, created_by, updated_by)
+                dob, gender, ethnicity_source, ethnicity_code, alsde_id, employee_id, primary_school_id,
+                hire_date, position_start_date, end_date,
+                hr_email, position_number, cctr_description,
+                phone, address1, address2, city, state_code, zip_code,
+                source_of_record, created_by, updated_by)
              VALUES
                (:uuid, :type, :status, :first, :middle, :last, :preferred,
-                :dob, :gender, :eth_src, :eth_code, :emp, :school_id,
-                :hire, :end, :sor, :created_by, :updated_by)'
+                :dob, :gender, :eth_src, :eth_code, :alsde, :emp, :school_id,
+                :hire, :pos_start, :end,
+                :hr_email, :pos_num, :cctr,
+                :phone, :addr1, :addr2, :city, :state, :zip,
+                :sor, :created_by, :updated_by)'
         );
         $stmt->execute([
             ':uuid' => $uuid,
@@ -49,10 +55,21 @@ final class PersonWriter
             ':gender' => $row->gender,
             ':eth_src' => $row->ethnicitySource,
             ':eth_code' => $row->ethnicityCode,
+            ':alsde' => $row->alsdeId,
             ':emp' => $row->employeeId,
             ':school_id' => $row->schoolId,
             ':hire' => $row->hireDate,
+            ':pos_start' => $row->positionStartDate,
             ':end' => $row->endDate,
+            ':hr_email' => $row->hrEmail,
+            ':pos_num' => $row->positionNumber,
+            ':cctr' => $row->cctrDescription,
+            ':phone' => $row->phone,
+            ':addr1' => $row->address1,
+            ':addr2' => $row->address2,
+            ':city' => $row->city,
+            ':state' => $row->stateCode,
+            ':zip' => $row->zipCode,
             ':sor' => self::sourceOfRecord($row->system),
             ':created_by' => $actor,
             ':updated_by' => $actor,
@@ -104,10 +121,21 @@ final class PersonWriter
             'gender' => $row->gender,
             'ethnicity_source' => $row->ethnicitySource,
             'ethnicity_code' => $row->ethnicityCode,
+            'alsde_id' => $row->alsdeId,
             'employee_id' => $row->employeeId,
             'primary_school_id' => $row->schoolId,
             'hire_date' => $row->hireDate,
+            'position_start_date' => $row->positionStartDate,
             'end_date' => $row->endDate,
+            'hr_email' => $row->hrEmail,
+            'position_number' => $row->positionNumber,
+            'cctr_description' => $row->cctrDescription,
+            'phone' => $row->phone,
+            'address1' => $row->address1,
+            'address2' => $row->address2,
+            'city' => $row->city,
+            'state_code' => $row->stateCode,
+            'zip_code' => $row->zipCode,
             'person_type' => $row->personType,
         ];
         $required = ['first_name', 'last_name'];
@@ -281,7 +309,10 @@ final class PersonWriter
     {
         $stmt = $this->db->prepare(
             'SELECT person_type, status, first_name, middle_name, last_name, preferred_name, dob, gender,
-                    ethnicity_source, ethnicity_code, employee_id, primary_school_id, hire_date, end_date
+                    ethnicity_source, ethnicity_code, alsde_id, employee_id, primary_school_id,
+                    hire_date, position_start_date, end_date,
+                    hr_email, position_number, cctr_description,
+                    phone, address1, address2, city, state_code, zip_code
              FROM person WHERE person_id = :id'
         );
         $stmt->execute([':id' => $personId]);

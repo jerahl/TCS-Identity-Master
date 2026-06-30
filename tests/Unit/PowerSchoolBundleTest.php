@@ -74,6 +74,39 @@ final class PowerSchoolBundleTest extends TestCase
         self::assertCount(2, $out[0]->schools);
     }
 
+    public function testSurfacesDobAndAlsid(): void
+    {
+        // ALSID = S_USR_X.state_staffnumber; DOB = UsersCoreFields.dob. Both are
+        // merged onto the USERS row by the reader; combine() must carry them onto
+        // the PsUser so the importer can store person.dob / person.alsde_id.
+        $users = [
+            ['USERS.dcid' => '1011', 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K', 'USERS.Last_Name' => 'Allen',
+             'UsersCoreFields.dob' => '1985-03-09', 'S_USR_X.state_staffnumber' => 'AL-552201'],
+        ];
+        $teachers = [
+            ['TEACHERS.ID' => '1011', 'TEACHERS.Users_DCID' => '1011', 'TEACHERS.TeacherNumber' => '12924',
+             'TEACHERS.First_Name' => 'Darby', 'TEACHERS.Last_Name' => 'Allen', 'TEACHERS.HomeSchoolId' => '160'],
+        ];
+        $staff = [['SCHOOLSTAFF.Users_DCID' => '1011', 'SCHOOLSTAFF.SchoolID' => '160']];
+
+        $out = PowerSchoolBundle::combine($users, $teachers, $staff);
+        self::assertCount(1, $out);
+        self::assertSame('1985-03-09', $out[0]->dob, 'DOB from S_AL_USR_X');
+        self::assertSame('AL-552201', $out[0]->alsdeId, 'ALSID from S_AL_USR_X');
+    }
+
+    public function testDobAndAlsidAreNullWhenAbsent(): void
+    {
+        $teachers = [
+            ['TEACHERS.ID' => '500', 'TEACHERS.Users_DCID' => '77', 'TEACHERS.First_Name' => 'Sam', 'TEACHERS.Last_Name' => 'Rivera'],
+        ];
+        $staff = [['SCHOOLSTAFF.Users_DCID' => '77', 'SCHOOLSTAFF.SchoolID' => '55']];
+
+        $out = PowerSchoolBundle::combine([], $teachers, $staff);
+        self::assertNull($out[0]->dob);
+        self::assertNull($out[0]->alsdeId);
+    }
+
     public function testFallsBackToTeacherNamesAndFirstPrimary(): void
     {
         // No USERS row, no HomeSchoolId -> names from TEACHERS, first school primary.

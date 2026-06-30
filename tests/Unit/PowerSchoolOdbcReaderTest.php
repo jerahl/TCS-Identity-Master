@@ -129,4 +129,99 @@ final class PowerSchoolOdbcReaderTest extends TestCase
             }
         };
     }
+
+    public function testMergesExtendedDemographicGroupsByDcid(): void
+    {
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics(''));
+        $data = $reader->read();
+
+        // Each best-effort group is merged onto the core USERS row by dcid.
+        self::assertSame('darby@tcs.k12.al.us', $data['users'][0]['USERS.Email_Addr']);
+        self::assertSame('Female', $data['users'][0]['UsersCoreFields.gender']);
+        self::assertSame('1985-03-09', $data['users'][0]['UsersCoreFields.dob']);
+        self::assertSame('AL-552201', $data['users'][0]['S_USR_X.state_staffnumber']);
+
+        $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
+        self::assertSame('darby@tcs.k12.al.us', $ps->email, 'email surfaced for verification');
+        self::assertSame('Female', $ps->gender, 'gender from UsersCoreFields');
+        self::assertSame('1985-03-09', $ps->dob, 'DOB from UsersCoreFields');
+        self::assertSame('AL-552201', $ps->alsdeId, 'ALSID from S_USR_X.state_staffnumber');
+    }
+
+    public function testOneFailingGroupDoesNotSinkTheOthers(): void
+    {
+        // The contact group's SQL errors (a column the schema lacks); the
+        // core_fields (DOB/gender) and staff_number (ALSID) groups are independent
+        // queries and must still come through, and the core import must not throw.
+        $reader = new PowerSchoolOdbcReader($this->fakeDbWithDemographics('contact'));
+        $data = $reader->read();
+
+        $ps = PowerSchoolBundle::combine($data['users'], $data['teachers'], $data['schoolstaff'])[0];
+        self::assertSame('Darby', $ps->firstName, 'core fields intact');
+        self::assertNull($ps->email, 'failed contact group -> email blank');
+        self::assertSame('Female', $ps->gender, 'core_fields group unaffected');
+        self::assertSame('1985-03-09', $ps->dob, 'core_fields group unaffected');
+        self::assertSame('AL-552201', $ps->alsdeId, 'staff_number group unaffected');
+    }
+
+    /**
+     * Like fakeDb(), but answers each extended-demographics group query by its
+     * distinctive alias. Pass a group label ('contact' | 'core_fields' |
+     * 'staff_number') to make that group's query throw, exercising the merge.
+     */
+    private function fakeDbWithDemographics(string $throwGroup): PDO
+    {
+        return new class ('sqlite::memory:', $throwGroup) extends PDO {
+            public function __construct(string $dsn, private string $throwGroup)
+            {
+                parent::__construct($dsn);
+            }
+
+            public function query(string $query, ?int $fetchMode = null, mixed ...$args): \PDOStatement|false
+            {
+                $group = match (true) {
+                    str_contains($query, '"USERS.Email_Addr"')         => 'contact',
+                    str_contains($query, '"UsersCoreFields.dob"')      => 'core_fields',
+                    str_contains($query, '"S_USR_X.state_staffnumber"') => 'staff_number',
+                    default                                            => '',
+                };
+                if ($group !== '' && $group === $this->throwGroup) {
+                    throw new \PDOException("ORA-00904: invalid identifier ({$group})");
+                }
+
+                $rows = match (true) {
+                    $group === 'contact' => [['USERS.dcid' => 1011, 'USERS.Email_Addr' => 'darby@tcs.k12.al.us']],
+                    $group === 'core_fields' => [['USERS.dcid' => 1011, 'UsersCoreFields.dob' => '1985-03-09', 'UsersCoreFields.gender' => 'Female']],
+                    $group === 'staff_number' => [['USERS.dcid' => 1011, 'S_USR_X.state_staffnumber' => 'AL-552201']],
+                    str_contains($query, '"USERS.dcid"') => [
+                        ['USERS.dcid' => 1011, 'USERS.First_Name' => 'Darby', 'USERS.Middle_Name' => 'K', 'USERS.Last_Name' => 'Allen'],
+                    ],
+                    str_contains($query, '"TEACHERS.ID"') => [
+                        ['TEACHERS.ID' => 1011, 'TEACHERS.Users_DCID' => 1011, 'TEACHERS.TeacherNumber' => 12924,
+                         'TEACHERS.First_Name' => 'Darby', 'TEACHERS.Last_Name' => 'Allen',
+                         'TEACHERS.HomeSchoolId' => 160, 'TEACHERS.SchoolID' => 160, 'TEACHERS.Title' => 'Teacher'],
+                    ],
+                    default => [],
+                };
+
+                if ($rows === []) {
+                    $stmt = parent::query('SELECT 1 AS "x" WHERE 1 = 0');
+                    $stmt->setFetchMode(PDO::FETCH_ASSOC);
+                    return $stmt;
+                }
+                $selects = [];
+                foreach ($rows as $i => $row) {
+                    $cols = [];
+                    foreach ($row as $k => $v) {
+                        $lit = $v === null ? 'NULL' : (is_int($v) ? (string) $v : $this->quote((string) $v));
+                        $cols[] = $i === 0 ? $lit . ' AS "' . $k . '"' : $lit;
+                    }
+                    $selects[] = 'SELECT ' . implode(', ', $cols);
+                }
+                $stmt = parent::query(implode(' UNION ALL ', $selects));
+                $stmt->setFetchMode(PDO::FETCH_ASSOC);
+                return $stmt;
+            }
+        };
+    }
 }

@@ -54,11 +54,47 @@ final class PowerSchoolOdbcReader
     public function read(): array
     {
         $teachers = $this->query($this->teachersSql());
+        $users = $this->query($this->usersSql());
+        // The DOB / ALSID / contact columns are newer + district-specific, so a
+        // schema that lacks one must not break the core import. Pull them in a
+        // separate best-effort query and merge in; on failure they're just blank.
+        $this->mergeExtendedDemographics($users);
         return [
-            'users'       => $this->query($this->usersSql()),
+            'users'       => $users,
             'teachers'    => $teachers,
             'schoolstaff' => self::schoolStaffFromTeachers($teachers),
         ];
+    }
+
+    /**
+     * Merge the optional demographic/verification columns (DOB, ALSID, e-mail,
+     * gender, phone, address) into the USERS rows by dcid. Each group is its OWN
+     * best-effort query so one missing column can't blank the others: if a query
+     * fails (a column the schema doesn't have), it's logged and skipped, and the
+     * core import plus the other groups still succeed.
+     *
+     * @param array<int,array<string,string>> $users by-ref; extended columns added
+     */
+    private function mergeExtendedDemographics(array &$users): void
+    {
+        $index = [];
+        foreach ($users as $i => $u) {
+            $index[trim((string) ($u['USERS.dcid'] ?? ''))] = $i;
+        }
+        foreach ($this->extendedQueries() as $label => $sql) {
+            try {
+                $rows = $this->query($sql);
+            } catch (\Throwable $e) {
+                error_log("[idm] PowerSchool extended demographics ({$label}) skipped: " . $e->getMessage());
+                continue;
+            }
+            foreach ($rows as $row) {
+                $dcid = trim((string) ($row['USERS.dcid'] ?? ''));
+                if (isset($index[$dcid])) {
+                    $users[$index[$dcid]] = array_merge($users[$index[$dcid]], $row);
+                }
+            }
+        }
     }
 
     /**
@@ -150,7 +186,9 @@ final class PowerSchoolOdbcReader
      * USERS + extension tables — only the fields not on TEACHERS (middle name,
      * staff_classification, hire/exit dates), one row per active staff user.
      * Dates are TO_CHAR'd to a canonical Y-m-d so Normalizer::parseDate gets a
-     * stable format regardless of the session's NLS_DATE_FORMAT.
+     * stable format regardless of the session's NLS_DATE_FORMAT. This is the
+     * core, schema-stable set; DOB/ALSID/contact extras come from
+     * extendedUsersSql() (best-effort, merged in read()).
      */
     private function usersSql(): string
     {
@@ -168,5 +206,55 @@ final class PowerSchoolOdbcReader
             . 'LEFT JOIN ' . $this->table('s_al_usr_x') . ' alx ON alx.usersdcid = u.dcid '
             . 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers') . ' t '
             . 'WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
+    }
+
+    /**
+     * Optional value groups pulled to VERIFY against NextGen (never written to the
+     * golden record), plus the two PowerSchool-sourced fields NextGen lacks — date
+     * of birth and the Alabama State ID (ALSID). Each group is a SEPARATE query so
+     * a column one district lacks/renames only loses that group, not the rest:
+     *   - contact      USERS demographics (e-mail, gender, phone, address)
+     *   - staff_number ALSID = S_USR_X.state_staffnumber (joined on usersdcid)
+     *   - dob          date of birth from the Alabama extension S_AL_USR_X.dob
+     * Adjust the column names / joins to match your live PS schema.
+     *
+     * @return array<string,string> label => SQL (each selects USERS.dcid + columns)
+     */
+    private function extendedQueries(): array
+    {
+        $users = $this->table('users');
+        $active = 'WHERE EXISTS (SELECT 1 FROM ' . $this->table('teachers')
+            . ' t WHERE t.users_dcid = u.dcid AND t.status = ' . self::STATUS_ACTIVE . ')';
+
+        return [
+            // USERS address/contact block (USERS has no gender/dob — see core_fields).
+            'contact' => 'SELECT '
+                . 'u.dcid       AS "USERS.dcid", '
+                . 'u.email_addr AS "USERS.Email_Addr", '
+                . 'u.home_phone AS "USERS.Home_Phone", '
+                . 'u.street     AS "USERS.Street", '
+                . 'u.city       AS "USERS.City", '
+                . 'u.state      AS "USERS.State", '
+                . 'u.zip        AS "USERS.Zip" '
+                . 'FROM ' . $users . ' u ' . $active,
+
+            // Staff date of birth + gender live on the UsersCoreFields extension
+            // (general staff info), joined by usersdcid. DOB is stored as a string
+            // there (Varchar), so it's selected raw and parsed by Normalizer.
+            'core_fields' => 'SELECT '
+                . 'u.dcid     AS "USERS.dcid", '
+                . 'ucf.dob    AS "UsersCoreFields.dob", '
+                . 'ucf.gender AS "UsersCoreFields.gender" '
+                . 'FROM ' . $users . ' u '
+                . 'LEFT JOIN ' . $this->table('userscorefields') . ' ucf ON ucf.usersdcid = u.dcid ' . $active,
+
+            // ALSID lives on S_USR_X (state_staffnumber), joined by usersdcid — the
+            // same join the core query already uses for S_USR_X.hiredate.
+            'staff_number' => 'SELECT '
+                . 'u.dcid              AS "USERS.dcid", '
+                . 'sx.state_staffnumber AS "S_USR_X.state_staffnumber" '
+                . 'FROM ' . $users . ' u '
+                . 'LEFT JOIN ' . $this->table('s_usr_x') . ' sx ON sx.usersdcid = u.dcid ' . $active,
+        ];
     }
 }

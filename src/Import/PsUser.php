@@ -26,6 +26,18 @@ final class PsUser
         public readonly ?string $endDate,
         public readonly array $teacherIds,
         public readonly array $schools,
+        // PowerSchool-sourced demographics NextGen doesn't carry.
+        public readonly ?string $dob = null,       // Y-m-d (from PS)
+        public readonly ?string $alsdeId = null,   // Alabama State ID (ALSID)
+        // Contact / demographic fields pulled only to VERIFY against NextGen.
+        // These are NOT written to the golden record (NextGen is source of record).
+        public readonly ?string $email = null,
+        public readonly ?string $gender = null,
+        public readonly ?string $phone = null,
+        public readonly ?string $address1 = null,
+        public readonly ?string $city = null,
+        public readonly ?string $stateCode = null,
+        public readonly ?string $zipCode = null,
     ) {
     }
 

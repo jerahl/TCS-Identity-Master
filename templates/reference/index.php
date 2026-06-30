@@ -1,5 +1,5 @@
 <?php
-/** @var string $tab @var array $schools @var array $ethnicity @var array $unmappedEth @var array $unmappedSchool */
+/** @var string $tab @var array $schools @var array $ethnicity @var array $unmappedEth @var array $unmappedSchool @var array $fieldMap @var array $fieldGroups */
 ?>
 <div class="page-head">
   <div>
@@ -11,9 +11,42 @@
 <div class="tabs">
   <a class="tab<?= $tab === 'schools' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'schools'])) ?>">Schools map</a>
   <a class="tab<?= $tab === 'ethnicity' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'ethnicity'])) ?>">Ethnicity map</a>
+  <a class="tab<?= $tab === 'mapping' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'mapping'])) ?>">Field mapping</a>
 </div>
 
-<?php if ($tab === 'schools'): ?>
+<?php if ($tab === 'mapping'): ?>
+  <div class="panel" style="margin-bottom:16px;">
+    <h2 class="panel__title" style="margin-bottom:4px;">NextGen → PowerSchool field crosswalk</h2>
+    <p class="panel__note" style="margin:0;">How each NextGen HR field corresponds to PowerSchool, and where it lands on the golden record. Date of birth and the Alabama State ID (ALSID) have no NextGen column — they are pulled from PowerSchool.</p>
+  </div>
+  <div class="card table-wrap">
+    <table class="table">
+      <thead><tr><th>Field</th><th>NextGen</th><th>PowerSchool</th><th>Golden record</th></tr></thead>
+      <tbody>
+        <?php foreach ($fieldGroups as $gkey => $glabel):
+            $groupFields = array_values(array_filter($fieldMap, static fn($f) => $f['group'] === $gkey));
+            if ($groupFields === []) { continue; } ?>
+          <tr class="row--group"><td colspan="4" style="font-weight:600; color:#22343F; background:#F4F7F9;"><?= e($glabel) ?></td></tr>
+          <?php foreach ($groupFields as $f): ?>
+          <tr>
+            <td class="cell-name">
+              <?= e($f['label']) ?>
+              <?php if ($f['pii']): ?><span class="pii-tag" style="margin-left:6px;">PII</span><?php endif; ?>
+            </td>
+            <td class="mono"<?= $f['nextgen'] === null ? ' style="color:#7B8E9B;"' : '' ?>><?= e($f['nextgen'] ?? '—') ?></td>
+            <td class="mono"<?= $f['powerschool'] === null ? ' style="color:#7B8E9B;"' : '' ?>>
+              <?= e($f['powerschool'] ?? '—') ?>
+              <?php if ($f['origin'] === 'powerschool'): ?> <span class="src-tag">source</span><?php endif; ?>
+            </td>
+            <td class="mono muted"><?= e($f['golden'] ?? '— OneSync —') ?></td>
+          </tr>
+          <?php endforeach; ?>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+
+<?php elseif ($tab === 'schools'): ?>
   <div class="card table-wrap">
     <table class="table">
       <thead><tr><th>School</th><th>NextGen</th><th>PowerSchool</th><th>AD OU</th><th>Google OU</th><th>Status</th></tr></thead>
