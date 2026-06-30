@@ -212,8 +212,9 @@ GRANT SELECT, UPDATE ON \`${DB_NAME}\`.person TO '${WB_USER}'@'${DB_HOST_GRANT}'
 GRANT INSERT ON \`${DB_NAME}\`.audit_log       TO '${WB_USER}'@'${DB_HOST_GRANT}';
 GRANT INSERT ON \`${DB_NAME}\`.lifecycle_event TO '${WB_USER}'@'${DB_HOST_GRANT}';
 
--- 4) OneSync reader — READ-ONLY on the single view, nothing else.
-GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source TO '${OS_USER}'@'${DB_HOST_GRANT}';
+-- 4) OneSync reader — READ-ONLY on the source views, nothing else.
+GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source         TO '${OS_USER}'@'${DB_HOST_GRANT}';
+GRANT SELECT ON \`${DB_NAME}\`.v_onesync_student_source TO '${OS_USER}'@'${DB_HOST_GRANT}';
 
 FLUSH PRIVILEGES;
 SQL

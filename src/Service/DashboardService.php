@@ -132,6 +132,35 @@ final class DashboardService
         ];
     }
 
+    /**
+     * Students passthrough sync status: the latest student import run plus the
+     * current active-student count. Drives the "Students (OneSync)" dashboard card
+     * — the web app only shows the status of this sync, it doesn't edit students.
+     *
+     * @return array{state:string,label:string,at:?string,status:?string,active:int,lastRun:?array}
+     */
+    public function studentSync(): array
+    {
+        $staleHours = max(1, (int) Config::get('FEED_STALE_HOURS', '26'));
+        $active = $this->count('SELECT COUNT(*) FROM student WHERE is_active = 1');
+
+        $last = $this->db->query(
+            'SELECT started_at, finished_at, row_count, inserted, updated, deactivated, status, message
+             FROM student_import_batch ORDER BY started_at DESC, batch_id DESC LIMIT 1'
+        )->fetch();
+        $last = $last === false ? null : $last;
+
+        $fresh = Freshness::classify($last['started_at'] ?? null, $staleHours, time());
+        return [
+            'state'   => $fresh['state'],
+            'label'   => $fresh['label'],
+            'at'      => $fresh['at'],
+            'status'  => $last['status'] ?? null,
+            'active'  => $active,
+            'lastRun' => $last,
+        ];
+    }
+
     /** Accounts whose last sync failed (the health rollup). */
     public function failedSyncs(int $limit = 25): array
     {

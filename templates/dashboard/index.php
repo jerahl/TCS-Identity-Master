@@ -5,6 +5,14 @@ use App\View\Present;
 $k = $kpis;
 $sh = $syncHealth ?? ['state' => 'never', 'label' => 'never', 'staleAccounts' => 0];
 $syncTone = ['fresh' => 'ok', 'stale' => 'warn', 'never' => 'alert'][$sh['state']] ?? 'alert';
+
+$ss = $studentSync ?? ['state' => 'never', 'label' => 'never', 'status' => null, 'active' => 0];
+$studentTone = ($ss['status'] ?? null) === 'failed'
+    ? 'alert'
+    : (['fresh' => 'ok', 'stale' => 'warn', 'never' => 'alert'][$ss['state']] ?? 'alert');
+$studentSub = $ss['state'] === 'never'
+    ? 'never run'
+    : (($ss['status'] ?? '') === 'failed' ? 'last run failed' : ($ss['active'] . ' active · synced ' . $ss['label']));
 $cards = [
     ['label' => 'Pending review', 'value' => $k['pendingReview'], 'sub' => 'awaiting a decision', 'tone' => $k['pendingReview'] > 0 ? 'warn' : 'ok', 'href' => url('/review')],
     ['label' => 'Pending activation', 'value' => $k['pendingActivation'], 'sub' => 'not yet provisioned', 'tone' => 'amber', 'href' => url('/people', ['status' => 'pending'])],
@@ -12,6 +20,7 @@ $cards = [
     ['label' => 'Unmapped values', 'value' => $k['unmapped'], 'sub' => 'school + ethnicity', 'tone' => $k['unmapped'] > 0 ? 'warn' : 'ok', 'href' => url('/reference')],
     ['label' => 'Failed syncs', 'value' => $k['failedSync'], 'sub' => 'last sync failed', 'tone' => $k['failedSync'] > 0 ? 'alert' : 'ok', 'href' => url('/dashboard') . '#failed'],
     ['label' => 'OneSync write-back', 'value' => $sh['label'], 'sub' => $sh['state'] === 'never' ? 'never run' : ($sh['staleAccounts'] . ' stale account' . ($sh['staleAccounts'] === 1 ? '' : 's')), 'tone' => $syncTone, 'href' => url('/dashboard') . '#failed'],
+    ['label' => 'Students → OneSync', 'value' => $ss['active'], 'sub' => $studentSub, 'tone' => $studentTone, 'href' => url('/dashboard') . '#students'],
     ['label' => 'Last feed run', 'value' => $k['lastFeed'] ? ucfirst($k['lastFeed']['system']) : '—', 'sub' => $k['lastFeed'] ? ($k['lastFeed']['status'] . ' · ' . $k['lastFeed']['started_at']) : 'no imports yet', 'tone' => 'ok', 'href' => url('/import')],
 ];
 ?>
@@ -89,6 +98,33 @@ $cards = [
     <?php endif; ?>
     <a class="act__more" href="<?= e(url('/import')) ?>">Open import history →</a>
   </div>
+</div>
+
+<div class="panel" id="students" style="margin-top:18px;">
+  <h2 class="panel__title" style="margin-bottom:4px;">Students → OneSync</h2>
+  <p class="panel__note" style="margin-bottom:14px;">Passthrough from PowerSchool. OneSync reads <span class="mono">v_onesync_student_source</span>; this app only shows the status of the sync.</p>
+  <?php $lr = $ss['lastRun'] ?? null; ?>
+  <?php if ($lr === null): ?>
+    <p class="muted" style="font-size:12.5px;">No students sync has run yet. Run <span class="mono">php bin/import_students.php</span>.</p>
+  <?php else:
+      $mod = Present::importMod($lr['status']);
+  ?>
+  <div class="feed">
+    <div class="feed__head">
+      <span style="font-weight:600; font-size:13px;"><?= e((int) $ss['active']) ?> active student<?= ((int) $ss['active'] === 1 ? '' : 's') ?> in OneSync source</span>
+      <span>
+        <?php if (($ss['state'] ?? '') === 'stale'): ?><span class="sync-badge sync-badge--fail" style="margin-right:4px;">stale</span><?php endif; ?>
+        <span class="badge badge--<?= e($mod === 'ok' ? 'active' : ($mod === 'fail' ? 'terminated' : 'pending')) ?>"><?= e($lr['status']) ?></span>
+      </span>
+    </div>
+    <div class="feed__meta mono">
+      last run <?= e($ss['label'] ?? $lr['started_at']) ?> · <?= e((int) $lr['row_count']) ?> rows · <?= e((int) $lr['inserted']) ?> new · <?= e((int) $lr['updated']) ?> updated · <?= e((int) $lr['deactivated']) ?> deactivated
+    </div>
+    <?php if (!empty($lr['message']) && $lr['status'] === 'failed'): ?>
+      <div class="feed__meta" style="color:#94413A;"><?= e($lr['message']) ?></div>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
 </div>
 
 <div class="panel" id="failed" style="margin-top:18px;">

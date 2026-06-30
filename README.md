@@ -181,6 +181,10 @@ category has its own header map (`ColumnMap`) and feed directory (`FEED_*_DIR`);
 the intern/sub/contractor feeds resolve school codes against the PowerSchool
 SchoolID alias group. (Requires migration `0003`.)
 
+> **Students are not in this table.** They don't get a golden record — they're a
+> separate PowerSchool passthrough straight to OneSync (`bin/import_students.php`,
+> migration `0008`). See [Students passthrough](#students-passthrough).
+
 **Matcher tiers** (strongest key first; first hit wins):
 
 | Tier | Key | Result |
@@ -471,6 +475,36 @@ returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is t
 
 Full reference: [`docs/onesync-api.md`](docs/onesync-api.md).
 
+### Students passthrough
+
+Students are **not** part of the staff golden-record model — no matching, no
+crosswalk, no review queue. They are a straight passthrough: we pull the active
+and future enrollments from PowerSchool over the same ODBC connection and stage
+them in their own `student` table, which OneSync reads from one read-only view
+(`v_onesync_student_source`), exactly like `v_onesync_source` for staff. The web
+app only shows the **status** of this sync on the dashboard (last run, row counts,
+freshness) — there is no per-student editing.
+
+```sh
+php bin/import_students.php --dry-run     # query Oracle, change nothing
+php bin/import_students.php               # full passthrough import
+```
+
+Source query (`Enroll_Status` 0 = enrolled, 3 = future):
+
+```sql
+SELECT State_StudentNumber, SchoolID, Grade_Level, First_Name, Last_Name,
+       ID, DCID, EntryCode, ExitCode, ExitDate
+FROM Students WHERE Enroll_Status = 0 OR Enroll_Status = 3
+```
+
+`DCID` is the upsert key (PowerSchool's stable internal id), so re-runs are
+idempotent and each student keeps the same `student_uuid` (the OneSync uniqueId).
+A student that was active before but is absent from the latest pull is flagged
+`is_active = 0` (exposed as `StatusActive = 0`) so OneSync **disables** rather
+than orphans — never a hard delete. Runs as the APP role; schedule it nightly
+alongside the staff import (see [`deploy/`](deploy/)).
+
 *Debugging:* set `ONESYNC_API_DEBUG=true` to log every call (method, IP, which
 auth header carried the token + a masked preview, the body, and the response
 status/outcome) to `ONESYNC_API_LOG` (default `/var/idm/onesync/api_debug.log`),
@@ -569,9 +603,10 @@ GRANT SELECT, UPDATE ON tcs_identity.person TO 'idm_writeback'@'%';
 GRANT INSERT ON tcs_identity.audit_log       TO 'idm_writeback'@'%';
 GRANT INSERT ON tcs_identity.lifecycle_event TO 'idm_writeback'@'%';
 
--- 4) OneSync reader — READ-ONLY on the single view, nothing else.
-GRANT SELECT ON tcs_identity.v_onesync_source TO 'onesync_ro'@'%';
--- Deliberately NO access to base tables: OneSync sees one row per person, period.
+-- 4) OneSync reader — READ-ONLY on the source views, nothing else.
+GRANT SELECT ON tcs_identity.v_onesync_source         TO 'onesync_ro'@'%';
+GRANT SELECT ON tcs_identity.v_onesync_student_source TO 'onesync_ro'@'%'; -- students passthrough
+-- Deliberately NO access to base tables: OneSync sees the views, period.
 
 FLUSH PRIVILEGES;
 ```

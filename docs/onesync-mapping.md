@@ -170,9 +170,10 @@ directly, schedule a prune or keep it bounded on the OneSync side.
 Two distinct accounts — never reuse the app or root account for OneSync.
 
 ```sql
--- Reader: SELECT on the single view only.
+-- Reader: SELECT on the source views only (staff + students passthrough).
 CREATE USER 'onesync_ro'@'%' IDENTIFIED BY 'change-me';
-GRANT SELECT ON tcs_identity.v_onesync_source TO 'onesync_ro'@'%';
+GRANT SELECT ON tcs_identity.v_onesync_source         TO 'onesync_ro'@'%';
+GRANT SELECT ON tcs_identity.v_onesync_student_source TO 'onesync_ro'@'%';
 
 -- Writer: only the three write-back tables. No access to base tables; the
 -- person_id-resolving trigger runs as definer, so no SELECT on `person` needed.
