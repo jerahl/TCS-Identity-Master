@@ -542,6 +542,22 @@ Idempotent and safe: a username already locked to a different value is reported 
 `conflict` and left unchanged. Runs as the MIGRATE role (one-time ops). Run the
 PowerSchool/NextGen imports first so the people and their PS crosswalk ids exist.
 
+**Clear legacy AD ids.** Running both the early link (uniqueId `T#####`) and the
+Employee List import (real `objectGUID`) leaves some people with two `ad`
+crosswalk rows. The objectGUID is what live verification resolves by, so drop the
+legacy ones:
+
+```sh
+php bin/cleanup_ad_ids.php --dry-run   # preview
+php bin/cleanup_ad_ids.php             # remove "T#####" ids where a GUID exists
+php bin/cleanup_ad_ids.php --all       # also remove a legacy id that's the only AD id
+```
+
+By default it keeps a person's legacy id when it's their *only* AD id (so they
+aren't left unlinked — re-run the Employee List import to give them a GUID);
+`--all` removes those too. Each removal is audited and added to the person
+timeline.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 back **straight to the DB** (no files): insert usernames into `onesync_writeback`
 and upsert per-user success/failure into `account_sync_status`. The exact table +
