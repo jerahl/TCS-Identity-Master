@@ -610,9 +610,10 @@ says so. The client uses a short timeout and **degrades gracefully** — an
 unreachable or misconfigured Adaxes shows a notice, never an error page
 (`App\Service\AdaxesService`, unit-tested with an injected HTTP client). Set
 `ADAXES_DEBUG=true` (logs to `ADAXES_LOG`) to record each request URL + response
-while troubleshooting. The object/search paths default to `directoryObjects` /
-`directorySearcher/search` and are overridable (`ADAXES_OBJECTS_PATH` /
-`ADAXES_SEARCH_PATH`).
+while troubleshooting (logs fall back to the PHP error log if the file path
+isn't writable). All REST endpoints live under `{base}/api`, so the object/search
+paths default to `api/directoryObjects` / `api/directorySearcher/search` and are
+overridable (`ADAXES_OBJECTS_PATH` / `ADAXES_SEARCH_PATH`).
 
 ## Least-privilege DB users
 

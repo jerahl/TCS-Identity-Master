@@ -82,8 +82,10 @@ final class AdaxesService
         $this->password       = $password ?? (string) Config::get('ADAXES_PASSWORD', '');
         $this->token          = trim($token ?? (string) Config::get('ADAXES_TOKEN', ''));
         $this->timeout        = $timeout ?? max(1, (int) Config::get('ADAXES_TIMEOUT', '5'));
-        $this->objectsPath    = trim($objectsPath ?? (string) Config::get('ADAXES_OBJECTS_PATH', 'directoryObjects'), '/');
-        $this->searchPath     = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'directorySearcher/search'), '/');
+        // All Adaxes REST endpoints live under {base}/api (matching the auth
+        // handshake paths), so the object/search paths carry the api/ prefix too.
+        $this->objectsPath    = trim($objectsPath ?? (string) Config::get('ADAXES_OBJECTS_PATH', 'api/directoryObjects'), '/');
+        $this->searchPath     = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'api/directorySearcher/search'), '/');
         $this->sessionPath    = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
         $this->tokenPath      = trim((string) Config::get('ADAXES_TOKEN_PATH', 'api/auth'), '/');
         $this->employeeIdAttr = trim($employeeIdAttr ?? (string) Config::get('ADAXES_EMPLOYEE_ID_ATTR', 'employeeID')) ?: 'employeeID';
@@ -628,9 +630,11 @@ final class AdaxesService
             return ['ok' => false, 'error' => 'Adaxes rejected the credentials (HTTP ' . $status . ') — check ADAXES_TOKEN (or username/password).', 'data' => []];
         }
         if ($status >= 300 && $status < 400) {
-            // A redirect means the request was not authenticated — the REST API
-            // bounced it to a login. The /restApi endpoint needs a security token.
-            return ['ok' => false, 'error' => 'Adaxes redirected the request (HTTP ' . $status . ') — it was not authenticated; set ADAXES_TOKEN (Adm-Authorization, from the New-AdmAccountToken cmdlet). Basic auth is not accepted.', 'data' => []];
+            // A redirect is usually one of two things: a wrong path (the REST API
+            // lives under {base}/api — a missing api/ segment gets redirected) or
+            // an unauthenticated request bounced to a login. The Location header
+            // (appended by request()) tells which.
+            return ['ok' => false, 'error' => 'Adaxes redirected the request (HTTP ' . $status . ') — likely a wrong path (the REST API is under {base}/api) or an unauthenticated request. Check ADAXES_BASE_URL / ADAXES_OBJECTS_PATH and ADAXES_TOKEN.', 'data' => []];
         }
         if ($status < 200 || $status >= 300) {
             return ['ok' => false, 'error' => 'Adaxes returned HTTP ' . $status . '.', 'data' => []];
@@ -661,10 +665,14 @@ final class AdaxesService
         $resp = ($this->fetch)($method, $url, $headers, $body);
         $decoded = $this->decode($resp);
         $status = $resp['status'] ?? 0;
+        $location = is_array($resp) ? ($resp['location'] ?? null) : null;
         if (!$decoded['ok'] && $status > 0 && $decoded['error'] !== null) {
             $decoded['error'] .= ' [' . $method . ' ' . self::urlPath($url) . ']';
+            if ($location !== null && $location !== '') {
+                $decoded['error'] .= ' (redirected to ' . self::urlPath((string) $location) . ')';
+            }
         }
-        $this->debugLog($method, $url, $status, $resp === null ? null : (string) ($resp['body'] ?? ''));
+        $this->debugLog($method, $url, $status, $resp === null ? null : (string) ($resp['body'] ?? ''), $location);
         $decoded['status'] = $status;
         return $decoded;
     }
@@ -683,17 +691,27 @@ final class AdaxesService
      * snippet can contain directory data (PII) and the URL carries the search
      * filter — enable only while troubleshooting, then turn it back off.
      */
-    private function debugLog(string $method, string $url, int $status, ?string $body): void
+    private function debugLog(string $method, string $url, int $status, ?string $body, ?string $location = null): void
     {
         if (!Config::bool('ADAXES_DEBUG', false)) {
             return;
         }
-        $path = (string) Config::get('ADAXES_LOG', '/var/idm/adaxes_debug.log');
         $snippet = $body === null
             ? '(no response — transport failure)'
             : substr((string) preg_replace('/\s+/', ' ', $body), 0, 500);
-        $line = sprintf("[%s] %s %s -> HTTP %d | %s\n", gmdate('c'), $method, $url, $status, $snippet);
-        @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+        $loc = ($location !== null && $location !== '') ? ' -> Location: ' . $location : '';
+        $line = sprintf("[%s] %s %s -> HTTP %d%s | %s", gmdate('c'), $method, $url, $status, $loc, $snippet);
+
+        // Write to the configured file; if that fails (dir missing / not writable
+        // by php-fpm) fall back to the PHP error log so debug output is never lost.
+        $path = (string) Config::get('ADAXES_LOG', '/var/idm/adaxes_debug.log');
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0770, true);
+        }
+        if (@file_put_contents($path, $line . "\n", FILE_APPEND | LOCK_EX) === false) {
+            error_log('[idm][adaxes] ' . $line);
+        }
     }
 
     /**
@@ -737,7 +755,25 @@ final class AdaxesService
             return null;
         }
 
-        return ['status' => self::statusFromHeaders($http_response_header ?? []), 'body' => $raw];
+        $headers = $http_response_header ?? [];
+        return [
+            'status'   => self::statusFromHeaders($headers),
+            'body'     => $raw,
+            'location' => self::headerValue($headers, 'Location'),
+        ];
+    }
+
+    /** First value of the named response header (case-insensitive), or null. */
+    private static function headerValue(array $headers, string $name): ?string
+    {
+        $needle = strtolower($name) . ':';
+        foreach ($headers as $line) {
+            $line = (string) $line;
+            if (str_starts_with(strtolower($line), $needle)) {
+                return trim(substr($line, strlen($needle)));
+            }
+        }
+        return null;
     }
 
     /** Parse the numeric status code out of the $http_response_header lines. */

@@ -270,6 +270,22 @@ final class AdaxesServiceTest extends TestCase
         self::assertStringNotContainsString('filter=', (string) $res['error']);                // no query/PII leaked
     }
 
+    public function test3xxSurfacesRedirectLocation(): void
+    {
+        // A redirect (e.g. wrong path / login bounce) should name where Adaxes
+        // tried to send us, which reveals a missing /api/ segment vs. a login.
+        $svc = $this->service([
+            'status'   => 302,
+            'body'     => '',
+            'location' => 'https://adx.example.org/restv2/api/directoryObjects/T13305',
+        ]);
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'T13305', 'is_active' => 1]]);
+
+        self::assertFalse($res['ok']);
+        self::assertStringContainsString('HTTP 302', (string) $res['error']);
+        self::assertStringContainsString('redirected to https://adx.example.org/restv2/api/directoryObjects/T13305', (string) $res['error']);
+    }
+
     public function testNormalizesMapShapeAndMultiValue(): void
     {
         // Map-form properties + a multi-valued attribute.
