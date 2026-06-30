@@ -1,0 +1,12 @@
+[Unit]
+Description=Run TCS Identity students passthrough (PowerSchool -> OneSync source)
+
+[Timer]
+# 01:30 daily — after PowerSchool's overnight processing, before OneSync's run.
+# Adjust to taste relative to your OneSync schedule.
+OnCalendar=*-*-* 01:30:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
