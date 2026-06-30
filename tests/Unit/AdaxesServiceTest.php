@@ -24,7 +24,8 @@ final class AdaxesServiceTest extends TestCase
             $captured = ['method' => $method, 'url' => $url, 'headers' => $headers, 'body' => $body];
             return $response;
         };
-        return new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch);
+        // Static token → no handshake; data requests carry Adm-Authorization.
+        return new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
     }
 
     /** Adaxes "get object" response with a list-form properties payload. */
@@ -69,10 +70,12 @@ final class AdaxesServiceTest extends TestCase
         self::assertTrue($res['found']);
         self::assertSame('objectGUID', $res['by']);
         self::assertSame('a1b2c3d4-guid', $res['identifier']);
-        // The GUID and requested properties ride in the URL; auth header is Basic.
+        // The GUID and requested properties ride in the URL; the security token
+        // rides in the Adm-Authorization header (Adaxes REST API's scheme).
         self::assertStringContainsString('/directoryObjects/a1b2c3d4-guid', $captured['url']);
         self::assertStringContainsString('properties=', $captured['url']);
-        self::assertStringStartsWith('Basic ', $captured['headers']['Authorization']);
+        self::assertSame('test-token', $captured['headers']['Adm-Authorization']);
+        self::assertArrayNotHasKey('Authorization', $captured['headers']);
         // Every comparable field agrees.
         self::assertSame(0, AdaxesService::diffCount($res['comparison']));
     }
@@ -147,7 +150,7 @@ final class AdaxesServiceTest extends TestCase
             $captured = ['url' => $url];
             return $response;
         };
-        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch);
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
 
         // No AD guid in the crosswalk → search by username/email/employee id.
         $res = $svc->verify(['username' => 'jsmith', 'email' => 'jsmith@example.org', 'employee_id' => '12345', 'status' => 'active'], []);
@@ -171,7 +174,7 @@ final class AdaxesServiceTest extends TestCase
             $captured = ['url' => $url];
             return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith']]]])];
         };
-        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch);
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
 
         // Only an employee id on file (no username/email yet).
         $res = $svc->verify(['employee_id' => '12345', 'status' => 'active'], []);
@@ -189,7 +192,7 @@ final class AdaxesServiceTest extends TestCase
             return ['status' => 200, 'body' => json_encode(['objects' => []])];
         };
         // employeeNumber instead of the default employeeID.
-        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, 'employeeNumber');
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, 'employeeNumber', 'test-token');
         $svc->verify(['employee_id' => '777', 'status' => 'active'], []);
         self::assertStringContainsString('(employeeNumber=777)', urldecode($captured['url']));
     }
@@ -215,7 +218,7 @@ final class AdaxesServiceTest extends TestCase
             }
             return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith', 'mail' => 'jsmith@example.org']]]])];
         };
-        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch);
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
 
         $res = $svc->verify(
             ['username' => 'jsmith', 'email' => 'jsmith@example.org', 'status' => 'active'],
@@ -288,5 +291,55 @@ final class AdaxesServiceTest extends TestCase
             }
         }
         self::assertSame('CN=John,OU=Faculty,DC=example,DC=org', $dn);
+    }
+
+    public function testConfiguredWithTokenOnly(): void
+    {
+        // A static token alone (no username/password) is enough to be configured.
+        $svc = new AdaxesService('https://adx.example.org/restApi', '', '', 5, fn() => null, null, null, null, null, 'tok123');
+        self::assertTrue($svc->configured());
+    }
+
+    public function testUsernamePasswordHandshakeObtainsAndUsesToken(): void
+    {
+        // No static token: the service must POST credentials to create a session,
+        // exchange it for a token, then send that token as Adm-Authorization.
+        $calls = [];
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls[] = ['method' => $method, 'url' => $url, 'headers' => $headers, 'body' => $body];
+            if (str_contains($url, '/api/authSessions/create')) {
+                return ['status' => 200, 'body' => json_encode(['sessionId' => 'SESS-1', 'expiresAtUtc' => '2030-01-01T00:00:00Z'])];
+            }
+            if (str_contains($url, '/api/auth')) {
+                return ['status' => 200, 'body' => json_encode(['token' => 'TOK-XYZ', 'expiresAtUtc' => '2030-01-01T00:00:00Z'])];
+            }
+            return ['status' => 200, 'body' => json_encode(['properties' => [['name' => 'sAMAccountName', 'value' => 'jsmith']]])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restApi', 'svc', 'pw', 5, $fetch);
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'guid-1', 'is_active' => 1]]);
+
+        self::assertTrue($res['ok']);
+        self::assertTrue($res['found']);
+        // 1) create session (credentials in body), 2) obtain token (sessionId), 3) data request.
+        self::assertStringContainsString('/api/authSessions/create', $calls[0]['url']);
+        self::assertSame('POST', $calls[0]['method']);
+        self::assertStringContainsString('"password":"pw"', (string) $calls[0]['body']);
+        self::assertStringContainsString('/api/auth', $calls[1]['url']);
+        self::assertStringContainsString('"sessionId":"SESS-1"', (string) $calls[1]['body']);
+        // The data request carries the obtained token; no credentials in its body.
+        self::assertStringContainsString('/directoryObjects/guid-1', $calls[2]['url']);
+        self::assertSame('TOK-XYZ', $calls[2]['headers']['Adm-Authorization']);
+    }
+
+    public function testHandshakeFailureSurfacesAuthError(): void
+    {
+        // Session create rejects the credentials → a clear auth-failure envelope.
+        $fetch = fn(string $m, string $u, array $h, ?string $b): array => ['status' => 401, 'body' => ''];
+        $svc = new AdaxesService('https://adx.example.org/restApi', 'svc', 'pw', 5, $fetch);
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        self::assertFalse($res['ok']);
+        self::assertStringContainsString('authentication failed', (string) $res['error']);
     }
 }

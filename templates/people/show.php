@@ -268,7 +268,7 @@ $eventTitle = [
 
     <?php if (!$adConfigured): ?>
       <div class="identity-note" style="margin-bottom:0;">
-        Live AD verification is <strong>off</strong>. Set <span class="mono">ADAXES_BASE_URL</span>, <span class="mono">ADAXES_USERNAME</span> and <span class="mono">ADAXES_PASSWORD</span> (read-only service account) to compare each account against Active Directory here.
+        Live AD verification is <strong>off</strong>. Set <span class="mono">ADAXES_BASE_URL</span> plus a <span class="mono">ADAXES_TOKEN</span> (or <span class="mono">ADAXES_USERNAME</span> + <span class="mono">ADAXES_PASSWORD</span> for a read-only service account) to compare each account against Active Directory here.
       </div>
     <?php elseif (empty($adaxes['ok'])): ?>
       <div class="identity-note" style="margin-bottom:0; color:#B42318;">

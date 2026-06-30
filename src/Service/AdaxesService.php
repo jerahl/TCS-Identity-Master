@@ -36,10 +36,18 @@ final class AdaxesService
     private string $baseUrl;
     private string $username;
     private string $password;
+    private string $token;
     private int $timeout;
     private string $objectsPath;
     private string $searchPath;
+    private string $sessionPath;
+    private string $tokenPath;
     private string $employeeIdAttr;
+
+    /** Token resolved from the username/password handshake, cached per instance. */
+    private ?string $resolvedToken = null;
+    private bool $authAttempted = false;
+    private ?string $authError = null;
     /** @var list<string> */
     private array $properties;
     /** @var callable(string,string,array<string,string>,?string):?array{status:int,body:string} */
@@ -66,13 +74,17 @@ final class AdaxesService
         ?string $searchPath = null,
         ?array $properties = null,
         ?string $employeeIdAttr = null,
+        ?string $token = null,
     ) {
         $this->baseUrl        = rtrim($baseUrl ?? (string) Config::get('ADAXES_BASE_URL', ''), '/');
         $this->username       = $username ?? (string) Config::get('ADAXES_USERNAME', '');
         $this->password       = $password ?? (string) Config::get('ADAXES_PASSWORD', '');
+        $this->token          = trim($token ?? (string) Config::get('ADAXES_TOKEN', ''));
         $this->timeout        = $timeout ?? max(1, (int) Config::get('ADAXES_TIMEOUT', '5'));
         $this->objectsPath    = trim($objectsPath ?? (string) Config::get('ADAXES_OBJECTS_PATH', 'directoryObjects'), '/');
         $this->searchPath     = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'directorySearcher/search'), '/');
+        $this->sessionPath    = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
+        $this->tokenPath      = trim((string) Config::get('ADAXES_TOKEN_PATH', 'api/auth'), '/');
         $this->employeeIdAttr = trim($employeeIdAttr ?? (string) Config::get('ADAXES_EMPLOYEE_ID_ATTR', 'employeeID')) ?: 'employeeID';
 
         $configured = $properties ?? array_values(array_filter(array_map(
@@ -85,10 +97,14 @@ final class AdaxesService
             => $this->httpRequest($method, $url, $headers, $body);
     }
 
-    /** Live verification is available only when base URL + service credentials are set. */
+    /**
+     * Live verification is available only when the base URL plus credentials are
+     * set — either a security token (Adm-Authorization) or a Basic username +
+     * password. The /restApi REST API generally requires the token.
+     */
     public function configured(): bool
     {
-        return $this->baseUrl !== '' && $this->username !== '' && $this->password !== '';
+        return $this->baseUrl !== '' && ($this->token !== '' || ($this->username !== '' && $this->password !== ''));
     }
 
     public function baseUrl(): string
@@ -113,7 +129,7 @@ final class AdaxesService
     public function verify(array $person, array $sourceIds): array
     {
         if (!$this->configured()) {
-            return self::envelope(ok: false, configured: false, error: 'Adaxes is not configured (set ADAXES_BASE_URL, ADAXES_USERNAME, ADAXES_PASSWORD).');
+            return self::envelope(ok: false, configured: false, error: 'Adaxes is not configured (set ADAXES_BASE_URL and ADAXES_TOKEN, or ADAXES_USERNAME + ADAXES_PASSWORD).');
         }
 
         $guid = self::adObjectGuid($sourceIds);
@@ -491,13 +507,66 @@ final class AdaxesService
         ]);
     }
 
-    /** @return array<string,string> */
-    private function headers(): array
+    /**
+     * Resolve the security token sent as `Adm-Authorization`. A static
+     * ADAXES_TOKEN wins; otherwise run the legacy two-step handshake with the
+     * service username/password (create session → obtain token) and cache the
+     * result for this instance. Returns null and sets $authError on failure.
+     */
+    private function authToken(): ?string
     {
-        return [
-            'Authorization' => 'Basic ' . base64_encode($this->username . ':' . $this->password),
-            'Accept'        => 'application/json',
-        ];
+        if ($this->token !== '') {
+            return $this->token;
+        }
+        if ($this->resolvedToken !== null) {
+            return $this->resolvedToken;
+        }
+        if ($this->authAttempted) {
+            return null; // don't retry a failed handshake repeatedly within a request
+        }
+        $this->authAttempted = true;
+
+        if ($this->username === '' || $this->password === '') {
+            $this->authError = 'no ADAXES_TOKEN and no username/password';
+            return null;
+        }
+
+        // 1) Create an authentication session (POST credentials).
+        $sessUrl = $this->baseUrl . '/' . $this->sessionPath;
+        $resp = ($this->fetch)('POST', $sessUrl, self::jsonHeaders(), (string) json_encode(['username' => $this->username, 'password' => $this->password]));
+        $this->debugLog('POST', $sessUrl, $resp['status'] ?? 0, '(authSessions/create — body redacted)');
+        $session = $this->decode($resp);
+        if (!$session['ok']) {
+            $this->authError = 'session create failed (HTTP ' . ($resp['status'] ?? 0) . ')';
+            return null;
+        }
+        $sessionId = $session['data']['sessionId'] ?? $session['data']['id'] ?? null;
+        if (!is_string($sessionId) || $sessionId === '') {
+            $this->authError = 'no sessionId in authSessions/create response';
+            return null;
+        }
+
+        // 2) Exchange the session for a security token.
+        $tokUrl = $this->baseUrl . '/' . $this->tokenPath;
+        $resp2 = ($this->fetch)('POST', $tokUrl, self::jsonHeaders(), (string) json_encode(['sessionId' => $sessionId]));
+        $this->debugLog('POST', $tokUrl, $resp2['status'] ?? 0, '(auth — token redacted)');
+        $tok = $this->decode($resp2);
+        if (!$tok['ok']) {
+            $this->authError = 'token request failed (HTTP ' . ($resp2['status'] ?? 0) . ')';
+            return null;
+        }
+        $token = $tok['data']['token'] ?? null;
+        if (!is_string($token) || $token === '') {
+            $this->authError = 'no token in auth response';
+            return null;
+        }
+        return $this->resolvedToken = $token;
+    }
+
+    /** Headers for the unauthenticated handshake POSTs. @return array<string,string> */
+    private static function jsonHeaders(): array
+    {
+        return ['Content-Type' => 'application/json', 'Accept' => 'application/json'];
     }
 
     /**
@@ -513,7 +582,12 @@ final class AdaxesService
         }
         $status = $resp['status'] ?? 0;
         if ($status === 401 || $status === 403) {
-            return ['ok' => false, 'error' => 'Adaxes rejected the service credentials (HTTP ' . $status . ').', 'data' => []];
+            return ['ok' => false, 'error' => 'Adaxes rejected the credentials (HTTP ' . $status . ') — check ADAXES_TOKEN (or username/password).', 'data' => []];
+        }
+        if ($status >= 300 && $status < 400) {
+            // A redirect means the request was not authenticated — the REST API
+            // bounced it to a login. The /restApi endpoint needs a security token.
+            return ['ok' => false, 'error' => 'Adaxes redirected the request (HTTP ' . $status . ') — it was not authenticated; set ADAXES_TOKEN (Adm-Authorization, from the New-AdmAccountToken cmdlet). Basic auth is not accepted.', 'data' => []];
         }
         if ($status < 200 || $status >= 300) {
             return ['ok' => false, 'error' => 'Adaxes returned HTTP ' . $status . '.', 'data' => []];
@@ -535,7 +609,13 @@ final class AdaxesService
      */
     private function request(string $method, string $url, ?string $body = null): array
     {
-        $resp = ($this->fetch)($method, $url, $this->headers(), $body);
+        $token = $this->authToken();
+        if ($token === null) {
+            return ['ok' => false, 'error' => 'Adaxes authentication failed: ' . ($this->authError ?? 'unknown') . '.', 'data' => [], 'status' => 0];
+        }
+        $headers = ['Adm-Authorization' => $token, 'Accept' => 'application/json'];
+
+        $resp = ($this->fetch)($method, $url, $headers, $body);
         $decoded = $this->decode($resp);
         $status = $resp['status'] ?? 0;
         if (!$decoded['ok'] && $status > 0 && $decoded['error'] !== null) {
@@ -594,11 +674,13 @@ final class AdaxesService
 
         $ctx = stream_context_create([
             'http' => [
-                'method'        => $method,
-                'timeout'       => $this->timeout,
-                'ignore_errors' => true,
-                'header'        => $headerLines,
-                'content'       => $body ?? '',
+                'method'         => $method,
+                'timeout'        => $this->timeout,
+                'ignore_errors'  => true,
+                'follow_location' => 0,   // capture the auth redirect instead of chasing a login page
+                'max_redirects'  => 0,
+                'header'         => $headerLines,
+                'content'        => $body ?? '',
             ],
             'ssl' => array_filter([
                 'verify_peer'      => $verifyTls,
