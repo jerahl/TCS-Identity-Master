@@ -277,9 +277,11 @@ $eventTitle = [
     <?php elseif (empty($adaxes['found'])): ?>
       <div class="identity-note" style="margin-bottom:0; color:#B45309;">
         <?php if ($adBy === null): ?>
-          No AD identifier on file and no username has been minted yet, so there is no account to verify.
+          No AD identifier on file and no username/email/employee&nbsp;ID to search on, so there is no account to verify.
+        <?php elseif ($adBy === 'objectGUID'): ?>
+          No Active Directory account matched this person (looked up by <span class="mono">objectGUID</span> = <span class="mono"><?= e((string) $adId) ?></span>).
         <?php else: ?>
-          No Active Directory account matched this person (looked up by <span class="mono"><?= e($adBy) ?></span> = <span class="mono"><?= e((string) $adId) ?></span>).
+          No Active Directory account matched this person (searched <span class="mono"><?= e((string) $adId) ?></span>).
         <?php endif; ?>
       </div>
     <?php else: ?>
@@ -292,7 +294,13 @@ $eventTitle = [
           The golden record and Active Directory agree on every comparable field.
         </div>
       <?php endif; ?>
-      <p class="panel__note" style="margin:0 0 12px;">Matched by <span class="mono"><?= e((string) $adBy) ?></span> = <span class="mono"><?= e((string) $adId) ?></span>.</p>
+      <p class="panel__note" style="margin:0 0 12px;">
+        <?php if ($adBy === 'objectGUID'): ?>
+          Matched by <span class="mono">objectGUID</span> = <span class="mono"><?= e((string) $adId) ?></span>.
+        <?php else: ?>
+          Matched by directory search (<span class="mono"><?= e((string) $adId) ?></span>).
+        <?php endif; ?>
+      </p>
 
       <table class="assign-table">
         <thead><tr><th>Field</th><th>Golden record</th><th>Active Directory</th><th>Verify</th></tr></thead>

@@ -39,6 +39,7 @@ final class AdaxesService
     private int $timeout;
     private string $objectsPath;
     private string $searchPath;
+    private string $employeeIdAttr;
     /** @var list<string> */
     private array $properties;
     /** @var callable(string,string,array<string,string>,?string):?array{status:int,body:string} */
@@ -64,13 +65,15 @@ final class AdaxesService
         ?string $objectsPath = null,
         ?string $searchPath = null,
         ?array $properties = null,
+        ?string $employeeIdAttr = null,
     ) {
-        $this->baseUrl     = rtrim($baseUrl ?? (string) Config::get('ADAXES_BASE_URL', ''), '/');
-        $this->username    = $username ?? (string) Config::get('ADAXES_USERNAME', '');
-        $this->password    = $password ?? (string) Config::get('ADAXES_PASSWORD', '');
-        $this->timeout     = $timeout ?? max(1, (int) Config::get('ADAXES_TIMEOUT', '5'));
-        $this->objectsPath = trim($objectsPath ?? (string) Config::get('ADAXES_OBJECTS_PATH', 'directoryObjects'), '/');
-        $this->searchPath  = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'directorySearcher/search'), '/');
+        $this->baseUrl        = rtrim($baseUrl ?? (string) Config::get('ADAXES_BASE_URL', ''), '/');
+        $this->username       = $username ?? (string) Config::get('ADAXES_USERNAME', '');
+        $this->password       = $password ?? (string) Config::get('ADAXES_PASSWORD', '');
+        $this->timeout        = $timeout ?? max(1, (int) Config::get('ADAXES_TIMEOUT', '5'));
+        $this->objectsPath    = trim($objectsPath ?? (string) Config::get('ADAXES_OBJECTS_PATH', 'directoryObjects'), '/');
+        $this->searchPath     = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'directorySearcher/search'), '/');
+        $this->employeeIdAttr = trim($employeeIdAttr ?? (string) Config::get('ADAXES_EMPLOYEE_ID_ATTR', 'employeeID')) ?: 'employeeID';
 
         $configured = $properties ?? array_values(array_filter(array_map(
             'trim',
@@ -97,11 +100,12 @@ final class AdaxesService
      * Verify a person's golden record against their live AD account.
      *
      * Lookup order: the AD objectGUID from the crosswalk (person_source_id where
-     * system='ad') is the stable key, so it wins; otherwise we fall back to a
-     * search by sAMAccountName = person.username. With neither key we report
-     * found=false (nothing to compare against) rather than an error.
+     * system='ad') is the stable key, so it wins; otherwise we search by any of
+     * sAMAccountName = username, mail = email, or employeeID = employee_id (an
+     * LDAP OR — any one matches). With neither a GUID nor any of those values
+     * there is nothing to compare against.
      *
-     * @param array<string,mixed> $person     a person row (username, email, upn, status, …)
+     * @param array<string,mixed> $person     a person row (username, email, employee_id, upn, status, …)
      * @param array<int,array<string,mixed>> $sourceIds  person_source_id rows (system, source_key, is_active)
      * @return Envelope
      */
@@ -112,19 +116,20 @@ final class AdaxesService
         }
 
         $guid = self::adObjectGuid($sourceIds);
-        $username = trim((string) ($person['username'] ?? ''));
 
         if ($guid !== null) {
             $res = $this->getObject($guid);
             $by = 'objectGUID';
             $identifier = $guid;
-        } elseif ($username !== '') {
-            $res = $this->findBySamAccountName($username);
-            $by = 'sAMAccountName';
-            $identifier = $username;
         } else {
-            // No AD key on file and no username minted yet — nothing to verify.
-            return self::envelope(ok: true, configured: true, found: false, error: null);
+            $criteria = $this->searchCriteria($person);
+            if ($criteria === []) {
+                // No AD key on file and no username/email/employee id — nothing to verify.
+                return self::envelope(ok: true, configured: true, found: false, error: null);
+            }
+            $res = $this->searchByCriteria($criteria);
+            $by = 'search';
+            $identifier = self::criteriaSummary($criteria);
         }
 
         if (!$res['ok']) {
@@ -169,15 +174,41 @@ final class AdaxesService
     }
 
     /**
-     * Find a single user by sAMAccountName via the directory-search endpoint.
-     * Best-effort fallback when no objectGUID is on file — the search path/shape
-     * varies by Adaxes version, hence ADAXES_SEARCH_PATH is configurable.
+     * Find a single user by any of username (sAMAccountName), email (mail), or
+     * employee id (employeeID) — whichever the person record carries. Convenience
+     * wrapper around searchByCriteria(); returns found=false when the person has
+     * none of those values.
      *
+     * @param array<string,mixed> $person
      * @return array{ok:bool, error:?string, found:bool, attributes:array<string,string>}
      */
-    public function findBySamAccountName(string $sam): array
+    public function search(array $person): array
     {
-        $filter = '(sAMAccountName=' . self::escapeLdap($sam) . ')';
+        $criteria = $this->searchCriteria($person);
+        if ($criteria === []) {
+            return ['ok' => true, 'error' => null, 'found' => false, 'attributes' => []];
+        }
+        return $this->searchByCriteria($criteria);
+    }
+
+    /**
+     * Run a directory search for an OR of the given attribute=value criteria and
+     * return the first hit. Best-effort fallback when no objectGUID is on file —
+     * the search path/shape varies by Adaxes version, hence ADAXES_SEARCH_PATH is
+     * configurable.
+     *
+     * @param array<int,array{attr:string,value:string}> $criteria  non-empty
+     * @return array{ok:bool, error:?string, found:bool, attributes:array<string,string>}
+     */
+    public function searchByCriteria(array $criteria): array
+    {
+        $clauses = '';
+        foreach ($criteria as $c) {
+            $clauses .= '(' . $c['attr'] . '=' . self::escapeLdap($c['value']) . ')';
+        }
+        // Single criterion needs no |; multiple are OR'd so any one matches.
+        $filter = count($criteria) > 1 ? '(|' . $clauses . ')' : $clauses;
+
         $url = $this->baseUrl . '/' . $this->searchPath
              . '?filter=' . rawurlencode($filter)
              . '&properties=' . rawurlencode(implode(',', $this->properties));
@@ -193,6 +224,40 @@ final class AdaxesService
             return ['ok' => true, 'error' => null, 'found' => false, 'attributes' => []];
         }
         return ['ok' => true, 'error' => null, 'found' => true, 'attributes' => self::normalizeProperties($first)];
+    }
+
+    /**
+     * The attribute=value criteria to search on, drawn from whichever identifying
+     * values the person record carries: username→sAMAccountName, email→mail,
+     * employee_id→employeeID (attribute name configurable via ADAXES_EMPLOYEE_ID_ATTR).
+     *
+     * @param array<string,mixed> $person
+     * @return array<int,array{attr:string,value:string}>
+     */
+    private function searchCriteria(array $person): array
+    {
+        $map = [
+            'sAMAccountName'      => trim((string) ($person['username'] ?? '')),
+            'mail'                => trim((string) ($person['email'] ?? '')),
+            $this->employeeIdAttr => trim((string) ($person['employee_id'] ?? '')),
+        ];
+        $out = [];
+        foreach ($map as $attr => $value) {
+            if ($value !== '') {
+                $out[] = ['attr' => $attr, 'value' => $value];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Human-readable summary of the search criteria for the UI ("matched by …").
+     *
+     * @param array<int,array{attr:string,value:string}> $criteria
+     */
+    private static function criteriaSummary(array $criteria): string
+    {
+        return implode(', ', array_map(static fn($c) => $c['attr'] . '=' . $c['value'], $criteria));
     }
 
     /**

@@ -135,7 +135,7 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('match', $state);
     }
 
-    public function testFallsBackToSamAccountNameSearch(): void
+    public function testFallsBackToSearchOnUsernameEmailAndEmployeeId(): void
     {
         $captured = null;
         $response = ['status' => 200, 'body' => json_encode([
@@ -149,19 +149,55 @@ final class AdaxesServiceTest extends TestCase
         };
         $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch);
 
-        // No AD guid in the crosswalk → search by username.
-        $res = $svc->verify(['username' => 'jsmith', 'email' => 'jsmith@example.org', 'status' => 'active'], []);
+        // No AD guid in the crosswalk → search by username/email/employee id.
+        $res = $svc->verify(['username' => 'jsmith', 'email' => 'jsmith@example.org', 'employee_id' => '12345', 'status' => 'active'], []);
 
         self::assertTrue($res['found']);
-        self::assertSame('sAMAccountName', $res['by']);
+        self::assertSame('search', $res['by']);
         self::assertStringContainsString('directorySearcher/search', $captured['url']);
-        self::assertStringContainsString('filter=', $captured['url']);
+
+        // The filter is an OR over all three attributes (URL-encoded).
+        $filter = urldecode($captured['url']);
+        self::assertStringContainsString('(|', $filter);
+        self::assertStringContainsString('(sAMAccountName=jsmith)', $filter);
+        self::assertStringContainsString('(mail=jsmith@example.org)', $filter);
+        self::assertStringContainsString('(employeeID=12345)', $filter);
+    }
+
+    public function testSearchByEmployeeIdAloneUsesNoOrWrapper(): void
+    {
+        $captured = null;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+            $captured = ['url' => $url];
+            return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith']]]])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch);
+
+        // Only an employee id on file (no username/email yet).
+        $res = $svc->verify(['employee_id' => '12345', 'status' => 'active'], []);
+        self::assertTrue($res['found']);
+        $filter = urldecode($captured['url']);
+        self::assertStringContainsString('(employeeID=12345)', $filter);
+        self::assertStringNotContainsString('(|', $filter); // single criterion → no OR
+    }
+
+    public function testEmployeeIdAttributeIsConfigurable(): void
+    {
+        $captured = null;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+            $captured = ['url' => $url];
+            return ['status' => 200, 'body' => json_encode(['objects' => []])];
+        };
+        // employeeNumber instead of the default employeeID.
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, 'employeeNumber');
+        $svc->verify(['employee_id' => '777', 'status' => 'active'], []);
+        self::assertStringContainsString('(employeeNumber=777)', urldecode($captured['url']));
     }
 
     public function testNoKeyMeansNothingToVerify(): void
     {
         $svc = $this->service(null);
-        $res = $svc->verify(['username' => '', 'status' => 'pending'], []);
+        $res = $svc->verify(['username' => '', 'email' => '', 'employee_id' => '', 'status' => 'pending'], []);
         self::assertTrue($res['ok']);
         self::assertFalse($res['found']);
         self::assertNull($res['by']);

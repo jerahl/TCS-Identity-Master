@@ -580,8 +580,10 @@ ADAXES_CA_FILE=/etc/ssl/certs/internal-ca.pem       # internal CA (keep TLS veri
 
 How a person is matched in AD: the AD `objectGUID` in the crosswalk
 (`person_source_id` where `system='ad'`) is the stable key and wins; otherwise
-the service searches by `sAMAccountName = person.username`. With neither key (no
-GUID on file and no username minted yet) there is nothing to verify and the panel
+the service searches AD for **any** of `sAMAccountName = username`,
+`mail = email`, or `employeeID = employee_id` (an LDAP OR — any one matches; the
+employee-id attribute is configurable via `ADAXES_EMPLOYEE_ID_ATTR`). With
+neither a GUID nor any of those values there is nothing to verify and the panel
 says so. The lookup uses HTTP Basic auth and a short timeout, and **degrades
 gracefully** — an unreachable or misconfigured Adaxes shows a notice, never an
 error page (`App\Service\AdaxesService`, unit-tested with an injected HTTP
