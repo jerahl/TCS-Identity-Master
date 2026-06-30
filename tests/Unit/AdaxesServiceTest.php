@@ -203,12 +203,38 @@ final class AdaxesServiceTest extends TestCase
         self::assertNull($res['by']);
     }
 
-    public function testMissingObjectIsNotAnError(): void
+    public function testMissingObjectFallsBackToSearch(): void
     {
+        // The crosswalk 'ad' key is not a real objectGUID, so get-object 404s;
+        // verify() then searches by attributes and finds the account there.
+        $urls = [];
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$urls): ?array {
+            $urls[] = $url;
+            if (str_contains($url, '/directoryObjects/')) {
+                return ['status' => 404, 'body' => 'not found'];
+            }
+            return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith', 'mail' => 'jsmith@example.org']]]])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch);
+
+        $res = $svc->verify(
+            ['username' => 'jsmith', 'email' => 'jsmith@example.org', 'status' => 'active'],
+            [['system' => 'ad', 'source_key' => 'jsmith', 'is_active' => 1]]
+        );
+        self::assertTrue($res['ok']);
+        self::assertTrue($res['found']);
+        self::assertSame('search', $res['by']); // matched via the fallback, not the GUID
+        self::assertStringContainsString('/directoryObjects/jsmith', $urls[0]); // tried the key first
+    }
+
+    public function testStaleKeyAndNoSearchCriteriaReportsNotFound(): void
+    {
+        // get-object 404s and there is nothing to search on → clean not-found.
         $svc = $this->service(['status' => 404, 'body' => 'not found']);
-        $res = $svc->verify(['username' => 'ghost'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        $res = $svc->verify(['username' => '', 'email' => '', 'employee_id' => ''], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
         self::assertTrue($res['ok']);
         self::assertFalse($res['found']);
+        self::assertSame('objectGUID', $res['by']);
     }
 
     public function testUnreachableReturnsErrorEnvelope(): void

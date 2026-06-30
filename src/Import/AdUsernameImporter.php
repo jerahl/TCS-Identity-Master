@@ -28,11 +28,17 @@ use RuntimeException;
  * --dry-run. Runs as the MIGRATE role — a trusted one-time ops step (it also
  * writes the person_source_id 'ad' crosswalk row, beyond the write-back grants).
  *
- * Accepts EITHER file (format auto-detected from the header row):
+ * Accepts ANY of these files (format auto-detected from the header row):
  *  - AD directory export: uniqueId, mail, sAMAccountName, Employee ID, ...
  *  - PowerSchool TEACHERS export (same file used for the PowerSchool import):
  *    TEACHERS.ID, TEACHERS.Email_Addr, TEACHERS.TeacherLoginID, TEACHERS.TeacherNumber
  *    (here the AD uniqueId recorded in the crosswalk is "T" + TEACHERS.ID).
+ *  - Adaxes "Employee List" export: First/Last name, Email, Logon Name (UPN),
+ *    Logon Name (pre-Windows 2000) (= sAMAccountName), Employee ID, Object GUID,
+ *    Department, Parent (OU), Name. No PowerSchool/uniqueId key, so it matches
+ *    each person by Employee ID, then Email, then username, sets + LOCKS the
+ *    sAMAccountName as the username (refreshing email + UPN), and records the
+ *    real objectGUID in the crosswalk.
  */
 final class AdUsernameImporter
 {
@@ -55,16 +61,40 @@ final class AdUsernameImporter
         'employee_id' => 'TEACHERS.TeacherNumber',
     ];
 
+    /**
+     * Adaxes "Employee List" export columns. Carries the authoritative AD
+     * identity: sAMAccountName (the pre-Windows-2000 logon), the real objectGUID,
+     * the UPN, email and employee id. No PowerSchool/uniqueId key, so it matches
+     * on employee id / email / username instead.
+     */
+    private const MAP_EMPLOYEE_LIST = [
+        'username'    => 'Logon Name (pre-Windows 2000)',  // sAMAccountName
+        'upn'         => 'Logon Name',                      // userPrincipalName
+        'mail'        => 'Email',
+        'employee_id' => 'Employee ID',
+        'guid'        => 'Object GUID',                     // AD objectGUID
+    ];
+
     public function __construct(?PDO $db = null)
     {
         $this->db = $db ?? Db::connect(Db::ROLE_MIGRATE);
         $this->audit = new AuditService($this->db);
     }
 
-    /** Pick the column map from the header row: TEACHERS export vs AD export. */
+    /** Pick the format from the header row: TEACHERS / AD / Employee List. */
     public static function detectFormat(array $row): string
     {
-        return array_key_exists('TEACHERS.ID', $row) ? 'teachers' : 'ad';
+        if (array_key_exists('TEACHERS.ID', $row)) {
+            return 'teachers';
+        }
+        if (array_key_exists('sAMAccountName', $row) || array_key_exists('uniqueId', $row)) {
+            return 'ad';
+        }
+        // Adaxes "Employee List" export: pre-Win2000 logon / Object GUID columns.
+        if (array_key_exists('Object GUID', $row) || array_key_exists('Logon Name (pre-Windows 2000)', $row)) {
+            return 'employee_list';
+        }
+        return 'ad';
     }
 
     /**
@@ -89,10 +119,34 @@ final class AdUsernameImporter
         }
 
         $rows = Csv::read($file);
-        $map = ($rows !== [] && self::detectFormat($rows[0]) === 'teachers') ? self::MAP_TEACHERS : self::MAP_AD;
-        $teachers = $map === self::MAP_TEACHERS;
+        $format = $rows === [] ? 'ad' : self::detectFormat($rows[0]);
         $counts = ['total' => 0, 'applied' => 0, 'noop' => 0, 'conflict' => 0, 'skipped' => 0, 'no_person' => 0, 'errors' => 0];
         $outcomes = [];
+
+        if ($format === 'employee_list') {
+            $m = self::MAP_EMPLOYEE_LIST;
+            foreach ($rows as $raw) {
+                $counts['total']++;
+                $username = trim((string) ($raw[$m['username']] ?? ''));
+                $upn = trim((string) ($raw[$m['upn']] ?? ''));
+                $email = trim((string) ($raw[$m['mail']] ?? ''));
+                $employeeId = trim((string) ($raw[$m['employee_id']] ?? ''));
+                $guid = trim((string) ($raw[$m['guid']] ?? ''));
+                try {
+                    $o = $this->processEmployeeListRow($username, $upn, $email, $employeeId, $guid, $dryRun, $actor);
+                } catch (\Throwable $e) {
+                    $counts['errors']++;
+                    $outcomes[] = ['uniqueId' => $guid, 'username' => $username, 'outcome' => 'error', 'detail' => $e->getMessage()];
+                    continue;
+                }
+                $counts[$o['key']]++;
+                $outcomes[] = ['uniqueId' => $guid, 'username' => $username, 'outcome' => $o['key'], 'detail' => $o['detail']];
+            }
+            return ['dry_run' => $dryRun, 'format' => $format, 'counts' => $counts, 'outcomes' => $outcomes];
+        }
+
+        $map = $format === 'teachers' ? self::MAP_TEACHERS : self::MAP_AD;
+        $teachers = $format === 'teachers';
 
         foreach ($rows as $raw) {
             $counts['total']++;
@@ -115,7 +169,108 @@ final class AdUsernameImporter
             $outcomes[] = ['uniqueId' => $adUniqueId, 'username' => $username, 'outcome' => $outcome['key'], 'detail' => $outcome['detail']];
         }
 
-        return ['dry_run' => $dryRun, 'counts' => $counts, 'outcomes' => $outcomes];
+        return ['dry_run' => $dryRun, 'format' => $format, 'counts' => $counts, 'outcomes' => $outcomes];
+    }
+
+    /**
+     * Employee List row: match the person (employee id, then email, then
+     * username), set + LOCK the authoritative AD sAMAccountName as their username
+     * (refreshing email + UPN), and record the real objectGUID in the crosswalk.
+     * Same guardrail as the write-back: a locked username is never overwritten
+     * with a different value.
+     *
+     * @return array{key:string,detail:string}
+     */
+    private function processEmployeeListRow(string $username, string $upn, string $email, string $employeeId, string $guid, bool $dryRun, string $actor): array
+    {
+        if ($username === '') {
+            return ['key' => 'skipped', 'detail' => 'blank logon name (sAMAccountName)'];
+        }
+
+        $person = $this->findEmployeeListPerson($employeeId, $email, $username);
+        if ($person === null) {
+            return ['key' => 'no_person', 'detail' => "no person for employee id '{$employeeId}'"
+                . ($email !== '' ? " / email '{$email}'" : '') . " / username '{$username}'"];
+        }
+        $pid = (int) $person['person_id'];
+
+        $decision = WritebackImporter::decide($person['username'], (int) $person['username_locked'] === 1, $username);
+        if ($decision === 'conflict') {
+            return ['key' => 'conflict', 'detail' => "locked username '{$person['username']}' != '{$username}' — left unchanged"];
+        }
+
+        if ($decision === 'noop') {
+            // Username already correct — still record the GUID + activate if needed.
+            if (!$dryRun) {
+                $this->recordAdSourceId($pid, $guid, $actor);
+                $this->activateIfPending($pid, (string) $person['status'], $actor);
+            }
+            return ['key' => 'noop', 'detail' => "username '{$username}' already set" . ($guid !== '' ? "; GUID linked" : '')];
+        }
+
+        // decision === 'apply' (or 'skip', impossible here since username !== '')
+        if ($dryRun) {
+            return ['key' => 'applied', 'detail' => "would set username '{$username}'"
+                . ($email !== '' ? " + email '{$email}'" : '') . ($guid !== '' ? " + GUID" : '')];
+        }
+
+        try {
+            $before = ['username' => $person['username'], 'email' => $person['email'], 'username_locked' => $person['username_locked']];
+            $sql = 'UPDATE person SET username = :u, username_assigned_at = CURRENT_TIMESTAMP, username_locked = 1';
+            $params = [':u' => $username, ':id' => $pid];
+            if ($email !== '') {
+                $sql .= ', email = :e';
+                $params[':e'] = $email;
+            }
+            if ($upn !== '') {
+                $sql .= ', upn = :p';
+                $params[':p'] = $upn;
+            }
+            $sql .= ' WHERE person_id = :id';
+            $this->db->prepare($sql)->execute($params);
+
+            $this->recordAdSourceId($pid, $guid, $actor);
+            $this->audit->log('person', $pid, 'update', $before,
+                ['username' => $username, 'email' => $email ?: $person['email'], 'username_locked' => 1], $actor);
+            $this->audit->lifecycle($pid, 'username_assigned',
+                ['summary' => "AD account {$username} linked (Employee List import) and locked."], $actor);
+            $this->activateIfPending($pid, (string) $person['status'], $actor);
+
+            return ['key' => 'applied', 'detail' => "username '{$username}' set + locked" . ($guid !== '' ? "; GUID linked" : '')];
+        } catch (\PDOException $e) {
+            if ((int) $e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
+                return ['key' => 'conflict', 'detail' => "unique conflict applying '{$username}' (already used)"];
+            }
+            throw $e;
+        }
+    }
+
+    /** Resolve a person by employee id (exact), then email, then username. */
+    private function findEmployeeListPerson(string $employeeId, string $email, string $username): ?array
+    {
+        $sel = 'SELECT person_id, username, email, username_locked, status FROM person ';
+        if ($employeeId !== '') {
+            $stmt = $this->db->prepare($sel . "WHERE employee_id = :e AND employee_id <> '' LIMIT 1");
+            $stmt->execute([':e' => $employeeId]);
+            if (($row = $stmt->fetch()) !== false) {
+                return $row;
+            }
+        }
+        if ($email !== '') {
+            $stmt = $this->db->prepare($sel . "WHERE email = :m AND email <> '' LIMIT 1");
+            $stmt->execute([':m' => $email]);
+            if (($row = $stmt->fetch()) !== false) {
+                return $row;
+            }
+        }
+        if ($username !== '') {
+            $stmt = $this->db->prepare($sel . "WHERE username = :u AND username <> '' LIMIT 1");
+            $stmt->execute([':u' => $username]);
+            if (($row = $stmt->fetch()) !== false) {
+                return $row;
+            }
+        }
+        return null;
     }
 
     /**

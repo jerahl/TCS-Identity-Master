@@ -100,10 +100,11 @@ final class AdaxesService
      * Verify a person's golden record against their live AD account.
      *
      * Lookup order: the AD objectGUID from the crosswalk (person_source_id where
-     * system='ad') is the stable key, so it wins; otherwise we search by any of
-     * sAMAccountName = username, mail = email, or employeeID = employee_id (an
-     * LDAP OR — any one matches). With neither a GUID nor any of those values
-     * there is nothing to compare against.
+     * system='ad') is tried first; if it doesn't resolve (the importers record an
+     * alias/uniqueId there rather than a true objectGUID), or none is on file, we
+     * search by any of sAMAccountName = username, mail = email, or
+     * employeeID = employee_id (an LDAP OR — any one matches). With neither a
+     * resolvable key nor any of those values there is nothing to compare against.
      *
      * @param array<string,mixed> $person     a person row (username, email, employee_id, upn, status, …)
      * @param array<int,array<string,mixed>> $sourceIds  person_source_id rows (system, source_key, is_active)
@@ -116,16 +117,30 @@ final class AdaxesService
         }
 
         $guid = self::adObjectGuid($sourceIds);
+        $res = null;
+        $by = null;
+        $identifier = null;
 
+        // Try the crosswalk key first. It is *meant* to be an objectGUID/DN, but
+        // the one-time importers record an alias/uniqueId there, so a clean
+        // not-found (vs. an outage) falls through to the attribute search below.
         if ($guid !== null) {
             $res = $this->getObject($guid);
-            $by = 'objectGUID';
-            $identifier = $guid;
-        } else {
+            if (!$res['ok']) {
+                return self::envelope(ok: false, configured: true, error: $res['error'], by: 'objectGUID', identifier: $guid);
+            }
+            if ($res['found']) {
+                $by = 'objectGUID';
+                $identifier = $guid;
+            }
+        }
+
+        if ($by === null) {
             $criteria = $this->searchCriteria($person);
             if ($criteria === []) {
-                // No AD key on file and no username/email/employee id — nothing to verify.
-                return self::envelope(ok: true, configured: true, found: false, error: null);
+                // Nothing left to try: a crosswalk key that didn't resolve, or no
+                // username/email/employee id to search on.
+                return self::envelope(ok: true, configured: true, found: false, by: $guid !== null ? 'objectGUID' : null, identifier: $guid);
             }
             $res = $this->searchByCriteria($criteria);
             $by = 'search';

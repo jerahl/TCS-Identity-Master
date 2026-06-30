@@ -518,16 +518,24 @@ by the PowerSchool id (`TEACHERS.ID`, our crosswalk key) — falling back to the
 NextGen Employee # — then sets + **locks** the username (and email) and records
 the AD id (`T`+`TEACHERS.ID`) in the crosswalk (`person_source_id` system `ad`).
 
-It auto-detects the file format from the headers, so you can feed it **either**:
+It auto-detects the file format from the headers, so you can feed it **any** of:
 - the **PowerSchool TEACHERS export** (the same `TeachersID.csv` used for the
   PowerSchool import): `TEACHERS.ID`, `TEACHERS.TeacherLoginID` (username),
-  `TEACHERS.Email_Addr` (email), `TEACHERS.TeacherNumber` (NextGen #); or
+  `TEACHERS.Email_Addr` (email), `TEACHERS.TeacherNumber` (NextGen #);
 - an **AD directory export**: `uniqueId` (`T`+`TEACHERS.ID`), `sAMAccountName`,
-  `mail`, `Employee ID`.
+  `mail`, `Employee ID`; or
+- an **Adaxes "Employee List" export**: `Logon Name (pre-Windows 2000)`
+  (= sAMAccountName), `Logon Name` (UPN), `Email`, `Employee ID`, `Object GUID`,
+  plus `Department`/`Parent`/`Name`. This file has no PowerSchool key, so it
+  matches each person by **Employee ID, then Email, then username**, sets +
+  **locks** the sAMAccountName as the username (refreshing email + UPN), and
+  records the **real `objectGUID`** in the crosswalk — which is exactly the key
+  the live Adaxes verification looks an account up by.
 
 ```sh
 php bin/import_ad_usernames.php --file=/var/idm/feeds/powerschool/TeachersID.csv --dry-run
 php bin/import_ad_usernames.php --file=/var/idm/feeds/powerschool/TeachersID.csv
+php bin/import_ad_usernames.php --file=/var/idm/ad/Employee_List.csv --dry-run
 ```
 
 Idempotent and safe: a username already locked to a different value is reported as

@@ -52,6 +52,23 @@ final class CsvDelimiterTest extends TestCase
         self::assertSame(['h1,h2'], Csv::splitLines("\xEF\xBB\xBFh1,h2"));
     }
 
+    public function testReadKeepsNewlinesInsideQuotedFields(): void
+    {
+        // An AD/Adaxes export with a trailing newline wrapped in a quoted field
+        // must stay one record, not split into a mangled second row.
+        $tmp = tempnam(sys_get_temp_dir(), 'idm_csv');
+        file_put_contents($tmp, "user,desc,guid\r\namay1,\"Bus Driver\n\",06f33027\r\namahan,Aide,2f40f20f\r\n");
+        $rows = Csv::read($tmp);
+        unlink($tmp);
+
+        self::assertCount(2, $rows);
+        self::assertSame('amay1', $rows[0]['user']);
+        self::assertSame('Bus Driver', $rows[0]['desc']); // trimmed; newline absorbed, not split
+        self::assertSame('06f33027', $rows[0]['guid']);
+        self::assertSame('amahan', $rows[1]['user']);
+        self::assertSame('2f40f20f', $rows[1]['guid']);
+    }
+
     public function testReadParsesBareCrLineEndings(): void
     {
         // PowerSchool-style export with bare CR endings — the regression that
