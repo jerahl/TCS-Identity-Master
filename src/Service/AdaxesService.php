@@ -175,17 +175,18 @@ final class AdaxesService
         $url = $this->baseUrl . '/' . $this->objectsPath . '/' . rawurlencode($idOrDn)
              . '?properties=' . rawurlencode(implode(',', $this->properties));
 
-        $resp = ($this->fetch)('GET', $url, $this->headers(), null);
-        $decoded = $this->decode($resp);
-        if (!$decoded['ok']) {
-            // A 404 here means the object id is stale (deleted/renamed), not an outage.
-            if (($resp['status'] ?? 0) === 404) {
+        $res = $this->request('GET', $url);
+        if (!$res['ok']) {
+            // A 404 here means the object id is stale (deleted/renamed) OR the path
+            // doesn't match this Adaxes version — either way fall through to the
+            // attribute search rather than erroring.
+            if ($res['status'] === 404) {
                 return ['ok' => true, 'error' => null, 'found' => false, 'attributes' => []];
             }
-            return ['ok' => false, 'error' => $decoded['error'], 'found' => false, 'attributes' => []];
+            return ['ok' => false, 'error' => $res['error'], 'found' => false, 'attributes' => []];
         }
 
-        return ['ok' => true, 'error' => null, 'found' => true, 'attributes' => self::normalizeProperties($decoded['data'])];
+        return ['ok' => true, 'error' => null, 'found' => true, 'attributes' => self::normalizeProperties($res['data'])];
     }
 
     /**
@@ -228,13 +229,17 @@ final class AdaxesService
              . '?filter=' . rawurlencode($filter)
              . '&properties=' . rawurlencode(implode(',', $this->properties));
 
-        $resp = ($this->fetch)('GET', $url, $this->headers(), null);
-        $decoded = $this->decode($resp);
-        if (!$decoded['ok']) {
-            return ['ok' => false, 'error' => $decoded['error'], 'found' => false, 'attributes' => []];
+        $res = $this->request('GET', $url);
+        if (!$res['ok']) {
+            // A 404 on the search endpoint almost always means the base URL or
+            // search path doesn't match this Adaxes version (vs. a real outage).
+            $error = $res['status'] === 404
+                ? $res['error'] . ' — check ADAXES_BASE_URL / ADAXES_SEARCH_PATH for your Adaxes version'
+                : $res['error'];
+            return ['ok' => false, 'error' => $error, 'found' => false, 'attributes' => []];
         }
 
-        $first = self::firstSearchHit($decoded['data']);
+        $first = self::firstSearchHit($res['data']);
         if ($first === null) {
             return ['ok' => true, 'error' => null, 'found' => false, 'attributes' => []];
         }
@@ -518,6 +523,54 @@ final class AdaxesService
             return ['ok' => false, 'error' => 'Adaxes returned invalid JSON.', 'data' => []];
         }
         return ['ok' => true, 'error' => null, 'data' => $data];
+    }
+
+    /**
+     * Perform a request and decode it, annotating any error with the method +
+     * URL path (no query string, so no PII) so a misconfigured endpoint is
+     * obvious, and writing an optional debug line. The Basic credentials live in
+     * a header, never the URL, so the path is safe to surface.
+     *
+     * @return array{ok:bool, error:?string, data:array<string,mixed>, status:int}
+     */
+    private function request(string $method, string $url, ?string $body = null): array
+    {
+        $resp = ($this->fetch)($method, $url, $this->headers(), $body);
+        $decoded = $this->decode($resp);
+        $status = $resp['status'] ?? 0;
+        if (!$decoded['ok'] && $status > 0 && $decoded['error'] !== null) {
+            $decoded['error'] .= ' [' . $method . ' ' . self::urlPath($url) . ']';
+        }
+        $this->debugLog($method, $url, $status, $resp === null ? null : (string) ($resp['body'] ?? ''));
+        $decoded['status'] = $status;
+        return $decoded;
+    }
+
+    /** The URL without its query string (drops the search filter / PII). */
+    private static function urlPath(string $url): string
+    {
+        $q = strpos($url, '?');
+        return $q === false ? $url : substr($url, 0, $q);
+    }
+
+    /**
+     * Append a request/response line to the Adaxes debug log when ADAXES_DEBUG is
+     * on. Logs the full URL + a response snippet so an operator can see exactly
+     * what was sent and returned. Never logs the Authorization header. NOTE: the
+     * snippet can contain directory data (PII) and the URL carries the search
+     * filter — enable only while troubleshooting, then turn it back off.
+     */
+    private function debugLog(string $method, string $url, int $status, ?string $body): void
+    {
+        if (!Config::bool('ADAXES_DEBUG', false)) {
+            return;
+        }
+        $path = (string) Config::get('ADAXES_LOG', '/var/idm/adaxes_debug.log');
+        $snippet = $body === null
+            ? '(no response — transport failure)'
+            : substr((string) preg_replace('/\s+/', ' ', $body), 0, 500);
+        $line = sprintf("[%s] %s %s -> HTTP %d | %s\n", gmdate('c'), $method, $url, $status, $snippet);
+        @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
     }
 
     /**

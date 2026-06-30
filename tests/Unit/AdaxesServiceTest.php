@@ -253,6 +253,20 @@ final class AdaxesServiceTest extends TestCase
         self::assertStringContainsString('credentials', (string) $res['error']);
     }
 
+    public function testSearch404SurfacesEndpointHintAndPath(): void
+    {
+        // No objectGUID → search; a 404 from the search endpoint should produce
+        // an actionable error naming the path and pointing at the config knobs.
+        $svc = $this->service(['status' => 404, 'body' => 'Not Found']);
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], []);
+
+        self::assertFalse($res['ok']);
+        self::assertStringContainsString('HTTP 404', (string) $res['error']);
+        self::assertStringContainsString('directorySearcher/search', (string) $res['error']); // the path that 404'd
+        self::assertStringContainsString('ADAXES_SEARCH_PATH', (string) $res['error']);        // how to fix it
+        self::assertStringNotContainsString('filter=', (string) $res['error']);                // no query/PII leaked
+    }
+
     public function testNormalizesMapShapeAndMultiValue(): void
     {
         // Map-form properties + a multi-valued attribute.
