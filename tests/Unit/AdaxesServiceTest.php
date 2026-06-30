@@ -313,6 +313,37 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('CN=John,OU=Faculty,DC=example,DC=org', $dn);
     }
 
+    public function testFoundResultSurfacesObjectGuidForLinking(): void
+    {
+        // A match found via search (no GUID on file) exposes the objectGUID so the
+        // caller can backfill the crosswalk.
+        $fetch = function (string $method, string $url, array $headers, ?string $body): ?array {
+            return ['status' => 200, 'body' => json_encode([
+                'objects' => [['properties' => [
+                    'objectGUID'     => '2b6160e2-ad91-419c-8960-cf672c75528f',
+                    'sAMAccountName' => 'jsmith',
+                ]]],
+            ])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], []); // no AD id → search
+        self::assertTrue($res['found']);
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $res['guid']);
+    }
+
+    public function testNonGuidObjectGuidValueIsIgnored(): void
+    {
+        // A malformed/binary objectGUID must not be surfaced (we'd store junk).
+        $svc = $this->service($this->objectResponse([
+            'objectGUID'     => 'not-a-guid',
+            'sAMAccountName' => 'jsmith',
+        ]));
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        self::assertTrue($res['found']);
+        self::assertNull($res['guid']);
+    }
+
     public function testConfiguredWithTokenOnly(): void
     {
         // A static token alone (no username/password) is enough to be configured.

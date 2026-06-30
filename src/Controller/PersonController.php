@@ -73,6 +73,14 @@ final class PersonController extends Controller
         // simply explains how to turn it on. The lookup only fires when enabled.
         $adaxes = $this->adaxes->verify($person, $sourceIds);
 
+        // Backfill: when the live match found an objectGUID we don't already hold
+        // (e.g. the account matched by username/email/employee id, or only the
+        // legacy "T#####" id was on file), link it into the crosswalk so future
+        // verifications resolve directly by GUID. Idempotent + audited; best-effort.
+        if (!empty($adaxes['found']) && !empty($adaxes['guid'])) {
+            $sourceIds = $this->linkAdGuid($id, (string) $adaxes['guid'], $sourceIds);
+        }
+
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
         $src = $this->people->latestSourceValues($id);
@@ -96,6 +104,35 @@ final class PersonController extends Controller
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
+    }
+
+    /**
+     * Link an AD objectGUID discovered by live verification into the crosswalk
+     * if the person doesn't already carry it. Idempotent and audited; never lets
+     * a write failure break the page. Returns the (possibly refreshed) sourceIds.
+     *
+     * @param array<int,array<string,mixed>> $sourceIds
+     * @return array<int,array<string,mixed>>
+     */
+    private function linkAdGuid(int $personId, string $guid, array $sourceIds): array
+    {
+        foreach ($sourceIds as $s) {
+            if (($s['system'] ?? '') === 'ad' && (string) ($s['source_key'] ?? '') === $guid) {
+                return $sourceIds; // already linked — nothing to do
+            }
+        }
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $audit = new AuditService($db);
+            (new PersonWriter($db, $audit))->attachSourceId($personId, 'ad', $guid, $this->currentUser()['name']);
+            $audit->lifecycle($personId, 'update',
+                ['summary' => "Linked AD account objectGUID {$guid} (matched via live verification)."],
+                $this->currentUser()['name']);
+            return $this->people->sourceIds($personId);
+        } catch (\Throwable $e) {
+            error_log('[idm] adaxes guid link: ' . $e->getMessage());
+            return $sourceIds;
+        }
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];

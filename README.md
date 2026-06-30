@@ -621,7 +621,10 @@ is the stable key and is tried first; if it doesn't resolve, the service POSTs a
 search (`{base}/api/directoryObjects/search`) matching **any** of
 `sAMAccountName = username`, `mail = email`, or `employeeID = employee_id`
 (an OR over `eq` conditions — any one matches; the employee-id attribute is
-configurable via `ADAXES_EMPLOYEE_ID_ATTR`). With neither a
+configurable via `ADAXES_EMPLOYEE_ID_ATTR`). When a match is found and its
+`objectGUID` isn't on file yet (matched by username/email/employee id, or only
+the legacy `T#####` id existed), the GUID is **linked back into the crosswalk**
+(idempotent + audited) so the next lookup resolves directly by GUID. With neither a
 resolvable key nor any of those values there is nothing to verify and the panel
 says so. The client uses a short timeout and **degrades gracefully** — an
 unreachable or misconfigured Adaxes shows a notice, never an error page

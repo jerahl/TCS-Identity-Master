@@ -28,7 +28,7 @@ use App\Config;
  * are configurable because they differ across Adaxes versions (current builds
  * serve under `…/restv2/`; older ones used `…/restApi/api/`).
  *
- * @phpstan-type Envelope array{ok:bool, error:?string, configured:bool, found:bool, by:?string, identifier:?string, attributes:array<string,string>, comparison:array<int,array{field:string,label:string,golden:string,ad:string,state:string}>}
+ * @phpstan-type Envelope array{ok:bool, error:?string, configured:bool, found:bool, by:?string, identifier:?string, attributes:array<string,string>, comparison:array<int,array{field:string,label:string,golden:string,ad:string,state:string}>, guid:?string}
  * @phpstan-type HttpResponse array{status:int, body:string}
  */
 final class AdaxesService
@@ -57,7 +57,7 @@ final class AdaxesService
 
     /** Default AD attributes pulled for the comparison panel. */
     private const DEFAULT_PROPERTIES = [
-        'sAMAccountName', 'userPrincipalName', 'mail', 'displayName',
+        'objectGUID', 'sAMAccountName', 'userPrincipalName', 'mail', 'displayName',
         'distinguishedName', 'accountDisabled', 'userAccountControl',
         'department', 'title', 'whenChanged',
     ];
@@ -184,6 +184,7 @@ final class AdaxesService
                 identifier: $identifier,
                 attributes: $res['attributes'],
                 comparison: self::compareToGolden($person, $res['attributes']),
+                guid: self::extractGuid($res['attributes']),
             );
         } finally {
             // Best-effort: if we minted a token via the handshake, terminate the
@@ -818,11 +819,26 @@ final class AdaxesService
         ?string $identifier = null,
         array $attributes = [],
         array $comparison = [],
+        ?string $guid = null,
     ): array {
         return [
             'ok' => $ok, 'error' => $error, 'configured' => $configured,
             'found' => $found, 'by' => $by, 'identifier' => $identifier,
-            'attributes' => $attributes, 'comparison' => $comparison,
+            'attributes' => $attributes, 'comparison' => $comparison, 'guid' => $guid,
         ];
+    }
+
+    /**
+     * Pull a normalized objectGUID out of the AD attributes, if present and
+     * well-formed. Tolerates the brace-wrapped form ({GUID}); returns null for a
+     * missing or non-GUID value so we never store junk in the crosswalk.
+     *
+     * @param array<string,string> $attrs
+     */
+    private static function extractGuid(array $attrs): ?string
+    {
+        $raw = trim((string) ($attrs['objectguid'] ?? ''));
+        $raw = trim($raw, '{}');
+        return preg_match('/^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/', $raw) ? $raw : null;
     }
 }
