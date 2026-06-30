@@ -44,8 +44,9 @@ final class AdaxesService
     private string $tokenPath;
     private string $employeeIdAttr;
 
-    /** Token resolved from the username/password handshake, cached per instance. */
+    /** Token + session resolved from the username/password handshake, per instance. */
     private ?string $resolvedToken = null;
+    private ?string $resolvedSessionId = null;
     private bool $authAttempted = false;
     private ?string $authError = null;
     /** @var list<string> */
@@ -132,53 +133,60 @@ final class AdaxesService
             return self::envelope(ok: false, configured: false, error: 'Adaxes is not configured (set ADAXES_BASE_URL and ADAXES_TOKEN, or ADAXES_USERNAME + ADAXES_PASSWORD).');
         }
 
-        $guid = self::adObjectGuid($sourceIds);
-        $res = null;
-        $by = null;
-        $identifier = null;
+        try {
+            $guid = self::adObjectGuid($sourceIds);
+            $res = null;
+            $by = null;
+            $identifier = null;
 
-        // Try the crosswalk key first. It is *meant* to be an objectGUID/DN, but
-        // the one-time importers record an alias/uniqueId there, so a clean
-        // not-found (vs. an outage) falls through to the attribute search below.
-        if ($guid !== null) {
-            $res = $this->getObject($guid);
+            // Try the crosswalk key first. It is *meant* to be an objectGUID/DN, but
+            // the one-time importers record an alias/uniqueId there, so a clean
+            // not-found (vs. an outage) falls through to the attribute search below.
+            if ($guid !== null) {
+                $res = $this->getObject($guid);
+                if (!$res['ok']) {
+                    return self::envelope(ok: false, configured: true, error: $res['error'], by: 'objectGUID', identifier: $guid);
+                }
+                if ($res['found']) {
+                    $by = 'objectGUID';
+                    $identifier = $guid;
+                }
+            }
+
+            if ($by === null) {
+                $criteria = $this->searchCriteria($person);
+                if ($criteria === []) {
+                    // Nothing left to try: a crosswalk key that didn't resolve, or no
+                    // username/email/employee id to search on.
+                    return self::envelope(ok: true, configured: true, found: false, by: $guid !== null ? 'objectGUID' : null, identifier: $guid);
+                }
+                $res = $this->searchByCriteria($criteria);
+                $by = 'search';
+                $identifier = self::criteriaSummary($criteria);
+            }
+
             if (!$res['ok']) {
-                return self::envelope(ok: false, configured: true, error: $res['error'], by: 'objectGUID', identifier: $guid);
+                return self::envelope(ok: false, configured: true, error: $res['error'], by: $by, identifier: $identifier);
             }
-            if ($res['found']) {
-                $by = 'objectGUID';
-                $identifier = $guid;
+            if (!$res['found']) {
+                return self::envelope(ok: true, configured: true, found: false, by: $by, identifier: $identifier);
             }
-        }
 
-        if ($by === null) {
-            $criteria = $this->searchCriteria($person);
-            if ($criteria === []) {
-                // Nothing left to try: a crosswalk key that didn't resolve, or no
-                // username/email/employee id to search on.
-                return self::envelope(ok: true, configured: true, found: false, by: $guid !== null ? 'objectGUID' : null, identifier: $guid);
-            }
-            $res = $this->searchByCriteria($criteria);
-            $by = 'search';
-            $identifier = self::criteriaSummary($criteria);
+            return self::envelope(
+                ok: true,
+                configured: true,
+                found: true,
+                by: $by,
+                identifier: $identifier,
+                attributes: $res['attributes'],
+                comparison: self::compareToGolden($person, $res['attributes']),
+            );
+        } finally {
+            // Best-effort: if we minted a token via the handshake, terminate the
+            // session + destroy the token so they don't linger until auto-expiry.
+            // A static ADAXES_TOKEN created no session, so this is a no-op.
+            $this->endSession();
         }
-
-        if (!$res['ok']) {
-            return self::envelope(ok: false, configured: true, error: $res['error'], by: $by, identifier: $identifier);
-        }
-        if (!$res['found']) {
-            return self::envelope(ok: true, configured: true, found: false, by: $by, identifier: $identifier);
-        }
-
-        return self::envelope(
-            ok: true,
-            configured: true,
-            found: true,
-            by: $by,
-            identifier: $identifier,
-            attributes: $res['attributes'],
-            comparison: self::compareToGolden($person, $res['attributes']),
-        );
     }
 
     /**
@@ -545,6 +553,7 @@ final class AdaxesService
             $this->authError = 'no sessionId in authSessions/create response';
             return null;
         }
+        $this->resolvedSessionId = $sessionId;
 
         // 2) Exchange the session for a security token.
         $tokUrl = $this->baseUrl . '/' . $this->tokenPath;
@@ -567,6 +576,40 @@ final class AdaxesService
     private static function jsonHeaders(): array
     {
         return ['Content-Type' => 'application/json', 'Accept' => 'application/json'];
+    }
+
+    /**
+     * Tear down a handshake-minted session + token (DELETE the token, then the
+     * session) so they don't linger until auto-expiry. Best-effort and idempotent
+     * — a static ADAXES_TOKEN minted no session, so this no-ops. Resets the
+     * cached auth so a later call re-authenticates cleanly. Token *renewal* (the
+     * PATCH in the SDK sample) is unnecessary here: each verification is a short
+     * single burst that finishes well within the token lifetime.
+     */
+    private function endSession(): void
+    {
+        if ($this->resolvedSessionId === null) {
+            return;
+        }
+        $sessionId = $this->resolvedSessionId;
+        $token = $this->resolvedToken;
+        // Reset first so we never double-clean and a re-entry re-handshakes.
+        $this->resolvedSessionId = null;
+        $this->resolvedToken = null;
+        $this->authAttempted = false;
+
+        try {
+            if ($token !== null) {
+                $tokUrl = $this->baseUrl . '/' . $this->tokenPath . '?token=' . rawurlencode($token);
+                ($this->fetch)('DELETE', $tokUrl, ['Adm-Authorization' => $token, 'Accept' => 'application/json'], null);
+            }
+            // The terminate endpoint is the sessions collection (sans "/create").
+            $sessionsPath = (string) preg_replace('#/create$#', '', $this->sessionPath);
+            $sessUrl = $this->baseUrl . '/' . $sessionsPath . '?id=' . rawurlencode($sessionId);
+            ($this->fetch)('DELETE', $sessUrl, ['Accept' => 'application/json'], null);
+        } catch (\Throwable) {
+            // Cleanup is best-effort; the session/token will auto-expire anyway.
+        }
     }
 
     /**

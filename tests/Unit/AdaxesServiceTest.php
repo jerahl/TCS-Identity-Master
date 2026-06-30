@@ -330,6 +330,12 @@ final class AdaxesServiceTest extends TestCase
         // The data request carries the obtained token; no credentials in its body.
         self::assertStringContainsString('/directoryObjects/guid-1', $calls[2]['url']);
         self::assertSame('TOK-XYZ', $calls[2]['headers']['Adm-Authorization']);
+
+        // Cleanup (best-effort): token destroyed, then session terminated.
+        $deletes = array_values(array_filter($calls, static fn($c) => $c['method'] === 'DELETE'));
+        self::assertCount(2, $deletes);
+        self::assertStringContainsString('/api/auth?token=TOK-XYZ', $deletes[0]['url']);
+        self::assertStringContainsString('/api/authSessions?id=SESS-1', $deletes[1]['url']);
     }
 
     public function testHandshakeFailureSurfacesAuthError(): void

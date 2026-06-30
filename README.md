@@ -595,7 +595,8 @@ Provide one of:
   cmdlet (recommended: fastest, no password stored, no per-request handshake); or
 - **`ADAXES_USERNAME` + `ADAXES_PASSWORD`** — the app runs the legacy handshake
   itself (POST `…/api/authSessions/create` → POST `…/api/auth`) to obtain a token
-  per verification. Handshake paths are overridable via `ADAXES_SESSION_PATH` /
+  per verification, then terminates the session + destroys the token afterward so
+  nothing lingers. Handshake paths are overridable via `ADAXES_SESSION_PATH` /
   `ADAXES_TOKEN_PATH` (defaults match Adaxes 2025.1).
 
 How a person is matched in AD: the AD `objectGUID` in the crosswalk
