@@ -87,7 +87,7 @@ final class AdaxesService
         // handshake paths), so the object/search paths carry the api/ prefix too.
         $this->objectsPath    = trim($objectsPath ?? (string) Config::get('ADAXES_OBJECTS_PATH', 'api/directoryObjects'), '/');
         $this->objectParam    = trim((string) Config::get('ADAXES_OBJECT_PARAM', 'directoryObject')) ?: 'directoryObject';
-        $this->searchPath     = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'api/directorySearcher/search'), '/');
+        $this->searchPath     = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'api/directoryObjects/search'), '/');
         $this->sessionPath    = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
         $this->tokenPath      = trim((string) Config::get('ADAXES_TOKEN_PATH', 'api/auth'), '/');
         $this->employeeIdAttr = trim($employeeIdAttr ?? (string) Config::get('ADAXES_EMPLOYEE_ID_ATTR', 'employeeID')) ?: 'employeeID';
@@ -239,28 +239,45 @@ final class AdaxesService
     }
 
     /**
-     * Run a directory search for an OR of the given attribute=value criteria and
-     * return the first hit. Best-effort fallback when no objectGUID is on file —
-     * the search path/shape varies by Adaxes version, hence ADAXES_SEARCH_PATH is
-     * configurable.
+     * Search for a user matching ANY of the given attribute=value criteria and
+     * return the first hit. The Adaxes search is a POST to {base}/api/
+     * directoryObjects/search with a structured criteria document — a group of
+     * "eq" conditions combined with OR (logicalOperator 2) so any one identifier
+     * matches. Best-effort fallback when no objectGUID is on file.
      *
      * @param array<int,array{attr:string,value:string}> $criteria  non-empty
      * @return array{ok:bool, error:?string, found:bool, attributes:array<string,string>}
      */
     public function searchByCriteria(array $criteria): array
     {
-        $clauses = '';
+        $conditions = [];
         foreach ($criteria as $c) {
-            $clauses .= '(' . $c['attr'] . '=' . self::escapeLdap($c['value']) . ')';
+            $conditions[] = [
+                'type'                 => 0,            // condition node
+                'property'             => $c['attr'],
+                'operator'             => 'eq',
+                'values'               => [['type' => 2, 'value' => $c['value']]],
+                'valueLogicalOperator' => 0,
+            ];
         }
-        // Single criterion needs no |; multiple are OR'd so any one matches.
-        $filter = count($criteria) > 1 ? '(|' . $clauses . ')' : $clauses;
 
-        $url = $this->baseUrl . '/' . $this->searchPath
-             . '?filter=' . rawurlencode($filter)
-             . '&properties=' . rawurlencode(implode(',', $this->properties));
+        $body = [
+            'criteria' => [
+                'objectTypes' => [[
+                    'type'  => 'User',
+                    'items' => [
+                        'type'            => 1,         // group node
+                        'items'           => $conditions,
+                        // 1 = AND, 2 = OR — OR so a match on any identifier counts.
+                        'logicalOperator' => count($conditions) > 1 ? 2 : 1,
+                    ],
+                ]],
+            ],
+            'select' => ['properties' => implode(',', $this->properties)],
+        ];
 
-        $res = $this->request('GET', $url);
+        $url = $this->baseUrl . '/' . $this->searchPath;
+        $res = $this->request('POST', $url, (string) json_encode($body));
         if (!$res['ok']) {
             // A 404 on the search endpoint almost always means the base URL or
             // search path doesn't match this Adaxes version (vs. a real outage).
@@ -514,14 +531,6 @@ final class AdaxesService
         return null;
     }
 
-    /** Escape the characters that are special inside an LDAP filter value (RFC 4515). */
-    private static function escapeLdap(string $value): string
-    {
-        return strtr($value, [
-            '\\' => '\\5c', '*' => '\\2a', '(' => '\\28', ')' => '\\29', "\0" => '\\00',
-        ]);
-    }
-
     /**
      * Resolve the security token sent as `Adm-Authorization`. A static
      * ADAXES_TOKEN wins; otherwise run the legacy two-step handshake with the
@@ -666,6 +675,9 @@ final class AdaxesService
             return ['ok' => false, 'error' => 'Adaxes authentication failed: ' . ($this->authError ?? 'unknown') . '.', 'data' => [], 'status' => 0];
         }
         $headers = ['Adm-Authorization' => $token, 'Accept' => 'application/json'];
+        if ($body !== null) {
+            $headers['Content-Type'] = 'application/json';
+        }
 
         $resp = ($this->fetch)($method, $url, $headers, $body);
         $decoded = $this->decode($resp);

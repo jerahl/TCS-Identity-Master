@@ -139,17 +139,14 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('match', $state);
     }
 
-    public function testFallsBackToSearchOnUsernameEmailAndEmployeeId(): void
+    public function testFallsBackToSearchPostsOrCriteriaOverAllThree(): void
     {
         $captured = null;
-        $response = ['status' => 200, 'body' => json_encode([
-            'objects' => [[
-                'properties' => ['sAMAccountName' => 'jsmith', 'mail' => 'jsmith@example.org'],
-            ]],
-        ])];
-        $fetch = function (string $method, string $url, array $headers, ?string $body) use ($response, &$captured): ?array {
-            $captured = ['url' => $url];
-            return $response;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+            $captured = ['method' => $method, 'url' => $url, 'headers' => $headers, 'body' => $body];
+            return ['status' => 200, 'body' => json_encode([
+                'objects' => [['properties' => ['sAMAccountName' => 'jsmith', 'mail' => 'jsmith@example.org']]],
+            ])];
         };
         $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
 
@@ -158,44 +155,51 @@ final class AdaxesServiceTest extends TestCase
 
         self::assertTrue($res['found']);
         self::assertSame('search', $res['by']);
-        self::assertStringContainsString('directorySearcher/search', $captured['url']);
+        // POST to the search endpoint with a JSON criteria body.
+        self::assertSame('POST', $captured['method']);
+        self::assertStringContainsString('/api/directoryObjects/search', $captured['url']);
+        self::assertSame('application/json', $captured['headers']['Content-Type']);
 
-        // The filter is an OR over all three attributes (URL-encoded).
-        $filter = urldecode($captured['url']);
-        self::assertStringContainsString('(|', $filter);
-        self::assertStringContainsString('(sAMAccountName=jsmith)', $filter);
-        self::assertStringContainsString('(mail=jsmith@example.org)', $filter);
-        self::assertStringContainsString('(employeeID=12345)', $filter);
+        $sent = json_decode((string) $captured['body'], true);
+        $group = $sent['criteria']['objectTypes'][0]['items'];
+        self::assertSame(2, $group['logicalOperator']); // OR across the three
+        $props = array_column($group['items'], 'property');
+        self::assertSame(['sAMAccountName', 'mail', 'employeeID'], $props);
+        self::assertSame('12345', $group['items'][2]['values'][0]['value']);
+        self::assertSame('eq', $group['items'][0]['operator']);
     }
 
-    public function testSearchByEmployeeIdAloneUsesNoOrWrapper(): void
+    public function testSingleCriterionUsesAndOperator(): void
     {
         $captured = null;
         $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
-            $captured = ['url' => $url];
+            $captured = ['body' => $body];
             return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith']]]])];
         };
         $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
 
-        // Only an employee id on file (no username/email yet).
+        // Only an employee id on file (no username/email yet) → one condition.
         $res = $svc->verify(['employee_id' => '12345', 'status' => 'active'], []);
         self::assertTrue($res['found']);
-        $filter = urldecode($captured['url']);
-        self::assertStringContainsString('(employeeID=12345)', $filter);
-        self::assertStringNotContainsString('(|', $filter); // single criterion → no OR
+        $group = json_decode((string) $captured['body'], true)['criteria']['objectTypes'][0]['items'];
+        self::assertCount(1, $group['items']);
+        self::assertSame('employeeID', $group['items'][0]['property']);
+        self::assertSame(1, $group['logicalOperator']); // single criterion → AND (no OR needed)
     }
 
     public function testEmployeeIdAttributeIsConfigurable(): void
     {
         $captured = null;
         $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
-            $captured = ['url' => $url];
+            $captured = ['body' => $body];
             return ['status' => 200, 'body' => json_encode(['objects' => []])];
         };
         // employeeNumber instead of the default employeeID.
         $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, 'employeeNumber', 'test-token');
         $svc->verify(['employee_id' => '777', 'status' => 'active'], []);
-        self::assertStringContainsString('(employeeNumber=777)', urldecode($captured['url']));
+        $group = json_decode((string) $captured['body'], true)['criteria']['objectTypes'][0]['items'];
+        self::assertSame('employeeNumber', $group['items'][0]['property']);
+        self::assertSame('777', $group['items'][0]['values'][0]['value']);
     }
 
     public function testNoKeyMeansNothingToVerify(): void
@@ -266,9 +270,8 @@ final class AdaxesServiceTest extends TestCase
 
         self::assertFalse($res['ok']);
         self::assertStringContainsString('HTTP 404', (string) $res['error']);
-        self::assertStringContainsString('directorySearcher/search', (string) $res['error']); // the path that 404'd
-        self::assertStringContainsString('ADAXES_SEARCH_PATH', (string) $res['error']);        // how to fix it
-        self::assertStringNotContainsString('filter=', (string) $res['error']);                // no query/PII leaked
+        self::assertStringContainsString('directoryObjects/search', (string) $res['error']); // the path that 404'd
+        self::assertStringContainsString('ADAXES_SEARCH_PATH', (string) $res['error']);       // how to fix it
     }
 
     public function test3xxSurfacesRedirectLocation(): void
