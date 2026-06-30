@@ -8,7 +8,9 @@ use App\Db;
 use App\Import\FieldMap;
 use App\Import\NormalizedRow;
 use App\Import\PersonWriter;
+use App\Service\AdaxesService;
 use App\Service\AuditService;
+use App\Service\PersonService;
 use App\Support\Csrf;
 use App\Config;
 use App\Sync\Destinations;
@@ -19,6 +21,14 @@ use App\Sync\Freshness;
  */
 final class PersonController extends Controller
 {
+    private AdaxesService $adaxes;
+
+    public function __construct(?PersonService $people = null, ?AdaxesService $adaxes = null)
+    {
+        parent::__construct($people);
+        $this->adaxes = $adaxes ?? new AdaxesService();
+    }
+
     public function index(): string
     {
         $filters = [
@@ -56,6 +66,12 @@ final class PersonController extends Controller
         }
 
         $assignments = $this->people->assignments($id);
+        $sourceIds = $this->people->sourceIds($id);
+
+        // Live AD verification (Adaxes REST). Read-only and config-gated — when
+        // ADAXES_* isn't set the service returns configured=false and the panel
+        // simply explains how to turn it on. The lookup only fires when enabled.
+        $adaxes = $this->adaxes->verify($person, $sourceIds);
 
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
@@ -68,7 +84,8 @@ final class PersonController extends Controller
 
         return $this->render('people/show', [
             'p'          => $person,
-            'sourceIds'  => $this->people->sourceIds($id),
+            'sourceIds'  => $sourceIds,
+            'adaxes'     => $adaxes,
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),

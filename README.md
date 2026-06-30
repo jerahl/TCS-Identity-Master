@@ -558,6 +558,37 @@ php bin/import_writeback.php --pending     # apply onesync_writeback rows (appli
 > defaults) — confirm OneSync's real usernames-file and export-log columns and
 > adjust the maps. The sample files are keyed to the demo people's UUIDs.
 
+## Active Directory verification (Adaxes REST API)
+
+The Provisioning panel shows what *OneSync reported* about each AD account. The
+**Active Directory (live)** panel on the person detail page shows what AD itself
+currently holds, fetched on demand from the [Adaxes REST API](https://www.adaxes.com/sdk/ApiDocumentation.RESTApi/)
+and compared field-by-field to the golden record — account enabled/disabled,
+`sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. It is a
+verification aid only: the app **reads** from AD via Adaxes and never writes,
+enables, or modifies anything.
+
+It is off until configured. Set the base URL and a **read-only** service account
+in `.env` (`ADAXES_*`, documented in `.env.example`):
+
+```sh
+ADAXES_BASE_URL=https://adaxes.example.org/restv2   # /restv2 on current builds; /restApi/api on older ones
+ADAXES_USERNAME=TCS\\svc-idm-read                   # Basic auth; grant Read only
+ADAXES_PASSWORD=…
+ADAXES_CA_FILE=/etc/ssl/certs/internal-ca.pem       # internal CA (keep TLS verification on)
+```
+
+How a person is matched in AD: the AD `objectGUID` in the crosswalk
+(`person_source_id` where `system='ad'`) is the stable key and wins; otherwise
+the service searches by `sAMAccountName = person.username`. With neither key (no
+GUID on file and no username minted yet) there is nothing to verify and the panel
+says so. The lookup uses HTTP Basic auth and a short timeout, and **degrades
+gracefully** — an unreachable or misconfigured Adaxes shows a notice, never an
+error page (`App\Service\AdaxesService`, unit-tested with an injected HTTP
+client). The request paths default to current Adaxes (`directoryObjects` /
+`directorySearcher/search`) and are overridable (`ADAXES_OBJECTS_PATH` /
+`ADAXES_SEARCH_PATH`) for other versions.
+
 ## Least-privilege DB users
 
 One database, four roles — never shared or reused. Replace passwords and host
