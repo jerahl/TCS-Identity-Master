@@ -229,21 +229,37 @@ CREATE TABLE match_candidate (
 -- ----------------------------------------------------------------------------
 
 -- The SINGLE source OneSync reads (read-only DB user). One row per person ->
--- one OneSync user per person. uniqueId = person_uuid (stable). Username starts
--- NULL so OneSync's BlankSAMAccountName rule mints it; thereafter it's set.
+-- one OneSync user per person. ID = person_uuid (stable). Username starts NULL so
+-- OneSync's BlankSAMAccountName rule mints it; thereafter it's set. Columns use
+-- OneSync's faculty-profile names (see migration 0009).
 CREATE OR REPLACE VIEW v_onesync_source AS
 SELECT
-  p.person_uuid                         AS uniqueId,
-  p.first_name                          AS First_Name,
-  p.last_name                           AS Last_Name,
-  p.preferred_name                      AS PreferredName,
-  p.email                               AS Email_Addr,
-  p.username                            AS TeacherLoginID,   -- NULL until minted
+  p.person_uuid                         AS ID,
+  (SELECT psi.source_key
+     FROM person_source_id psi
+    WHERE psi.person_id = p.person_id
+      AND psi.system    = 'powerschool'
+      AND psi.is_active = 1
+    ORDER BY psi.last_seen DESC, psi.id DESC
+    LIMIT 1)                            AS PSID,
+  (SELECT a.title
+     FROM assignment a
+    WHERE a.person_id  = p.person_id
+      AND a.is_primary = 1
+    ORDER BY a.id
+    LIMIT 1)                            AS `Job Code Desc`,
+  s.ps_school_id                        AS HomeSchoolID,
   p.employee_id                         AS TeacherNumber,
-  s.ps_school_id                        AS School_ID,
-  p.ethnicity_code                      AS Ethnicity,
-  CASE WHEN p.status IN ('active','pending') THEN 1 ELSE 0 END AS StatusActive,
-  p.person_type                         AS PersonType
+  p.email                               AS Email,
+  p.username                            AS username,          -- NULL until minted
+  (SELECT a.title
+     FROM assignment a
+    WHERE a.person_id  = p.person_id
+      AND a.is_primary = 1
+    ORDER BY a.id
+    LIMIT 1)                            AS Title,
+  p.first_name                          AS FirstName,
+  p.last_name                           AS LastName
 FROM person p
 LEFT JOIN school s ON s.school_id = p.primary_school_id
 WHERE p.status IN ('active','pending','disabled');  -- disabled kept so OneSync can disable, not orphan

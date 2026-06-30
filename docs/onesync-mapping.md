@@ -5,36 +5,37 @@ How OneSync reads from and writes back to the Identity Master database. OneSync
 provisioning status (success/failure + message) to three tables.
 
 - DB: MySQL/MariaDB, database `tcs_identity` (adjust to your deployment).
-- Stable key everywhere is **`person_uuid` (CHAR(36))**, surfaced to OneSync as
-  **`uniqueId`**. Use it as the OneSync `uniqueId` and as the join key on write-back.
+- Stable key everywhere is **`person_uuid` (CHAR(36))**, surfaced on the read view
+  as **`ID`**. Use it as the OneSync `uniqueId` and as the join key on write-back.
 
 ---
 
 ## 1. READ — source view: `v_onesync_source`  (read-only)
 
 Connect as the read-only user (`onesync_ro`). One row **per person**; the only
-object OneSync should read.
+object OneSync should read. The view exposes exactly the columns OneSync's
+faculty profile consumes, under OneSync's own names.
 
-| OneSync field      | View column      | Type        | Notes |
-|--------------------|------------------|-------------|-------|
-| `uniqueId`         | `uniqueId`       | CHAR(36)    | = `person_uuid`. The stable identity key. |
-| `First_Name`       | `First_Name`     | VARCHAR(80) | |
-| `Last_Name`        | `Last_Name`      | VARCHAR(80) | |
-| `PreferredName`    | `PreferredName`  | VARCHAR(80) | nullable |
-| `Email_Addr`       | `Email_Addr`     | VARCHAR(160)| nullable until assigned |
-| `TeacherLoginID`   | `TeacherLoginID` | VARCHAR(64) | = `username`. **NULL until minted** → fires OneSync's `BlankSAMAccountName` rule for new people. |
-| `TeacherNumber`    | `TeacherNumber`  | VARCHAR(40) | = `employee_id`, nullable (subs/contractors/interns may lack one) |
-| `School_ID`        | `School_ID`      | VARCHAR(20) | PowerSchool `SchoolID` of the **primary** assignment |
-| `Ethnicity`        | `Ethnicity`      | VARCHAR(10) | resolved ALSDE code |
-| `StatusActive`     | `StatusActive`   | 1 / 0       | 1 when status ∈ (active, pending) |
-| `PersonType`       | `PersonType`     | VARCHAR     | faculty / staff / contractor / sub / intern / other |
+| OneSync field    | View column      | Type        | Notes |
+|------------------|------------------|-------------|-------|
+| `ID`             | `ID`             | CHAR(36)    | = `person_uuid`. The stable identity key (the value used as `uniqueId` on write-back). |
+| `PSID`           | `PSID`           | VARCHAR(128)| active PowerSchool id from the crosswalk (`person_source_id`, `system='powerschool'`); nullable. |
+| `Job Code Desc`  | `Job Code Desc`  | VARCHAR(120)| **primary** assignment's `title`; nullable. (Column name contains a space — quote it.) |
+| `HomeSchoolID`   | `HomeSchoolID`   | VARCHAR(20) | PowerSchool `SchoolID` of the **primary** assignment. |
+| `TeacherNumber`  | `TeacherNumber`  | VARCHAR(40) | = `employee_id`, nullable (subs/contractors/interns may lack one). |
+| `Email`          | `Email`          | VARCHAR(160)| nullable until assigned. |
+| `username`       | `username`       | VARCHAR(64) | = `username`. **NULL until minted** → fires OneSync's `BlankSAMAccountName` rule for new people. |
+| `Title`          | `Title`          | VARCHAR(120)| same source as `Job Code Desc` (primary assignment `title`); exposed under both names. |
+| `FirstName`      | `FirstName`      | VARCHAR(80) | |
+| `LastName`       | `LastName`       | VARCHAR(80) | |
 
 Row filter: the view returns people with status ∈ (active, pending, disabled)
-— `disabled` are kept so OneSync can disable, not orphan, the account.
+— `disabled` are kept so OneSync can disable, not orphan, the account. (The view
+no longer carries a `StatusActive` flag.)
 
 ```sql
-SELECT uniqueId, First_Name, Last_Name, PreferredName, Email_Addr,
-       TeacherLoginID, TeacherNumber, School_ID, Ethnicity, StatusActive, PersonType
+SELECT ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber,
+       Email, username, Title, FirstName, LastName
 FROM v_onesync_source;
 ```
 

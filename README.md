@@ -471,7 +471,7 @@ curl -X POST https://idm.example.org/api/onesync/sync-status \
 
 Both write endpoints accept a single event **or** a JSON array (batch); a batch
 returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is the
-`v_onesync_source.uniqueId` (person UUID). Same guarantees as the CSV path below.
+`v_onesync_source.ID` (person UUID). Same guarantees as the CSV path below.
 
 Full reference: [`docs/onesync-api.md`](docs/onesync-api.md).
 

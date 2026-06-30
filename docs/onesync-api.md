@@ -8,7 +8,7 @@ to the CSV write-back importers: same effect, same guardrails, but real-time.
 - **Transport:** HTTPS, JSON in / JSON out.
 - **Auth:** a shared secret (no session, no CSRF).
 - **Identity:** every event references a person by `uniqueId` =
-  `v_onesync_source.uniqueId` (the person UUID OneSync read on the way in).
+  `v_onesync_source.ID` (the person UUID OneSync read on the way in).
 - **Backed by** the same code as the CSV importers, so the username-immutability
   and one-row-per-(person,destination) rules are identical.
 
@@ -57,7 +57,7 @@ Sets and **locks** the person's username (and email/UPN if supplied).
 
 | Field      | Required | Notes                                             |
 |------------|----------|---------------------------------------------------|
-| `uniqueId` | yes      | person UUID (`v_onesync_source.uniqueId`)         |
+| `uniqueId` | yes      | person UUID (`v_onesync_source.ID`)               |
 | `username` | yes      | the username OneSync assigned                     |
 | `email`    | no       | primary email                                     |
 | `upn`      | no       | userPrincipalName                                 |
