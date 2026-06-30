@@ -627,9 +627,10 @@ unreachable or misconfigured Adaxes shows a notice, never an error page
 (`App\Service\AdaxesService`, unit-tested with an injected HTTP client). Set
 `ADAXES_DEBUG=true` (logs to `ADAXES_LOG`) to record each request URL + response
 while troubleshooting (logs fall back to the PHP error log if the file path
-isn't writable). All REST endpoints live under `{base}/api`, so the object/search
-paths default to `api/directoryObjects` / `api/directorySearcher/search` and are
-overridable (`ADAXES_OBJECTS_PATH` / `ADAXES_SEARCH_PATH`).
+isn't writable). All REST endpoints live under `{base}/api`; the object lookup is
+`GET {base}/api/directoryObjects?directoryObject=<DN|GUID>&properties=…` (the id
+is a query parameter, not a path segment). Paths/param are overridable
+(`ADAXES_OBJECTS_PATH` / `ADAXES_OBJECT_PARAM` / `ADAXES_SEARCH_PATH`).
 
 ## Least-privilege DB users
 

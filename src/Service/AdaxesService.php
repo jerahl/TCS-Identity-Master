@@ -39,6 +39,7 @@ final class AdaxesService
     private string $token;
     private int $timeout;
     private string $objectsPath;
+    private string $objectParam;
     private string $searchPath;
     private string $sessionPath;
     private string $tokenPath;
@@ -85,6 +86,7 @@ final class AdaxesService
         // All Adaxes REST endpoints live under {base}/api (matching the auth
         // handshake paths), so the object/search paths carry the api/ prefix too.
         $this->objectsPath    = trim($objectsPath ?? (string) Config::get('ADAXES_OBJECTS_PATH', 'api/directoryObjects'), '/');
+        $this->objectParam    = trim((string) Config::get('ADAXES_OBJECT_PARAM', 'directoryObject')) ?: 'directoryObject';
         $this->searchPath     = trim($searchPath ?? (string) Config::get('ADAXES_SEARCH_PATH', 'api/directorySearcher/search'), '/');
         $this->sessionPath    = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
         $this->tokenPath      = trim((string) Config::get('ADAXES_TOKEN_PATH', 'api/auth'), '/');
@@ -198,8 +200,11 @@ final class AdaxesService
      */
     public function getObject(string $idOrDn): array
     {
-        $url = $this->baseUrl . '/' . $this->objectsPath . '/' . rawurlencode($idOrDn)
-             . '?properties=' . rawurlencode(implode(',', $this->properties));
+        // The object is identified by a query parameter (directoryObject=<DN|GUID>),
+        // not a path segment: GET {base}/api/directoryObjects?directoryObject=…&properties=…
+        $url = $this->baseUrl . '/' . $this->objectsPath
+             . '?' . $this->objectParam . '=' . rawurlencode($idOrDn)
+             . '&properties=' . rawurlencode(implode(',', $this->properties));
 
         $res = $this->request('GET', $url);
         if (!$res['ok']) {

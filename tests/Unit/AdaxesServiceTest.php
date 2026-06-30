@@ -70,9 +70,10 @@ final class AdaxesServiceTest extends TestCase
         self::assertTrue($res['found']);
         self::assertSame('objectGUID', $res['by']);
         self::assertSame('a1b2c3d4-guid', $res['identifier']);
-        // The GUID and requested properties ride in the URL; the security token
-        // rides in the Adm-Authorization header (Adaxes REST API's scheme).
-        self::assertStringContainsString('/directoryObjects/a1b2c3d4-guid', $captured['url']);
+        // The GUID rides in the directoryObject query param (not a path segment),
+        // and the token rides in the Adm-Authorization header.
+        self::assertStringContainsString('/api/directoryObjects?', $captured['url']);
+        self::assertStringContainsString('directoryObject=a1b2c3d4-guid', $captured['url']);
         self::assertStringContainsString('properties=', $captured['url']);
         self::assertSame('test-token', $captured['headers']['Adm-Authorization']);
         self::assertArrayNotHasKey('Authorization', $captured['headers']);
@@ -213,7 +214,7 @@ final class AdaxesServiceTest extends TestCase
         $urls = [];
         $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$urls): ?array {
             $urls[] = $url;
-            if (str_contains($url, '/directoryObjects/')) {
+            if (str_contains($url, 'directoryObject=')) {
                 return ['status' => 404, 'body' => 'not found'];
             }
             return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith', 'mail' => 'jsmith@example.org']]]])];
@@ -227,7 +228,7 @@ final class AdaxesServiceTest extends TestCase
         self::assertTrue($res['ok']);
         self::assertTrue($res['found']);
         self::assertSame('search', $res['by']); // matched via the fallback, not the GUID
-        self::assertStringContainsString('/directoryObjects/jsmith', $urls[0]); // tried the key first
+        self::assertStringContainsString('directoryObject=jsmith', $urls[0]); // tried the key first
     }
 
     public function testStaleKeyAndNoSearchCriteriaReportsNotFound(): void
@@ -344,7 +345,7 @@ final class AdaxesServiceTest extends TestCase
         self::assertStringContainsString('/api/auth', $calls[1]['url']);
         self::assertStringContainsString('"sessionId":"SESS-1"', (string) $calls[1]['body']);
         // The data request carries the obtained token; no credentials in its body.
-        self::assertStringContainsString('/directoryObjects/guid-1', $calls[2]['url']);
+        self::assertStringContainsString('directoryObject=guid-1', $calls[2]['url']);
         self::assertSame('TOK-XYZ', $calls[2]['headers']['Adm-Authorization']);
 
         // Cleanup (best-effort): token destroyed, then session terminated.
