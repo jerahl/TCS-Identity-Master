@@ -252,6 +252,80 @@ $eventTitle = [
     </table>
   </div>
 
+  <!-- Live Active Directory verification (Adaxes REST API) -->
+  <?php
+    $adConfigured = !empty($adaxes['configured']);
+    $adComparison = $adaxes['comparison'] ?? [];
+    $adDiffers = \App\Service\AdaxesService::diffCount($adComparison);
+    $adBy = $adaxes['by'] ?? null;
+    $adId = $adaxes['identifier'] ?? null;
+  ?>
+  <div class="panel" style="margin-top:18px;">
+    <div class="panel__head">
+      <h2 class="panel__title">Active Directory <span class="muted" style="font-weight:500;">(live)</span></h2>
+      <span class="panel__note">— queried from Adaxes vs the golden record</span>
+    </div>
+
+    <?php if (!$adConfigured): ?>
+      <div class="identity-note" style="margin-bottom:0;">
+        Live AD verification is <strong>off</strong>. Set <span class="mono">ADAXES_BASE_URL</span> plus a <span class="mono">ADAXES_TOKEN</span> (or <span class="mono">ADAXES_USERNAME</span> + <span class="mono">ADAXES_PASSWORD</span> for a read-only service account) to compare each account against Active Directory here.
+      </div>
+    <?php elseif (empty($adaxes['ok'])): ?>
+      <div class="identity-note" style="margin-bottom:0; color:#B42318;">
+        Could not reach Active Directory: <?= e((string) ($adaxes['error'] ?? 'unknown error')) ?>
+      </div>
+    <?php elseif (empty($adaxes['found'])): ?>
+      <div class="identity-note" style="margin-bottom:0; color:#B45309;">
+        <?php if ($adBy === null): ?>
+          No AD identifier on file and no username/email/employee&nbsp;ID to search on, so there is no account to verify.
+        <?php elseif ($adBy === 'objectGUID'): ?>
+          No Active Directory account matched this person (looked up by <span class="mono">objectGUID</span> = <span class="mono"><?= e((string) $adId) ?></span>).
+        <?php else: ?>
+          No Active Directory account matched this person (searched <span class="mono"><?= e((string) $adId) ?></span>).
+        <?php endif; ?>
+      </div>
+    <?php else: ?>
+      <?php if ($adDiffers > 0): ?>
+        <div class="identity-note" style="margin-bottom:14px; color:#B42318;">
+          <strong><?= e((string) $adDiffers) ?></strong> field<?= $adDiffers === 1 ? '' : 's' ?> differ between the golden record and Active Directory — review before the next OneSync run.
+        </div>
+      <?php else: ?>
+        <div class="identity-note" style="margin-bottom:14px; color:#1F7A3D;">
+          The golden record and Active Directory agree on every comparable field.
+        </div>
+      <?php endif; ?>
+      <p class="panel__note" style="margin:0 0 12px;">
+        <?php if ($adBy === 'objectGUID'): ?>
+          Matched by <span class="mono">objectGUID</span> = <span class="mono"><?= e((string) $adId) ?></span>.
+        <?php else: ?>
+          Matched by directory search (<span class="mono"><?= e((string) $adId) ?></span>).
+        <?php endif; ?>
+      </p>
+
+      <table class="assign-table">
+        <thead><tr><th>Field</th><th>Golden record</th><th>Active Directory</th><th>Verify</th></tr></thead>
+        <tbody>
+          <?php foreach ($adComparison as $f):
+              $isDiff = in_array($f['state'], ['differ', 'missing'], true);
+              $v = $verdict[$f['state']] ?? null; ?>
+          <tr<?= $isDiff ? ' style="background:#FFF8F7;"' : '' ?>>
+            <td><span style="color:#22343F; font-weight:500;"><?= e($f['label']) ?></span></td>
+            <td><?= $f['golden'] === '' ? '<span class="value-missing">—</span>' : e($f['golden']) ?></td>
+            <td><?= $f['ad'] === '' ? '<span class="value-missing">—</span>' : e($f['ad']) ?></td>
+            <td>
+              <?php if ($v !== null): ?>
+                <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; color:<?= e($v[0]) ?>; background:<?= e($v[1]) ?>;"><?= e($v[2]) ?></span>
+              <?php else: ?>
+                <span class="value-missing">—</span>
+              <?php endif; ?>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    <?php endif; ?>
+  </div>
+
   <!-- Lifecycle & audit -->
   <div class="panel" style="margin-top:18px;">
     <h2 class="panel__title" style="margin-bottom:16px;">Lifecycle &amp; audit</h2>

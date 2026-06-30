@@ -8,7 +8,9 @@ use App\Db;
 use App\Import\FieldMap;
 use App\Import\NormalizedRow;
 use App\Import\PersonWriter;
+use App\Service\AdaxesService;
 use App\Service\AuditService;
+use App\Service\PersonService;
 use App\Support\Csrf;
 use App\Config;
 use App\Sync\Destinations;
@@ -19,6 +21,14 @@ use App\Sync\Freshness;
  */
 final class PersonController extends Controller
 {
+    private AdaxesService $adaxes;
+
+    public function __construct(?PersonService $people = null, ?AdaxesService $adaxes = null)
+    {
+        parent::__construct($people);
+        $this->adaxes = $adaxes ?? new AdaxesService();
+    }
+
     public function index(): string
     {
         $filters = [
@@ -56,6 +66,21 @@ final class PersonController extends Controller
         }
 
         $assignments = $this->people->assignments($id);
+        $sourceIds = $this->people->sourceIds($id);
+
+        // Live AD verification (Adaxes REST). Read-only and config-gated — when
+        // ADAXES_* isn't set the service returns configured=false and the panel
+        // simply explains how to turn it on. The lookup only fires when enabled.
+        $adaxes = $this->adaxes->verify($person, $sourceIds);
+
+        // Backfill from the live match: record the objectGUID and fill the
+        // username (locked) / email / UPN where the golden record is empty, so
+        // future lookups resolve by GUID and the record reflects the real AD
+        // account. Only fires when something is actually missing; idempotent,
+        // audited, best-effort (never breaks the page).
+        if (!empty($adaxes['found']) && $this->needsAdBackfill($person, $sourceIds, $adaxes)) {
+            [$person, $sourceIds] = $this->backfillFromAd($id, $adaxes, $person, $sourceIds);
+        }
 
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
@@ -68,7 +93,8 @@ final class PersonController extends Controller
 
         return $this->render('people/show', [
             'p'          => $person,
-            'sourceIds'  => $this->people->sourceIds($id),
+            'sourceIds'  => $sourceIds,
+            'adaxes'     => $adaxes,
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
@@ -79,6 +105,61 @@ final class PersonController extends Controller
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
+    }
+
+    /**
+     * Is there anything to backfill from the matched AD account — a GUID we don't
+     * hold, or an empty username/email on the golden record?
+     *
+     * @param array<string,mixed> $person
+     * @param array<int,array<string,mixed>> $sourceIds
+     * @param array<string,mixed> $adaxes
+     */
+    private function needsAdBackfill(array $person, array $sourceIds, array $adaxes): bool
+    {
+        $guid = (string) ($adaxes['guid'] ?? '');
+        if ($guid !== '') {
+            $haveGuid = false;
+            foreach ($sourceIds as $s) {
+                if (($s['system'] ?? '') === 'ad' && (string) ($s['source_key'] ?? '') === $guid) {
+                    $haveGuid = true;
+                    break;
+                }
+            }
+            if (!$haveGuid) {
+                return true;
+            }
+        }
+        return trim((string) ($person['username'] ?? '')) === ''
+            || trim((string) ($person['email'] ?? '')) === '';
+    }
+
+    /**
+     * Record the matched AD account's objectGUID + fill empty username/email/UPN
+     * on the golden record (PersonWriter::linkAdAccount). Idempotent and audited;
+     * a write failure is logged and never breaks the page. Returns the refreshed
+     * [person, sourceIds].
+     *
+     * @param array<string,mixed> $person
+     * @param array<int,array<string,mixed>> $sourceIds
+     * @return array{0:array<string,mixed>, 1:array<int,array<string,mixed>>}
+     */
+    private function backfillFromAd(int $personId, array $adaxes, array $person, array $sourceIds): array
+    {
+        try {
+            $attrs = $adaxes['attributes'] ?? [];
+            $db = Db::connect(Db::ROLE_APP);
+            (new PersonWriter($db, new AuditService($db)))->linkAdAccount($personId, [
+                'guid'     => $adaxes['guid'] ?? null,
+                'username' => $attrs['samaccountname'] ?? null,
+                'email'    => $attrs['mail'] ?? null,
+                'upn'      => $attrs['userprincipalname'] ?? null,
+            ], $this->currentUser()['name']);
+            return [$this->people->find($personId) ?? $person, $this->people->sourceIds($personId)];
+        } catch (\Throwable $e) {
+            error_log('[idm] adaxes backfill: ' . $e->getMessage());
+            return [$person, $sourceIds];
+        }
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];

@@ -3,6 +3,29 @@
 systemd units for the scheduled jobs. Adjust `WorkingDirectory`, `User`, the PHP
 path, and the `OnCalendar` time to your install before enabling.
 
+## Adaxes API token (`New-AdaxesApiToken.ps1`)
+
+PowerShell helper to mint the `ADAXES_TOKEN` used by the live AD verification
+panel. Run it on a **Windows host that can reach the Adaxes REST API** (it uses
+only `Invoke-RestMethod` — no Adaxes module needed), supplying a **read-only**
+service account. It runs the 2025.1 auth handshake (`/api/authSessions/create`
+→ `/api/auth`) and prints the token.
+
+```powershell
+# Print the token
+.\New-AdaxesApiToken.ps1 -BaseUrl https://adaxes.tusc.k12.al.us/restApi -Username 'TCS\svc-idm-read'
+
+# …and upsert ADAXES_TOKEN= straight into the app .env
+.\New-AdaxesApiToken.ps1 -BaseUrl https://adaxes.tusc.k12.al.us/restApi `
+    -Username 'svc-idm-read@tusc.k12.al.us' -UpdateEnvFile \\app-host\idm\.env
+```
+
+A REST-issued token only lives as long as the Adaxes REST API auth timeout
+(~30 min by default), so this is best for testing. For a permanent setting,
+raise that timeout in Adaxes, use `New-AdmAccountToken` on 2026.1+, or run the
+app in `ADAXES_USERNAME`/`ADAXES_PASSWORD` mode (it handles tokens per request).
+`-SkipCertificateCheck` bypasses TLS for an internal CA (prefer trusting the CA).
+
 ## OneSync DB result importer
 
 Pulls per-destination provisioning status + failure messages from OneSync's

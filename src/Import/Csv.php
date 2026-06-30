@@ -23,17 +23,30 @@ final class Csv
             throw new RuntimeException("Cannot open CSV: {$path}");
         }
 
-        $lines = self::splitLines($content);
-        if ($lines === []) {
+        // Normalize all line endings to LF (handles bare-CR / CRLF exports; PHP
+        // dropped auto_detect_line_endings) and strip a leading BOM, then parse
+        // with fgetcsv so a newline *inside* a quoted field — some AD/Adaxes
+        // exports wrap a trailing newline in Description — stays part of that
+        // field instead of desyncing the record (which splitLines + str_getcsv
+        // per physical line could not do).
+        $content = preg_replace('/\r\n|\r/', "\n", self::stripBom($content)) ?? '';
+        if (trim($content) === '') {
             return [];
         }
-        $delim = self::detectDelimiter($lines[0]);
-        $header = array_map(static fn($h) => trim((string) $h), str_getcsv(self::stripBom($lines[0]), $delim, '"', '\\'));
+        $delim = self::detectDelimiter(substr($content, 0, strcspn($content, "\n")));
 
+        $fh = fopen('php://temp', 'r+');
+        fwrite($fh, $content);
+        rewind($fh);
+
+        $header = null;
         $rows = [];
-        foreach (array_slice($lines, 1) as $line) {
-            $cols = str_getcsv($line, $delim, '"', '\\');
+        while (($cols = fgetcsv($fh, 0, $delim, '"', '\\')) !== false) {
             if ($cols === [null] || (count($cols) === 1 && trim((string) ($cols[0] ?? '')) === '')) {
+                continue; // blank line
+            }
+            if ($header === null) {
+                $header = array_map(static fn($h) => trim((string) $h), $cols);
                 continue;
             }
             $row = [];
@@ -42,6 +55,7 @@ final class Csv
             }
             $rows[] = $row;
         }
+        fclose($fh);
         return $rows;
     }
 

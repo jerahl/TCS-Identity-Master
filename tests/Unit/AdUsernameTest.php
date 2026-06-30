@@ -29,5 +29,10 @@ final class AdUsernameTest extends TestCase
     {
         self::assertSame('teachers', AdUsernameImporter::detectFormat(['TEACHERS.ID' => '8422', 'TEACHERS.TeacherLoginID' => 'kabraham']));
         self::assertSame('ad', AdUsernameImporter::detectFormat(['uniqueId' => 'T8422', 'sAMAccountName' => 'kabraham']));
+        // Adaxes "Employee List" export: detected by Object GUID / pre-Win2000 logon.
+        self::assertSame('employee_list', AdUsernameImporter::detectFormat([
+            'First name' => 'A', 'Email' => 'a@x.org', 'Logon Name (pre-Windows 2000)' => 'a',
+            'Employee ID' => '1', 'Object GUID' => '06f33027-ef8e-4bf2-89ed-661b51fbb4bd', 'Name' => 'A B',
+        ]));
     }
 }

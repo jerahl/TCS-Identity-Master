@@ -3,20 +3,27 @@
 declare(strict_types=1);
 
 /**
- * ONE-TIME: link existing AD usernames to the golden record.
+ * ONE-TIME: link existing AD accounts to the golden record.
  *
  *   php bin/import_ad_usernames.php --file=/var/idm/feeds/powerschool/TeachersID.csv --dry-run
  *   php bin/import_ad_usernames.php --file=/var/idm/onesync/ad_export.csv
+ *   php bin/import_ad_usernames.php --file=/var/idm/ad/Employee_List.csv --dry-run
  *
- * Accepts either file (auto-detected from the headers):
+ * Accepts any of these files (auto-detected from the headers):
  *  - PowerSchool TEACHERS export: TEACHERS.ID (PS key), TEACHERS.TeacherLoginID
  *    (username), TEACHERS.Email_Addr (email), TEACHERS.TeacherNumber (NextGen #).
  *  - AD directory export: uniqueId ("T"+TEACHERS.ID), sAMAccountName, mail,
  *    Employee ID.
+ *    For both of the above: matches on the PS id (TEACHERS.ID, or AD uniqueId
+ *    with the leading "T" stripped), falling back to the Employee ID, then sets
+ *    + LOCKS the username (and email).
+ *  - Adaxes "Employee List" export: First name, Last name, Email, Logon Name
+ *    (UPN), Logon Name (pre-Windows 2000) (= sAMAccountName), Employee ID,
+ *    Object GUID, Department, Parent, Name. Matches on Employee ID, then Email,
+ *    then username, and sets + LOCKS the sAMAccountName as the username
+ *    (refreshing email + UPN) and records the real objectGUID in the crosswalk.
  *
- * Matches on the PS id (TEACHERS.ID, or AD uniqueId with the leading "T"
- * stripped), falling back to the Employee ID / TeacherNumber, then sets + LOCKS
- * the username (and email). Idempotent; never overwrites a locked username.
+ * Idempotent; never overwrites a locked username. Writes nothing on --dry-run.
  */
 
 use App\Import\AdUsernameImporter;
@@ -45,7 +52,7 @@ try {
     exit(1);
 }
 
-echo 'AD username link' . ($dryRun ? " (DRY RUN)\n" : "\n");
+echo 'AD account link [' . ($result['format'] ?? 'ad') . ']' . ($dryRun ? " (DRY RUN)\n" : "\n");
 foreach ($result['outcomes'] as $o) {
     printf("  [%-9s] %-22s %s\n", strtoupper($o['outcome']), $o['username'] !== '' ? $o['username'] : $o['uniqueId'], $o['detail']);
 }
