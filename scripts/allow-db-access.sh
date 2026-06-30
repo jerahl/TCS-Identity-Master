@@ -166,10 +166,11 @@ if [ "${TIGHTEN_DB_GRANTS}" = "1" ]; then
                 mariadb <<SQL
 CREATE USER IF NOT EXISTS '${OS_USER}'@'${host}' IDENTIFIED BY '${OS_PASS}';
 ALTER USER '${OS_USER}'@'${host}' IDENTIFIED BY '${OS_PASS}';
-GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source TO '${OS_USER}'@'${host}';
+GRANT SELECT ON \`${DB_NAME}\`.v_onesync_source         TO '${OS_USER}'@'${host}';
+GRANT SELECT ON \`${DB_NAME}\`.v_onesync_student_source TO '${OS_USER}'@'${host}';
 FLUSH PRIVILEGES;
 SQL
-                log "Granted ${OS_USER}@'${host}' SELECT on ${DB_NAME}.v_onesync_source"
+                log "Granted ${OS_USER}@'${host}' SELECT on ${DB_NAME}.v_onesync_source + v_onesync_student_source"
             done
 
             if [ "${DROP_WILDCARD_GRANT}" = "1" ]; then
