@@ -121,6 +121,8 @@ final class Importer
 
         $counts = ['total' => 0, 'auto_match' => 0, 'new' => 0, 'needs_review' => 0, 'skipped' => 0, 'errors' => 0, 'unmapped' => 0];
         $outcomes = [];
+        /** @var array<string,bool> source keys present in this feed (for drop-out tracking) */
+        $seenSourceKeys = [];
 
         foreach ($dataLines as $line) {
             $cols = str_getcsv($line, $delim, '"', '\\');
@@ -144,6 +146,9 @@ final class Importer
             try {
                 $row = $normalizer->normalize($raw, $system, $map, $source->crosswalkSystem, $source->aliasSystem, $source->personType);
                 $counts['unmapped'] += count($row->warnings);
+                if ($row->sourceKey !== '') {
+                    $seenSourceKeys[$row->sourceKey] = true; // present in this feed
+                }
 
                 $decision = $this->isExcludedAccount($row)
                     ? new MatchDecision(MatchDecision::SKIPPED, null, 0.0, 'excluded',
@@ -170,11 +175,52 @@ final class Importer
             }
         }
 
+        // A run with rows but nothing matched/created/queued is 'failed' (likely a
+        // bad feed) — drop-out tracking is skipped for it so a broken feed can't
+        // mass-deactivate crosswalk ids.
+        $status = ($counts['total'] > 0 && $counts['auto_match'] + $counts['new'] + $counts['needs_review'] === 0)
+            ? 'failed' : 'complete';
+
+        // Full-feed drop-out tracking (NextGen only): flag the crosswalk ids that
+        // were active but absent from this run, so people who left the HR feed
+        // surface on the dashboard for disabling. See PersonWriter for the safety
+        // valve against truncated feeds. Never changes person.status.
+        $counts['dropped_out'] = 0;
+        if ($source->crosswalkSystem === 'nextgen' && $status === 'complete' && $seenSourceKeys !== []) {
+            $maxRatio = (float) Config::get('NEXTGEN_DROPOUT_MAX_RATIO', '0.2');
+            if ($dryRun) {
+                $drop = $this->writer->deactivateMissingSourceIds('nextgen', $seenSourceKeys, $actor, false, $maxRatio);
+            } else {
+                $this->db->beginTransaction();
+                try {
+                    $drop = $this->writer->deactivateMissingSourceIds('nextgen', $seenSourceKeys, $actor, true, $maxRatio);
+                    $this->db->commit();
+                } catch (\Throwable $e) {
+                    if ($this->db->inTransaction()) {
+                        $this->db->rollBack();
+                    }
+                    throw $e;
+                }
+            }
+            $counts['dropped_out'] = $drop['deactivated'];
+            if ($drop['blocked']) {
+                $counts['dropout_blocked'] = 1;
+                error_log(sprintf(
+                    '[idm] import %s: drop-out BLOCKED — %d of %d active nextgen ids (%.0f%%) would deactivate, over NEXTGEN_DROPOUT_MAX_RATIO=%.2f. Feed truncated? Nothing deactivated.',
+                    $sourceKey, $drop['candidates'], $drop['active'], 100 * $drop['candidates'] / max(1, $drop['active']), $maxRatio
+                ));
+            }
+        }
+
         if (!$dryRun) {
-            $status = ($counts['total'] > 0 && $counts['auto_match'] + $counts['new'] + $counts['needs_review'] === 0)
-                ? 'failed' : 'complete';
             $msg = sprintf('auto %d · new %d · review %d · skipped %d · errors %d · unmapped %d',
                 $counts['auto_match'], $counts['new'], $counts['needs_review'], $counts['skipped'], $counts['errors'], $counts['unmapped']);
+            if ($counts['dropped_out'] > 0) {
+                $msg .= ' · dropped-out ' . $counts['dropped_out'];
+            }
+            if (!empty($counts['dropout_blocked'])) {
+                $msg .= ' · drop-out BLOCKED (feed truncated?)';
+            }
             $this->db->prepare(
                 'UPDATE import_batch SET finished_at = CURRENT_TIMESTAMP, row_count = :n, status = :status, message = :msg WHERE batch_id = :id'
             )->execute([':n' => $counts['total'], ':status' => $status, ':msg' => $msg, ':id' => $batchId]);

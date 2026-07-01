@@ -423,6 +423,17 @@ changes, and all data mutations are written to `audit_log`.
   disabled automatically. The same list is available on the CLI via
   `php bin/flag_disable_candidates.php` (exit code 1 when any are flagged, so a
   cron/monitor can alert).
+
+**Staff drop-out tracking.** The NextGen import is a full-roster feed, so a
+person whose crosswalk id was active but is **absent from a completed import** is
+flagged not-in-NextGen (`person_source_id.is_active = 0`, audited + on the
+timeline) — mirroring the student drop-out logic. This is what lets a former
+NextGen employee reach the "Not in NextGen — past exit date" panel above. It
+never changes `person.status` (disabling stays a human decision), and a returning
+employee is re-linked (not duplicated) on their next feed. A safety valve
+(`NEXTGEN_DROPOUT_MAX_RATIO`, default 0.2) **blocks** the step if a suspiciously
+large share would drop at once — the likely sign of a truncated feed — and logs
+it instead of deactivating.
 - **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
   ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
   **unmapped values surfaced** — ethnicity values seen on records and school codes
