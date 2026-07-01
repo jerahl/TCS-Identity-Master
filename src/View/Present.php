@@ -96,4 +96,20 @@ final class Present
             default        => [ucfirst($status), 'muted'],
         };
     }
+
+    /**
+     * Label + modifier for a dry-run outcome (Importer action key). Phrased in the
+     * conditional — nothing is written on a dry run, this is what WOULD happen.
+     */
+    public static function dryRunOutcome(string $action): array
+    {
+        return match ($action) {
+            'auto_match'   => ['Would update existing', 'ok'],
+            'new'          => ['Would create new', 'info'],
+            'needs_review' => ['Would queue for review', 'warn'],
+            'skipped'      => ['No change', 'muted'],
+            'error'        => ['Error — row skipped', 'fail'],
+            default        => [ucfirst($action), 'muted'],
+        };
+    }
 }

@@ -276,8 +276,36 @@ final class PersonWriter
             return false;
         }
 
-        // logical column => incoming value (null = leave as-is unless required).
-        $candidates = [
+        $changes = self::diffHrFields($before, $row);
+        if ($changes === []) {
+            return false;
+        }
+
+        $set = [];
+        $params = [];
+        foreach ($changes as $c) {
+            $set[] = "{$c['field']} = :{$c['field']}";
+            $params[":{$c['field']}"] = $c['to'];
+        }
+
+        $params[':id'] = $personId;
+        $params[':actor'] = $actor;
+        $sql = 'UPDATE person SET ' . implode(', ', $set) . ', updated_by = :actor WHERE person_id = :id';
+        $this->db->prepare($sql)->execute($params);
+
+        $after = $this->snapshot($personId);
+        $this->audit->log('person', $personId, 'update', $before, $after, $actor);
+        $this->audit->lifecycle($personId, 'update', ['summary' => 'Demographics updated from ' . $row->system . ' feed'], $actor);
+        return true;
+    }
+
+    /** HR-owned columns updateHrFields() may write; null-required fields are always considered. */
+    private const HR_REQUIRED = ['first_name', 'last_name'];
+
+    /** Incoming HR values keyed by golden-record column (matches updateHrFields). */
+    private static function hrCandidates(NormalizedRow $row): array
+    {
+        return [
             'first_name' => $row->firstName,
             'last_name' => $row->lastName,
             'middle_name' => $row->middleName,
@@ -303,33 +331,145 @@ final class PersonWriter
             'zip_code' => $row->zipCode,
             'person_type' => $row->personType,
         ];
-        $required = ['first_name', 'last_name'];
+    }
 
-        $set = [];
-        $params = [];
-        foreach ($candidates as $col => $val) {
-            if ($val === null && !in_array($col, $required, true)) {
-                continue;
+    /**
+     * Pure diff: the HR fields that would change moving from a person snapshot
+     * `$before` to the incoming `$row`, applying the same "never blank out an
+     * existing value, only write when different" rules as updateHrFields(). Shared
+     * by the real write and the dry-run preview so they can never disagree.
+     *
+     * @param array<string,mixed> $before a person snapshot (snapshot())
+     * @return list<array{field:string,from:?string,to:?string}>
+     */
+    public static function diffHrFields(array $before, NormalizedRow $row): array
+    {
+        $changes = [];
+        foreach (self::hrCandidates($row) as $col => $val) {
+            if ($val === null && !in_array($col, self::HR_REQUIRED, true)) {
+                continue; // feed didn't provide it — leave as-is
             }
             if ((string) ($before[$col] ?? '') === (string) ($val ?? '')) {
                 continue; // unchanged
             }
-            $set[] = "{$col} = :{$col}";
-            $params[":{$col}"] = $val;
+            $changes[] = [
+                'field' => $col,
+                'from'  => isset($before[$col]) ? (string) $before[$col] : null,
+                'to'    => $val,
+            ];
         }
-        if ($set === []) {
-            return false;
+        return $changes;
+    }
+
+    /**
+     * Read-only: the HR-field changes updateHrFields() would apply to $personId
+     * from $row, without writing. Empty when the person is unknown or unchanged.
+     *
+     * @return list<array{field:string,from:?string,to:?string}>
+     */
+    public function previewHrChanges(int $personId, NormalizedRow $row): array
+    {
+        $before = $this->snapshot($personId);
+        return $before === null ? [] : self::diffHrFields($before, $row);
+    }
+
+    /** True if a (system, source_key) crosswalk row already exists (so no new link would be made). */
+    public function hasSourceId(string $system, string $sourceKey): bool
+    {
+        return $this->findSourceId($system, $sourceKey) !== null;
+    }
+
+    /** Display label for a person: id + name + employee id, or null if unknown. */
+    public function personLabel(int $personId): ?array
+    {
+        $stmt = $this->db->prepare('SELECT first_name, last_name, employee_id FROM person WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        $r = $stmt->fetch();
+        if ($r === false) {
+            return null;
         }
+        return [
+            'id'          => $personId,
+            'name'        => trim((string) $r['first_name'] . ' ' . (string) $r['last_name']),
+            'employee_id' => $r['employee_id'] !== null ? (string) $r['employee_id'] : null,
+        ];
+    }
 
-        $params[':id'] = $personId;
-        $params[':actor'] = $actor;
-        $sql = 'UPDATE person SET ' . implode(', ', $set) . ', updated_by = :actor WHERE person_id = :id';
-        $this->db->prepare($sql)->execute($params);
+    /** A school's name for display, or null if unknown. */
+    public function schoolName(int $schoolId): ?string
+    {
+        $stmt = $this->db->prepare('SELECT name FROM school WHERE school_id = :id');
+        $stmt->execute([':id' => $schoolId]);
+        $n = $stmt->fetchColumn();
+        return $n === false ? null : (string) $n;
+    }
 
-        $after = $this->snapshot($personId);
-        $this->audit->log('person', $personId, 'update', $before, $after, $actor);
-        $this->audit->lifecycle($personId, 'update', ['summary' => 'Demographics updated from ' . $row->system . ' feed'], $actor);
-        return true;
+    /** Incoming assignment values keyed by column (matches upsertAssignment). */
+    private static function assignmentValues(NormalizedRow $row): array
+    {
+        return [
+            'title'          => $row->title,
+            'job_code'       => $row->jobCode,
+            'fte'            => $row->fte,
+            'is_primary'     => $row->isPrimary ? '1' : '0',
+            'effective_date' => $row->hireDate,
+            'end_date'       => $row->endDate,
+        ];
+    }
+
+    /**
+     * Pure diff of an existing assignment row (or null for a create) vs the
+     * incoming row. On create, returns every field; on update, only the columns
+     * that differ. Keys are column names, values the incoming value.
+     *
+     * @param array<string,mixed>|null $existing
+     * @return array<string,?string>
+     */
+    public static function diffAssignment(?array $existing, NormalizedRow $row): array
+    {
+        $vals = self::assignmentValues($row);
+        if ($existing === null) {
+            return $vals;
+        }
+        $changed = [];
+        foreach ($vals as $col => $val) {
+            if ((string) ($existing[$col] ?? '') !== (string) ($val ?? '')) {
+                $changed[$col] = $val;
+            }
+        }
+        return $changed;
+    }
+
+    /**
+     * Read-only preview of what upsertAssignment() would do for this row: whether
+     * it would create, update (and which columns), or leave the assignment
+     * unchanged. Null when the row has no resolved school (nothing to write).
+     *
+     * @return array{action:string,school_id:int,school_name:?string,source:string,title:?string,changes:array<string,?string>}|null
+     */
+    public function previewAssignment(int $personId, NormalizedRow $row): ?array
+    {
+        if ($row->schoolId === null) {
+            return null;
+        }
+        $source = self::assignmentSource($row->system);
+        $find = $this->db->prepare(
+            'SELECT title, job_code, fte, is_primary, effective_date, end_date
+               FROM assignment WHERE person_id = :pid AND school_id = :sid AND source = :src LIMIT 1'
+        );
+        $find->execute([':pid' => $personId, ':sid' => $row->schoolId, ':src' => $source]);
+        $existing = $find->fetch();
+        $existing = $existing === false ? null : $existing;
+
+        $changed = $existing === null ? [] : self::diffAssignment($existing, $row);
+        return [
+            'action'      => $existing === null ? 'create' : ($changed === [] ? 'unchanged' : 'update'),
+            'school_id'   => $row->schoolId,
+            'school_name' => $this->schoolName($row->schoolId),
+            'source'      => $source,
+            'title'       => $row->title,
+            'changes'     => $changed,
+        ];
     }
 
     /**
