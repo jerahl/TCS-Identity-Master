@@ -719,6 +719,34 @@ GRANT SELECT ON tcs_identity.v_onesync_student_source TO 'onesync_ro'@'%'; -- st
 FLUSH PRIVILEGES;
 ```
 
+## VPN status & restart
+
+The **VPN status** page (`/vpn`) relays the read-only `pseast-vpn-monitor`
+snapshot — systemd service, `tun0`, the route + reachability to the PowerSchool
+database, portal liveness, recent logs, and uptime history. Point the app at the
+monitor with `VPN_MONITOR_URL` (usually `http://127.0.0.1:8787`); the app fetches
+it server-side and degrades gracefully if the monitor is down.
+
+**Restart from the UI (editors/admins).** The page is view-only except for one
+action: when `VPN_CONTROL_ENABLED=true`, edit/admin roles see a **Restart VPN
+service** button that asks systemd to restart the unit on this host. It's gated
+server-side on the `edit` capability (not just hidden), CSRF-protected, and every
+restart is written to `audit_log` (entity `config`) with the actor and result.
+The app runs, with no shell, `sudo -n systemctl restart <VPN_SERVICE_UNIT>`
+(default `openconnect-pseast.service`, validated so a stray config value can't add
+arguments), so the web user needs a tightly-scoped NOPASSWD sudoers rule:
+
+```sh
+sudo visudo -cf deploy/idm-vpn-restart.sudoers            # syntax check
+sudo install -m 0440 -o root -g root deploy/idm-vpn-restart.sudoers \
+     /etc/sudoers.d/idm-vpn-restart
+```
+
+Adjust the user (Debian's `www-data`) and unit name in that file to match your
+install and `VPN_SERVICE_UNIT`. Leave `VPN_CONTROL_ENABLED=false` (the default)
+to keep the whole VPN feature read-only — the button won't appear and the route
+returns a "disabled" notice.
+
 ## Operations / backups
 
 - **Backups (critical path).** This DB is now authoritative for staff identity.
