@@ -1,6 +1,6 @@
 <?php
 /** @var string $content @var string $title @var string $activeNav @var string $crumb */
-/** @var int $queueCount @var string $searchQuery @var array $currentUser */
+/** @var int $queueCount @var int $disableFlagged @var string $searchQuery @var array $currentUser */
 $env = strtoupper((string) \App\Config::get('APP_ENV', 'development'));
 $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : '';
 ?><!doctype html>
@@ -38,7 +38,8 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <span class="nav-item__bar"></span>
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="1.5" y="3" width="9" height="12" rx="2"/><rect x="7.5" y="3" width="9" height="12" rx="2"/></svg>
         <span style="flex:1;">Review queue</span>
-        <?php if ($queueCount > 0): ?><span class="nav-item__badge"><?= e($queueCount) ?></span><?php endif; ?>
+        <?php if ($queueCount > 0): ?><span class="nav-item__badge" title="<?= e($queueCount) ?> pending match review<?= $queueCount === 1 ? '' : 's' ?>"><?= e($queueCount) ?></span><?php endif; ?>
+        <?php if (($disableFlagged ?? 0) > 0): ?><span class="nav-item__badge nav-item__badge--danger" title="<?= e($disableFlagged) ?> flagged for disable review"><?= e($disableFlagged) ?></span><?php endif; ?>
       </a>
       <a class="nav-item<?= $nav('people') ?>" href="<?= e(url('/people')) ?>">
         <span class="nav-item__bar"></span>

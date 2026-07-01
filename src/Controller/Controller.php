@@ -6,6 +6,7 @@ namespace App\Controller;
 
 use App\Service\AuthService;
 use App\Service\PersonService;
+use App\Service\ReviewService;
 use App\View\View;
 
 /**
@@ -47,6 +48,7 @@ abstract class Controller
             'activeNav'   => $activeNav,
             'crumb'       => $crumb,
             'queueCount'  => $this->safeQueueCount(),
+            'disableFlagged' => $this->safeDisableFlaggedCount(),
             'searchQuery' => (string) ($_GET['q'] ?? ''),
             'flash'       => $this->takeFlash(),
         ];
@@ -58,6 +60,16 @@ abstract class Controller
     {
         try {
             return $this->people->pendingReviewCount();
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
+    /** People flagged for disable review (drives the red nav badge). */
+    private function safeDisableFlaggedCount(): int
+    {
+        try {
+            return (new ReviewService())->disableCandidateCount();
         } catch (\Throwable) {
             return 0;
         }
