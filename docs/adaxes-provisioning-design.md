@@ -1,0 +1,344 @@
+# Adaxes provisioning — direct AD create / edit / disable (bypassing ClassLink)
+
+> **Status:** design / plan. No write code exists yet — `AdaxesService` is
+> strictly read-only today. This document is the spec for making IDM the
+> authoritative writer of Active Directory accounts through the Adaxes REST API,
+> phase by phase, ending with **OneSync fully retired as the AD provisioner**.
+
+## Goal & end-state
+
+Today IDM is the golden record but a **passive** one with respect to AD: it
+publishes `v_onesync_source`, OneSync (a ClassLink product) reads it and does the
+actual create/edit/disable in AD, then writes usernames/status back to IDM.
+
+The end-state of this work:
+
+```
+NextGen / PowerSchool ──► IDM golden record ──► Adaxes REST API ──► Active Directory
+                                │  (create / edit / disable — IDM is the writer)
+                                └─► mints username / email / UPN itself
+OneSync:  no longer touches AD.  (Google Workspace stays on OneSync — separate branch.)
+```
+
+IDM owns the **entire AD account lifecycle**. OneSync is decommissioned for the
+AD destination only; Google Workspace provisioning remains on OneSync and is out
+of scope for this branch.
+
+## What already exists (do not rebuild)
+
+The read-only leg already contains most of the machinery a writer needs:
+
+| Capability | Where | Reused for |
+|---|---|---|
+| Adaxes auth (static `Adm-Authorization` token **or** username/password handshake + session teardown) | `AdaxesService` (`authToken()`, `endSession()`) | all writes |
+| HTTP transport (TLS/CA, timeout, injectable `$fetch` for tests, graceful degrade) | `AdaxesService::httpRequest()` | all writes |
+| **Correlation** — resolve a person → AD account by `objectGUID`, else OR-search on `sAMAccountName`/`mail`/`employeeID` | `AdaxesService::verify()` / `searchCriteria()` | link-before-write |
+| Correlation link store — `objectGUID` per person | `person_source_id (system='ad', source_key=objectGUID)` | edit/disable target key |
+| GUID seeding (initial correlation run) | `bin/import_ad_usernames.php` (`AdUsernameImporter`), `bin/cleanup_ad_ids.php` | day-0 cutover |
+| Field-by-field golden↔AD diff | `AdaxesService::compareToGolden()` | drives the edit delta |
+| Username immutability + uniqueness | `person.username_locked`, `uq_person_username`, `uq_person_email` | mint collision guard |
+| Audit + lifecycle | `audit_log`, `lifecycle_event` (`create`/`update`/`disable`/`enable`) | every write |
+| OU placement | `school.ad_ou` (OU distinguishedName, per building) | create container |
+| Dry-run / idempotent importer conventions | every `bin/import_*.php` | the reconciler |
+
+The correlation model is a 1:1 analog of OneSync's `correlation` controller
+(stage → auto-match → link). We keep it; we only add the write.
+
+## Terminology
+
+- **Mint** — IDM generates a brand-new `username` / `email` / `upn` for a person
+  who has none, then `username_locked=1`. Today OneSync mints; in Phase 3 IDM does.
+- **Correlate / link** — associate a person with an existing AD account by storing
+  its `objectGUID` in the crosswalk.
+- **Reconcile** — compute desired AD state vs. live AD state for a person and apply
+  the delta (create / modify / disable).
+
+---
+
+## Username, email & UPN policy (decided)
+
+### Username (`sAMAccountName`)
+
+**Format:** first-name initial + last name — `John Smith → JSmith`.
+
+**Collisions:** append an integer starting at **1**, incrementing by 1, to the
+*base* form. The first holder gets the bare base; each subsequent collision gets
+the next free integer.
+
+```
+John  Smith → JSmith
+James Smith → JSmith1     (JSmith taken)
+Jane  Smith → JSmith2     (JSmith, JSmith1 taken)
+```
+
+**Normalization rules** (applied before assembling the base):
+
+1. Use the **legal `first_name`** (not `preferred_name`) and `last_name`.
+2. Strip everything except `[A-Za-z]` from each part (drops spaces, hyphens,
+   apostrophes, periods): `O'Brien → OBrien`, `De La Cruz → DeLaCruz`,
+   `Mary-Jane → MaryJane`.
+3. Base = `ucfirst(strtolower(firstInitial))` + `ucfirst(strtolower(lastName))`
+   → deterministic `JSmith` casing regardless of source casing.
+   (`sAMAccountName` is case-insensitive in AD; we store the cased form for display
+   and compare case-insensitively — `compareToGolden()` already does.)
+4. **Length cap:** `sAMAccountName` max is 20 chars. If base + suffix would exceed
+   20, truncate the **last-name portion** (never the initial or the numeric suffix)
+   so the suffix always survives: `JVeryLongLastNam`, then `JVeryLongLastNa1`, …
+5. Empty/all-stripped last name (data error) → do **not** mint; route to review.
+
+**Collision domain** — a candidate is free only when it collides with **nothing**
+across all three of:
+
+- `person.username` (the `uq_person_username` index) — the authoritative ledger;
+- any **locked** username already assigned (same index);
+- the **live AD** directory (an Adaxes search for `sAMAccountName = candidate`) —
+  catches pre-existing accounts IDM didn't create yet.
+
+Check the DB first (cheap, indexed); confirm the winner against AD (one search)
+before committing. On an AD-only collision, advance the suffix and re-check. This
+is the same "propose → test → increment" loop OneSync ran with its word-hash lists.
+
+### Email & UPN
+
+Both are derived directly from the final username with a fixed domain:
+
+```
+email = upn = <username>@tusc.k12.al.us
+```
+
+e.g. `JSmith → JSmith@tusc.k12.al.us`. `mail`, `userPrincipalName`, and
+`person.email`/`person.upn` all take this value. Domain is config, not hard-coded
+(`AD_EMAIL_DOMAIN=tusc.k12.al.us`), so a future domain change is one env edit.
+`uq_person_email` guards email uniqueness; because email is a pure function of the
+(unique) username, an email collision can only happen against a pre-existing AD
+mailbox — handled by the same AD-search check.
+
+### Not used for minting
+
+- `preferred_name` — usernames use the legal first name (AD convention). Preferred
+  name may still flow to `displayName` (see create attributes).
+- Once `username_locked=1`, the minter **never** revisits a person. Renames are
+  out of scope (immutability is a core invariant).
+
+---
+
+## Phase plan
+
+Each phase is independently shippable and leaves the system in a consistent state.
+Writes are **off by default** behind `ADAXES_WRITE_ENABLED=false`.
+
+### Phase 1 — Disable (lowest risk, highest immediate value)
+
+Leavers get disabled in AD promptly instead of waiting on OneSync's next read.
+
+- New `AdaxesWriter::disable(objectGuid)` — sets `accountDisabled=true`
+  (or the `userAccountControl` `0x2` bit; endpoint configurable). `enable()` is the
+  inverse for reactivations.
+- New reconciler `bin/adaxes_sync.php` (dry-run capable). For Phase 1 it acts only
+  on people with `person.status='disabled'` **and** a linked `objectGUID`, whose
+  live AD account is still enabled (confirmed via `verify()`).
+- Source of "who to disable" is the **existing** logic — the "Not in NextGen —
+  review to disable" queue + `flag_disable_candidates.php`. IDM already decides
+  *who*; this makes IDM *do* it.
+- **Guardrail:** never disable a person with no linked GUID (a search hit alone is
+  not enough — could be the wrong account). Threshold valve
+  (`ADAXES_WRITE_MAX_DISABLES_RATIO`, mirrors `NEXTGEN_DROPOUT_MAX_RATIO`) blocks a
+  mass-disable from a truncated feed.
+
+### Phase 2 — Edit / attribute drift
+
+Push the diffs the verification panel already computes.
+
+- `AdaxesWriter::modify(objectGuid, attrs)` — `PATCH`/`PUT` changed attributes.
+- Reconciler extends to compute the delta from `compareToGolden()` and apply only
+  fields that `differ`/`missing` on the AD side (never touch `sAMAccountName` —
+  immutable).
+- Same GUID-required rule.
+
+### Phase 3 — Create + minting (retire OneSync for AD)
+
+The final phase. IDM mints identity and creates the account.
+
+- New `UsernameMinter` service (pure, unit-tested) implementing the policy above.
+- `AdaxesWriter::create(containerDn, attrs)` — create a `User` in the target OU;
+  capture the returned `objectGUID` and link it into `person_source_id` immediately.
+- Reconciler create path fires only for a person who is `active`/`pending`, has
+  **no** linked GUID, and whose AD search returns **no** hit (a true net-new hire).
+- Attributes IDM sends on create: `sAMAccountName`, `userPrincipalName`, `mail`,
+  `displayName` (preferred-or-legal first + last), `givenName`, `sn`, `employeeID`,
+  target OU. **Everything operational** (home dir, groups, licensing, initial
+  password policy) is left to **Adaxes Business Rules** — IDM does not replicate
+  OneSync's full provisioning; that logic moves server-side into Adaxes, where the
+  write account triggers it.
+- After create: set `username`/`email`/`upn` on the golden record, `username_locked=1`,
+  activate a `pending` person, write `create` + `username_assigned` lifecycle events.
+- **OneSync cutover:** disable OneSync's AD destination (its `destinations/{id}/status`).
+  OneSync keeps running for Google Workspace (separate branch). The
+  `import_writeback` / `/api/onesync/username` inbound paths become no-ops for AD
+  but stay for any Google-minted values.
+
+| Phase | IDM owns in AD | New code |
+|---|---|---|
+| 1 | disable / enable | `AdaxesWriter::disable/enable`, `bin/adaxes_sync.php` |
+| 2 | + attribute edits | `AdaxesWriter::modify`, delta from `compareToGolden()` |
+| 3 | + create + minting → **OneSync off for AD** | `AdaxesWriter::create`, `UsernameMinter`, OU resolution |
+
+---
+
+## Component interfaces (proposed)
+
+### `App\Service\AdaxesWriter`
+
+Sits beside `AdaxesService`, sharing its auth/transport (extract the auth +
+`request()` plumbing into a small trait or a shared base, or compose an
+`AdaxesService` instance). Every method returns a result envelope (never throws),
+mirrors the read service, and is exercised through the injectable `$fetch`.
+
+```php
+final class AdaxesWriter
+{
+    /** @return array{ok:bool, error:?string, guid:?string, created:bool} */
+    public function create(string $containerDn, array $attrs): array;
+
+    /** @return array{ok:bool, error:?string, changed:array<string,string>} */
+    public function modify(string $objectGuid, array $attrs): array;
+
+    /** @return array{ok:bool, error:?string, changed:bool} */
+    public function disable(string $objectGuid): array;
+    public function enable(string $objectGuid): array;
+
+    public function configured(): bool;      // requires ADAXES_WRITE_ENABLED + a write token/acct
+}
+```
+
+> **Endpoints are version-specific and MUST be confirmed against the deployed
+> Adaxes build**, exactly like the read paths (`ADAXES_OBJECTS_PATH` etc. are
+> already configurable for this reason). Create/modify/disable in the Adaxes REST
+> API are documented at <https://www.adaxes.com/sdk/ApiDocumentation.RESTApi/>;
+> expose each as `ADAXES_CREATE_PATH` / `ADAXES_MODIFY_PATH` / `ADAXES_DISABLE_PATH`.
+
+### `App\Service\UsernameMinter`
+
+Pure logic, no I/O in the core; collision checks injected so it unit-tests without
+a DB or a live AD (same pattern as `Matcher` and `WritebackImporter::decide()`).
+
+```php
+final class UsernameMinter
+{
+    /** Deterministic base, pre-collision: "JSmith". */
+    public static function base(string $firstName, string $lastName): string;
+
+    /**
+     * Lowest free candidate. $isTaken($candidate) returns true if the candidate
+     * collides in the DB or live AD; the caller wires it to both checks.
+     * @param callable(string):bool $isTaken
+     */
+    public static function mint(string $firstName, string $lastName, callable $isTaken): string;
+
+    public static function emailFor(string $username, string $domain): string; // JSmith@tusc.k12.al.us
+}
+```
+
+---
+
+## Configuration additions (`.env`)
+
+```sh
+# --- Adaxes WRITE (direct AD provisioning; bypasses OneSync for AD) ------------
+ADAXES_WRITE_ENABLED=false          # master switch; false = read-only (today's behavior)
+ADAXES_WRITE_TOKEN=                 # token for the WRITE service account (see role below)
+                                    #   (falls back to ADAXES_TOKEN / username+password if unset)
+ADAXES_CREATE_PATH=api/...          # confirm per Adaxes version
+ADAXES_MODIFY_PATH=api/...
+ADAXES_DISABLE_PATH=api/...
+ADAXES_WRITE_MAX_DISABLES_RATIO=0.2 # safety valve, mirrors NEXTGEN_DROPOUT_MAX_RATIO
+ADAXES_WRITE_MAX_CREATES=50         # per-run cap on net-new account creation
+
+# --- Identity minting (IDM becomes the username authority in Phase 3) ----------
+AD_EMAIL_DOMAIN=tusc.k12.al.us      # email = upn = <username>@this
+AD_UPN_SUFFIX=tusc.k12.al.us        # usually identical to AD_EMAIL_DOMAIN
+```
+
+OU per building already comes from `school.ad_ou`; no new config for placement.
+
+## Adaxes-side setup (not code)
+
+- A dedicated **write service account** with an Adaxes **Security Role** granting
+  *Create User*, *Modify*, and *Enable/Disable Account* **scoped to the staff OUs**
+  — least privilege, separate from the existing read-only account. Generate its
+  token with `New-AdmAccountToken`.
+- **Business Rules** to own the operational side of new accounts (home directory,
+  group membership, licensing, password policy) so IDM only sends identity core.
+- Keep the read-only account for `verify()`; the writer is additive.
+
+---
+
+## Guardrails (invariants across all phases)
+
+1. **Link before write.** Edit/disable only ever act on a person with a linked
+   `objectGUID`. A search hit without a stored GUID is a *correlation* task, not a
+   write — route it to review.
+2. **Create only when truly new.** No linked GUID **and** no AD search hit.
+3. **Username immutability.** Never re-mint or rename a `username_locked` person;
+   the minter skips them entirely.
+4. **Threshold valves** on both disable (ratio) and create (absolute count).
+5. **Audit everything** to `audit_log` + `lifecycle_event`, actor `system:adaxes_sync`.
+6. **Dry-run** (`--dry-run`) on the reconciler prints intended writes and changes
+   nothing — required before every real run during rollout.
+7. **Off by default** — `ADAXES_WRITE_ENABLED=false` until deliberately enabled.
+8. **TLS verification stays on** (existing `ADAXES_CA_FILE` / `ADAXES_VERIFY_TLS`).
+
+## Data model
+
+Minimal change. Reuse `person_source_id` (GUID link), `person` (username/email/upn/
+lock), `audit_log`, `lifecycle_event`. Optional provenance nicety: record that a
+username was **IDM-minted** vs. OneSync-supplied — either a new
+`person.username_source ENUM('onesync','idm','ad_import')` column (migration) or an
+inference from `lifecycle_event`. Not required for correctness; useful for cutover
+reporting. Decide during Phase 3.
+
+---
+
+## Cutover runbook (Phase 3 go-live)
+
+1. **Correlate first.** Run the Employee List GUID import + `cleanup_ad_ids.php` so
+   every existing staff member has a linked `objectGUID`. Verify coverage on the
+   dashboard (people with an `ad` crosswalk row).
+2. **Dry-run the reconciler.** `php bin/adaxes_sync.php --dry-run` — confirm it
+   proposes disables/edits for known accounts and **creates only genuine new hires**.
+   Investigate any unexpected create (usually a missing GUID link, i.e. a
+   correlation gap, not a real new person).
+3. **Enable writes for disable/edit** first (Phases 1–2 in production) and watch a
+   few cycles.
+4. **Enable create.** Turn on `ADAXES_WRITE_ENABLED` create path with a low
+   `ADAXES_WRITE_MAX_CREATES`; ramp up once clean.
+5. **Turn off OneSync's AD destination** (`destinations/{id}/status` disable). Leave
+   OneSync running for Google.
+6. **Monitor** the failed-write rollup (extend the dashboard's "failed syncs" card
+   to include Adaxes-write failures) and the audit timeline.
+
+**Rollback:** set `ADAXES_WRITE_ENABLED=false` and re-enable OneSync's AD
+destination. IDM state is unchanged; no data migration to reverse.
+
+## Testing
+
+- `UsernameMinter` — unit tests for base form, casing, punctuation stripping
+  (`O'Brien`, `De La Cruz`, hyphenates), the 20-char truncation-with-suffix rule,
+  and the increment sequence (`JSmith → JSmith1 → JSmith2`), with `$isTaken`
+  stubbed. Pure, no I/O.
+- `AdaxesWriter` — unit tests with an injected `$fetch` asserting the request
+  method/body for create/modify/disable and the envelope on success / 4xx / 5xx /
+  transport failure (mirror `AdaxesServiceTest`).
+- Reconciler — integration test over a seeded DB + fake Adaxes covering: disable a
+  linked leaver, skip an unlinked one (→ review), create a net-new hire and link its
+  GUID, skip a locked person, and trip both threshold valves.
+
+## Open items
+
+- Confirm exact Adaxes REST create/modify/disable endpoints + payload shapes for the
+  deployed version (only unknown that blocks `AdaxesWriter`).
+- Confirm the staff OU layout so `school.ad_ou` values are complete/correct for
+  every building before enabling create.
+- Decide whether to add `person.username_source` provenance (reporting only).
+- Password on create: rely on an Adaxes Business Rule (recommended) vs. IDM sending
+  an initial password — recommend the Business Rule so IDM never handles secrets.
