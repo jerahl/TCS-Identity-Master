@@ -108,7 +108,7 @@ final class PersonWriter
      * It does NOT change person.status: leaving the feed is not, by itself, a
      * disable — that stays a human decision. Deactivating the crosswalk id is what
      * makes the person show up in the dashboard "Not in NextGen — past exit date"
-     * review panel (DashboardService::disableCandidates). Each change is audited
+     * review panel (ReviewService::disableCandidates). Each change is audited
      * and put on the person's timeline.
      *
      * Safety valve: a truncated/partial feed would otherwise mark real employees

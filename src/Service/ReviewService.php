@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Config;
 use App\Db;
 use App\Import\ColumnMap;
 use App\Import\ImportSource;
@@ -33,6 +34,75 @@ final class ReviewService
         $this->db = $db ?? Db::connect(Db::ROLE_APP);
         $this->audit = $audit ?? new AuditService($this->db);
         $this->writer = new PersonWriter($this->db, $this->audit);
+    }
+
+    /**
+     * Shared FROM/WHERE for "should be disabled" candidates: people no longer in
+     * NextGen (no ACTIVE NextGen crosswalk id — covers manual contractors/interns/
+     * subs and anyone dropped off the feed) and still enabled (active/pending),
+     * that meet EITHER trigger:
+     *   (a) their exit date (person.end_date) is already in the past; or
+     *   (b) they were dropped from the NextGen feed more than N days ago (an
+     *       inactive NextGen crosswalk row whose last_seen is older than
+     *       NEXTGEN_DROPOUT_FLAG_DAYS), regardless of exit date — this catches
+     *       leavers NextGen drops without ever setting an end date.
+     * NextGen drives disable for its own people but never touches off-feed records,
+     * so without this flag they linger enabled forever. Surfacing only: a human
+     * approves each disable on the review queue.
+     */
+    private function disableCandidateFromWhere(): string
+    {
+        $days = max(0, (int) Config::get('NEXTGEN_DROPOUT_FLAG_DAYS', '7'));
+        // $days is a validated int, safe to interpolate (INTERVAL can't be bound
+        // in query()); the rest of the predicate takes no parameters.
+        return "FROM person p
+         WHERE p.status IN ('active','pending')
+           AND NOT EXISTS (
+               SELECT 1 FROM person_source_id psi
+               WHERE psi.person_id = p.person_id
+                 AND psi.system = 'nextgen'
+                 AND psi.is_active = 1
+           )
+           AND (
+               (p.end_date IS NOT NULL AND p.end_date < CURDATE())
+               OR EXISTS (
+                   SELECT 1 FROM person_source_id d
+                   WHERE d.person_id = p.person_id
+                     AND d.system = 'nextgen'
+                     AND d.is_active = 0
+                     AND d.last_seen < (NOW() - INTERVAL {$days} DAY)
+               )
+           )";
+    }
+
+    /** Count of disable-review candidates (drives the dashboard KPI). */
+    public function disableCandidateCount(): int
+    {
+        return (int) $this->db->query("SELECT COUNT(*) " . $this->disableCandidateFromWhere())->fetchColumn();
+    }
+
+    /**
+     * People to review for disabling: not in NextGen and still enabled, with
+     * either a past exit date or a stale drop from the NextGen feed. See
+     * disableCandidateFromWhere(). `nextgen_last_seen` is when they last appeared
+     * in a NextGen feed (NULL for records never in NextGen, e.g. manual
+     * contractors/interns) so callers can show why each one is flagged.
+     * Surfaced on the review queue and by bin/flag_disable_candidates.php.
+     */
+    public function disableCandidates(int $limit = 100): array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT p.person_id, p.first_name, p.last_name, p.person_type,
+                    p.status, p.end_date, p.source_of_record,
+                    (SELECT MAX(d.last_seen) FROM person_source_id d
+                      WHERE d.person_id = p.person_id AND d.system = 'nextgen' AND d.is_active = 0)
+                        AS nextgen_last_seen
+             " . $this->disableCandidateFromWhere() . "
+             ORDER BY p.end_date IS NULL, p.end_date ASC, p.last_name, p.first_name
+             LIMIT " . (int) $limit
+        );
+        $stmt->execute();
+        return $stmt->fetchAll();
     }
 
     /** Pending cases, oldest first; one entry per staged row (its top candidate). */

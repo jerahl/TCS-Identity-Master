@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Service\DashboardService;
-use App\Support\Csrf;
 
 /**
  * Home / health dashboard: KPIs, recent activity, last feed per source, and the
@@ -32,8 +31,6 @@ final class DashboardController extends Controller
             'activity'    => $this->dash->recentActivity(),
             'feeds'       => $feeds,
             'failedSyncs' => $this->dash->failedSyncs(),
-            'disableCandidates' => $this->dash->disableCandidates(),
-            'csrf'        => Csrf::token(),
             'syncHealth'  => $syncHealth,
             'studentSync' => $studentSync,
             'alerts'      => $this->buildAlerts($syncHealth, $feeds, $studentSync),

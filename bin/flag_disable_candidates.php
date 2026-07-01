@@ -20,7 +20,7 @@ declare(strict_types=1);
  * can alert on it).
  */
 
-use App\Service\DashboardService;
+use App\Service\ReviewService;
 
 require __DIR__ . '/../src/bootstrap.php';
 
@@ -34,7 +34,7 @@ foreach (array_slice($_SERVER['argv'] ?? [], 1) as $arg) {
 $limit = max(1, (int) ($opts['limit'] ?? 500));
 
 try {
-    $rows = (new DashboardService())->disableCandidates($limit);
+    $rows = (new ReviewService())->disableCandidates($limit);
 } catch (\Throwable $e) {
     fwrite(STDERR, "Could not query disable candidates: {$e->getMessage()}\n");
     exit(2);
@@ -57,5 +57,5 @@ foreach ($rows as $r) {
         (string) $r['source_of_record']
     );
 }
-echo "\nReview each on the dashboard (\"Not in NextGen — review to disable\" panel) and disable if they have truly left.\n";
+echo "\nReview each on the review queue (\"Not in NextGen — review to disable\" panel) and disable if they have truly left.\n";
 exit(1);

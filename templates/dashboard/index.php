@@ -1,5 +1,5 @@
 <?php
-/** @var array $kpis @var array $activity @var array $feeds @var array $failedSyncs @var array $disableCandidates @var string $csrf @var bool $canEdit @var array $syncHealth @var array $alerts */
+/** @var array $kpis @var array $activity @var array $feeds @var array $failedSyncs @var array $syncHealth @var array $alerts */
 use App\View\Present;
 
 $k = $kpis;
@@ -19,7 +19,7 @@ $cards = [
     ['label' => 'Missing username', 'value' => $k['missingUsername'], 'sub' => 'no account yet', 'tone' => $k['missingUsername'] > 0 ? 'warn' : 'ok', 'href' => url('/people', ['missing' => 1])],
     ['label' => 'Unmapped values', 'value' => $k['unmapped'], 'sub' => 'school + ethnicity', 'tone' => $k['unmapped'] > 0 ? 'warn' : 'ok', 'href' => url('/reference')],
     ['label' => 'Failed syncs', 'value' => $k['failedSync'], 'sub' => 'last sync failed', 'tone' => $k['failedSync'] > 0 ? 'alert' : 'ok', 'href' => url('/dashboard') . '#failed'],
-    ['label' => 'To disable', 'value' => $k['disableFlagged'], 'sub' => 'left, still enabled', 'tone' => $k['disableFlagged'] > 0 ? 'warn' : 'ok', 'href' => url('/dashboard') . '#disable'],
+    ['label' => 'To disable', 'value' => $k['disableFlagged'], 'sub' => 'left, still enabled', 'tone' => $k['disableFlagged'] > 0 ? 'warn' : 'ok', 'href' => url('/review') . '#disable'],
     ['label' => 'OneSync write-back', 'value' => $sh['label'], 'sub' => $sh['state'] === 'never' ? 'never run' : ($sh['staleAccounts'] . ' stale account' . ($sh['staleAccounts'] === 1 ? '' : 's')), 'tone' => $syncTone, 'href' => url('/dashboard') . '#failed'],
     ['label' => 'Students → OneSync', 'value' => $ss['active'], 'sub' => $studentSub, 'tone' => $studentTone, 'href' => url('/dashboard') . '#students'],
     ['label' => 'Last feed run', 'value' => $k['lastFeed'] ? ucfirst($k['lastFeed']['system']) : '—', 'sub' => $k['lastFeed'] ? ($k['lastFeed']['status'] . ' · ' . $k['lastFeed']['started_at']) : 'no imports yet', 'tone' => 'ok', 'href' => url('/import')],
@@ -124,43 +124,6 @@ $cards = [
     <?php if (!empty($lr['message']) && $lr['status'] === 'failed'): ?>
       <div class="feed__meta" style="color:#94413A;"><?= e($lr['message']) ?></div>
     <?php endif; ?>
-  </div>
-  <?php endif; ?>
-</div>
-
-<div class="panel" id="disable" style="margin-top:18px;">
-  <h2 class="panel__title" style="margin-bottom:4px;">Not in NextGen — review to disable</h2>
-  <p class="panel__note" style="margin-bottom:14px;">People with no active NextGen record, still enabled, whose <strong>exit date has passed</strong> or who <strong>dropped from the NextGen feed</strong> a while ago. NextGen never disables off-feed records — review each and disable so OneSync disables (not orphans) the account.</p>
-  <?php $dc = $disableCandidates ?? []; ?>
-  <?php if ($dc === []): ?>
-    <p class="muted" style="font-size:12.5px;">Nothing to disable 🎉</p>
-  <?php else: ?>
-  <div class="table-wrap">
-    <table class="table">
-      <thead><tr><th>Person</th><th>Type</th><th>Exit date</th><th>Off NextGen since</th><th>Status</th><th>Source</th><th><?= !empty($canEdit) ? 'Action' : '' ?></th></tr></thead>
-      <tbody>
-        <?php foreach ($dc as $p): ?>
-        <tr>
-          <td class="cell-name"><a href="<?= e(url('/people/' . $p['person_id'])) ?>"><?= e(trim($p['first_name'] . ' ' . $p['last_name'])) ?></a></td>
-          <td><?= e(ucfirst((string) $p['person_type'])) ?></td>
-          <td class="mono" style="font-size:12px;"><?= e($p['end_date'] ?? '—') ?></td>
-          <td class="mono" style="font-size:12px;"><?= e($p['nextgen_last_seen'] ? substr((string) $p['nextgen_last_seen'], 0, 10) : '—') ?></td>
-          <td><span class="badge badge--<?= e($p['status'] === 'active' ? 'active' : 'pending') ?>"><?= e($p['status']) ?></span></td>
-          <td><?= e((string) $p['source_of_record']) ?></td>
-          <td>
-            <?php if (!empty($canEdit)): ?>
-            <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/disable')) ?>" style="margin:0;">
-              <input type="hidden" name="_csrf" value="<?= e($csrf) ?>">
-              <button class="btn btn--link-weak" type="submit" style="height:30px; padding:4px 14px; font-size:12.5px;">Disable</button>
-            </form>
-            <?php else: ?>
-              <span class="muted" style="font-size:12px;">—</span>
-            <?php endif; ?>
-          </td>
-        </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
   </div>
   <?php endif; ?>
 </div>

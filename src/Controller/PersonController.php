@@ -281,7 +281,7 @@ final class PersonController extends Controller
     public function disable(array $params): string
     {
         $id = (int) ($params['id'] ?? 0);
-        $back = url('/dashboard') . '#disable';
+        $back = url('/review') . '#disable';
 
         if (!Csrf::check($_POST['_csrf'] ?? null)) {
             $this->flash('Invalid session token — please retry.');
