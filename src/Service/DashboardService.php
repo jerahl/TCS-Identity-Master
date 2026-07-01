@@ -28,7 +28,7 @@ final class DashboardService
         return (int) $this->db->query($sql)->fetchColumn();
     }
 
-    /** @return array{pendingReview:int,pendingActivation:int,missingUsername:int,unmapped:int,failedSync:int,lastFeed:?array} */
+    /** @return array{pendingReview:int,pendingActivation:int,missingUsername:int,unmapped:int,failedSync:int,disableFlagged:int,lastFeed:?array} */
     public function kpis(): array
     {
         $unmappedEth = $this->count(
@@ -57,6 +57,9 @@ final class DashboardService
             'missingUsername'   => $this->count("SELECT COUNT(*) FROM person WHERE (username IS NULL OR username = '') AND status <> 'terminated'"),
             'unmapped'          => $unmappedEth + $unmappedSchool,
             'failedSync'        => $this->count("SELECT COUNT(*) FROM account_sync_status WHERE last_status = 'Fail'"),
+            // The disable-review list lives on the review queue (ReviewService);
+            // reuse its count so the two never drift.
+            'disableFlagged'    => (new ReviewService($this->db))->disableCandidateCount(),
             'lastFeed'          => $lastFeed === false ? null : $lastFeed,
         ];
     }

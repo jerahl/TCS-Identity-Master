@@ -40,6 +40,7 @@ final class ReviewController extends Controller
             'cases'    => $cases,
             'selected' => $selected,
             'detail'   => $detail,
+            'disableCandidates' => $this->review->disableCandidates(),
             'csrf'     => Csrf::token(),
         ], 'review', 'Review queue', 'Review queue — TCS Identity Master');
     }

@@ -5,36 +5,40 @@ How OneSync reads from and writes back to the Identity Master database. OneSync
 provisioning status (success/failure + message) to three tables.
 
 - DB: MySQL/MariaDB, database `tcs_identity` (adjust to your deployment).
-- Stable key everywhere is **`person_uuid` (CHAR(36))**, surfaced to OneSync as
-  **`uniqueId`**. Use it as the OneSync `uniqueId` and as the join key on write-back.
+- Stable key everywhere is **`person_uuid` (CHAR(36))**, surfaced on the read view
+  as **`ID`**. Use it as the OneSync `uniqueId` and as the join key on write-back.
 
 ---
 
 ## 1. READ — source view: `v_onesync_source`  (read-only)
 
 Connect as the read-only user (`onesync_ro`). One row **per person**; the only
-object OneSync should read.
+object OneSync should read. The view exposes exactly the columns OneSync's
+faculty profile consumes, under OneSync's own names.
 
-| OneSync field      | View column      | Type        | Notes |
-|--------------------|------------------|-------------|-------|
-| `uniqueId`         | `uniqueId`       | CHAR(36)    | = `person_uuid`. The stable identity key. |
-| `First_Name`       | `First_Name`     | VARCHAR(80) | |
-| `Last_Name`        | `Last_Name`      | VARCHAR(80) | |
-| `PreferredName`    | `PreferredName`  | VARCHAR(80) | nullable |
-| `Email_Addr`       | `Email_Addr`     | VARCHAR(160)| nullable until assigned |
-| `TeacherLoginID`   | `TeacherLoginID` | VARCHAR(64) | = `username`. **NULL until minted** → fires OneSync's `BlankSAMAccountName` rule for new people. |
-| `TeacherNumber`    | `TeacherNumber`  | VARCHAR(40) | = `employee_id`, nullable (subs/contractors/interns may lack one) |
-| `School_ID`        | `School_ID`      | VARCHAR(20) | PowerSchool `SchoolID` of the **primary** assignment |
-| `Ethnicity`        | `Ethnicity`      | VARCHAR(10) | resolved ALSDE code |
-| `StatusActive`     | `StatusActive`   | 1 / 0       | 1 when status ∈ (active, pending) |
-| `PersonType`       | `PersonType`     | VARCHAR     | faculty / staff / contractor / sub / intern / other |
+| OneSync field    | View column      | Type        | Notes |
+|------------------|------------------|-------------|-------|
+| `ID`             | `ID`             | CHAR(36)    | = `person_uuid`. The stable identity key (the value used as `uniqueId` on write-back). |
+| `PSID`           | `PSID`           | VARCHAR(128)| active PowerSchool id from the crosswalk (`person_source_id`, `system='powerschool'`); nullable. |
+| `Job Code Desc`  | `Job Code Desc`  | VARCHAR(120)| the golden (NextGen) job description — **primary** assignment's `title`, **falling back to the PowerSchool `Title`** when the NextGen value is blank; nullable. (Column name contains a space — quote it.) |
+| `HomeSchoolID`   | `HomeSchoolID`   | VARCHAR(20) | PowerSchool `SchoolID` of the **primary** assignment. |
+| `TeacherNumber`  | `TeacherNumber`  | VARCHAR(40) | = `employee_id`, nullable (subs/contractors/interns may lack one). |
+| `EmployeeID`     | `EmployeeID`     | VARCHAR(40) | same source as `TeacherNumber` (`employee_id`); exposed under both names. |
+| `Email`          | `Email`          | VARCHAR(160)| nullable until assigned. |
+| `username`       | `username`       | VARCHAR(64) | = `username`. **NULL until minted** → fires OneSync's `BlankSAMAccountName` rule for new people. |
+| `Title`          | `Title`          | VARCHAR(120)| the **PowerSchool** title (`USERS`/`TEACHERS.Title`), from the latest PowerSchool import snapshot; nullable. Distinct from `Job Code Desc` (NextGen). |
+| `FirstName`      | `FirstName`      | VARCHAR(80) | |
+| `LastName`       | `LastName`       | VARCHAR(80) | |
+| `StatusActive`   | `StatusActive`   | 1 / 0       | 1 when status ∈ (active, pending). |
+| `Ethnicity`      | `Ethnicity`      | VARCHAR(10) | resolved ALSDE code; nullable. |
 
 Row filter: the view returns people with status ∈ (active, pending, disabled)
-— `disabled` are kept so OneSync can disable, not orphan, the account.
+— `disabled` are kept so OneSync can disable, not orphan, the account
+(`StatusActive` = 0 marks them).
 
 ```sql
-SELECT uniqueId, First_Name, Last_Name, PreferredName, Email_Addr,
-       TeacherLoginID, TeacherNumber, School_ID, Ethnicity, StatusActive, PersonType
+SELECT ID, PSID, `Job Code Desc`, HomeSchoolID, TeacherNumber, EmployeeID,
+       Email, username, Title, FirstName, LastName, StatusActive, Ethnicity
 FROM v_onesync_source;
 ```
 

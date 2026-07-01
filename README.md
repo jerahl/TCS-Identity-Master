@@ -362,6 +362,20 @@ loud warning on weak (name-only) matches. Every decision is audited
 (`audit_log` + a `lifecycle_event` on the person), and resolving a case clears
 its sibling candidates. Forms are CSRF-protected; actions use Post/Redirect/Get.
 
+**Not in NextGen — review to disable.** Below the match queue, `/review` also lists
+people who are no longer in NextGen (no active NextGen crosswalk id — manual
+contractors/interns/subs, or anyone dropped off the feed) and still enabled, who
+**either** have a past exit date **or** dropped from the NextGen feed more than
+`NEXTGEN_DROPOUT_FLAG_DAYS` (default 7) days ago — the second trigger catches
+leavers NextGen drops without ever setting an end date (both an "Exit date" and an
+"Off NextGen since" column show which fired). NextGen drives disable for its own
+people but never touches off-feed records, so these are surfaced here. Each row has
+a **Disable** button (editors+) that sets the person to `disabled` — audited, with
+a `disable` lifecycle event — so OneSync disables (not orphans) the account on its
+next read. Nothing is disabled automatically; a human approves each one. The same
+list is available on the CLI via `php bin/flag_disable_candidates.php` (exit code 1
+when any are flagged, so a cron/monitor can alert).
+
 > Try it: seed demo people, then import the review-demo feed (its rows
 > name-match existing people but carry new ids and no DOB, so they land in
 > review — they never auto-link):
@@ -411,9 +425,21 @@ changes, and all data mutations are written to `audit_log`.
 ## Dashboard, reference data & import status (Milestone 6)
 
 - **Home / health** (`/`): KPI cards (pending review, pending activation, missing
-  username, unmapped values, **failed syncs**, last feed) that link to the
-  filtered views; recent activity; last feed per source; and the failed-sync
+  username, unmapped values, **failed syncs**, **to disable**, last feed) that
+  link to the filtered views (the **to disable** card links to the review queue's
+  disable panel); recent activity; last feed per source; and the failed-sync
   rollup (accounts whose last OneSync sync failed).
+
+**Staff drop-out tracking.** The NextGen import is a full-roster feed, so a
+person whose crosswalk id was active but is **absent from a completed import** is
+flagged not-in-NextGen (`person_source_id.is_active = 0`, audited + on the
+timeline) — mirroring the student drop-out logic. This is what lets a former
+NextGen employee reach the "Not in NextGen — review to disable" panel on the
+review queue (below). It never changes `person.status` (disabling stays a human
+decision), and a returning employee is re-linked (not duplicated) on their next
+feed. A safety valve (`NEXTGEN_DROPOUT_MAX_RATIO`, default 0.2) **blocks** the
+step if a suspiciously large share would drop at once — the likely sign of a
+truncated feed — and logs it instead of deactivating.
 - **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
   ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
   **unmapped values surfaced** — ethnicity values seen on records and school codes
@@ -471,7 +497,7 @@ curl -X POST https://idm.example.org/api/onesync/sync-status \
 
 Both write endpoints accept a single event **or** a JSON array (batch); a batch
 returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is the
-`v_onesync_source.uniqueId` (person UUID). Same guarantees as the CSV path below.
+`v_onesync_source.ID` (person UUID). Same guarantees as the CSV path below.
 
 Full reference: [`docs/onesync-api.md`](docs/onesync-api.md).
 

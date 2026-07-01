@@ -100,6 +100,79 @@ final class PersonWriter
     }
 
     /**
+     * Drop-out tracking for a full feed. Flags the `$system` crosswalk IDs that
+     * are currently active but were NOT present in this run (`$seenKeys`) as
+     * inactive — the person is no longer in that source. Mirrors the student
+     * drop-out logic (StudentImporter), for staff.
+     *
+     * It does NOT change person.status: leaving the feed is not, by itself, a
+     * disable — that stays a human decision. Deactivating the crosswalk id is what
+     * makes the person show up in the dashboard "Not in NextGen — past exit date"
+     * review panel (ReviewService::disableCandidates). Each change is audited
+     * and put on the person's timeline.
+     *
+     * Safety valve: a truncated/partial feed would otherwise mark real employees
+     * as departed. When the active population is at least `$guardMinActive` and the
+     * share that would be deactivated exceeds `$maxRatio`, the step is BLOCKED
+     * (nothing is written) so an operator can investigate. Set `$apply` false to
+     * compute the counts without writing (dry-run).
+     *
+     * @param array<string,bool> $seenKeys source keys present in this run (as keys)
+     * @return array{active:int,candidates:int,deactivated:int,blocked:bool}
+     */
+    public function deactivateMissingSourceIds(
+        string $system,
+        array $seenKeys,
+        string $actor,
+        bool $apply = true,
+        float $maxRatio = 0.2,
+        int $guardMinActive = 20
+    ): array {
+        $rows = $this->db->prepare(
+            'SELECT id, person_id, source_key FROM person_source_id WHERE system = :s AND is_active = 1'
+        );
+        $rows->execute([':s' => $system]);
+        $all = $rows->fetchAll();
+
+        $stale = [];
+        foreach ($all as $r) {
+            if (!isset($seenKeys[(string) $r['source_key']])) {
+                $stale[] = $r;
+            }
+        }
+
+        $active = count($all);
+        $candidates = count($stale);
+        $result = ['active' => $active, 'candidates' => $candidates, 'deactivated' => 0, 'blocked' => false];
+
+        if ($candidates === 0) {
+            return $result;
+        }
+        // Guard against a partial feed nuking everyone.
+        if ($active >= $guardMinActive && ($candidates / $active) > $maxRatio) {
+            $result['blocked'] = true;
+            return $result;
+        }
+        if (!$apply) {
+            return $result;
+        }
+
+        $update = $this->db->prepare('UPDATE person_source_id SET is_active = 0 WHERE id = :id');
+        foreach ($stale as $r) {
+            $update->execute([':id' => (int) $r['id']]);
+            $this->audit->log('source_id', (int) $r['id'], 'update',
+                ['is_active' => 1],
+                ['is_active' => 0, 'source_key' => $r['source_key'], 'reason' => "absent from {$system} feed"],
+                $actor);
+            $this->audit->lifecycle((int) $r['person_id'], 'update',
+                ['summary' => "Dropped from the {$system} feed — {$system} crosswalk id deactivated (review to disable)."],
+                $actor);
+        }
+        $result['deactivated'] = $candidates;
+        return $result;
+    }
+
+    /**
      * Backfill a person's golden record from a matched AD account (live
      * verification): record the objectGUID in the crosswalk and fill the
      * username (set + LOCKED), email and UPN — but ONLY where the golden record
