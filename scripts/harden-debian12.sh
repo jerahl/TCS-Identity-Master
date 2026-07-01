@@ -381,7 +381,10 @@ add_header X-Frame-Options "DENY" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header X-XSS-Protection "0" always;
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'" always;
+# Keep this in lockstep with src/Http/Security.php — the app sends its own CSP
+# too, and the browser enforces BOTH, so any drift blocks whatever one omits
+# (e.g. the Google Fonts stylesheet, or inline style="" attributes).
+add_header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'; object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'" always;
 EOF
     if nginx -t 2>/dev/null; then
         systemctl reload nginx 2>/dev/null || true

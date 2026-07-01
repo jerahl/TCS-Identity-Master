@@ -8,9 +8,13 @@ use App\Config;
 
 /**
  * HTTP security hardening applied to every request: security headers, and HTTPS
- * enforcement in production. CSP is intentionally strict — the app is
- * server-rendered with one stylesheet and no inline/3rd-party JS (fonts are the
- * only external origin).
+ * enforcement in production. CSP is strict — server-rendered, no 3rd-party or
+ * inline JS (script-src stays 'self'). Google Fonts is the only external origin,
+ * and inline style *attributes* are used throughout the templates, so style-src
+ * allows 'unsafe-inline' plus the fonts stylesheet host (style attributes can't
+ * be covered by a hash or nonce). Keep this in lockstep with the nginx CSP in
+ * scripts/harden-debian12.sh — the browser enforces both headers, so any drift
+ * blocks whatever one policy omits.
  */
 final class Security
 {
@@ -41,11 +45,11 @@ final class Security
         header('Cross-Origin-Opener-Policy: same-origin');
         header(
             "Content-Security-Policy: default-src 'self'; "
-            . "style-src 'self' https://fonts.googleapis.com; "
+            . "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             . "font-src 'self' https://fonts.gstatic.com; "
             . "img-src 'self' data:; "
             . "script-src 'self'; "
-            . "form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
+            . "object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
         );
         if ($prod) {
             header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
