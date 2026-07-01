@@ -20,13 +20,13 @@ faculty profile consumes, under OneSync's own names.
 |------------------|------------------|-------------|-------|
 | `ID`             | `ID`             | CHAR(36)    | = `person_uuid`. The stable identity key (the value used as `uniqueId` on write-back). |
 | `PSID`           | `PSID`           | VARCHAR(128)| active PowerSchool id from the crosswalk (`person_source_id`, `system='powerschool'`); nullable. |
-| `Job Code Desc`  | `Job Code Desc`  | VARCHAR(120)| **primary** assignment's `title`; nullable. (Column name contains a space — quote it.) |
+| `Job Code Desc`  | `Job Code Desc`  | VARCHAR(120)| the golden (NextGen) job description — **primary** assignment's `title`, **falling back to the PowerSchool `Title`** when the NextGen value is blank; nullable. (Column name contains a space — quote it.) |
 | `HomeSchoolID`   | `HomeSchoolID`   | VARCHAR(20) | PowerSchool `SchoolID` of the **primary** assignment. |
 | `TeacherNumber`  | `TeacherNumber`  | VARCHAR(40) | = `employee_id`, nullable (subs/contractors/interns may lack one). |
 | `EmployeeID`     | `EmployeeID`     | VARCHAR(40) | same source as `TeacherNumber` (`employee_id`); exposed under both names. |
 | `Email`          | `Email`          | VARCHAR(160)| nullable until assigned. |
 | `username`       | `username`       | VARCHAR(64) | = `username`. **NULL until minted** → fires OneSync's `BlankSAMAccountName` rule for new people. |
-| `Title`          | `Title`          | VARCHAR(120)| same source as `Job Code Desc` (primary assignment `title`); exposed under both names. |
+| `Title`          | `Title`          | VARCHAR(120)| the **PowerSchool** title (`USERS`/`TEACHERS.Title`), from the latest PowerSchool import snapshot; nullable. Distinct from `Job Code Desc` (NextGen). |
 | `FirstName`      | `FirstName`      | VARCHAR(80) | |
 | `LastName`       | `LastName`       | VARCHAR(80) | |
 | `StatusActive`   | `StatusActive`   | 1 / 0       | 1 when status ∈ (active, pending). |

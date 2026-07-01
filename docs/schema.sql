@@ -242,23 +242,31 @@ SELECT
       AND psi.is_active = 1
     ORDER BY psi.last_seen DESC, psi.id DESC
     LIMIT 1)                            AS PSID,
-  (SELECT a.title
-     FROM assignment a
-    WHERE a.person_id  = p.person_id
-      AND a.is_primary = 1
-    ORDER BY a.id
-    LIMIT 1)                            AS `Job Code Desc`,
+  COALESCE(
+    NULLIF((SELECT a.title
+              FROM assignment a
+             WHERE a.person_id  = p.person_id
+               AND a.is_primary = 1
+             ORDER BY a.id
+             LIMIT 1), ''),
+    (SELECT JSON_UNQUOTE(JSON_EXTRACT(sr.raw_json, '$.fields.title'))
+       FROM staging_record sr
+      WHERE sr.matched_person_id = p.person_id
+        AND sr.system = 'powerschool'
+      ORDER BY sr.id DESC
+      LIMIT 1)
+  )                                     AS `Job Code Desc`,   -- NextGen title, PowerSchool fallback
   s.ps_school_id                        AS HomeSchoolID,
   p.employee_id                         AS TeacherNumber,
   p.employee_id                         AS EmployeeID,
   p.email                               AS Email,
   p.username                            AS username,          -- NULL until minted
-  (SELECT a.title
-     FROM assignment a
-    WHERE a.person_id  = p.person_id
-      AND a.is_primary = 1
-    ORDER BY a.id
-    LIMIT 1)                            AS Title,
+  (SELECT JSON_UNQUOTE(JSON_EXTRACT(sr.raw_json, '$.fields.title'))
+     FROM staging_record sr
+    WHERE sr.matched_person_id = p.person_id
+      AND sr.system = 'powerschool'
+    ORDER BY sr.id DESC
+    LIMIT 1)                            AS Title,   -- PowerSchool title (latest import snapshot)
   p.first_name                          AS FirstName,
   p.last_name                           AS LastName,
   CASE WHEN p.status IN ('active','pending') THEN 1 ELSE 0 END AS StatusActive,
