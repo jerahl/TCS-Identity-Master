@@ -25,6 +25,7 @@ final class NormalizedRow
         public readonly ?string $gender = null,
         public readonly ?string $employeeId = null,
         public readonly ?string $schoolCode = null,
+        public readonly ?string $schoolName = null,    // incoming school name (when the feed maps one)
         public readonly ?int $schoolId = null,         // resolved
         public readonly ?string $ethnicitySource = null,
         public readonly ?string $ethnicityCode = null, // resolved ALSDE code

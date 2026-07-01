@@ -6,6 +6,7 @@ namespace App\Tests\Unit;
 
 use App\Import\ColumnMap;
 use App\Import\Normalizer;
+use App\Import\UnmatchedSchoolException;
 use PHPUnit\Framework\TestCase;
 
 final class NormalizerTest extends TestCase
@@ -129,6 +130,64 @@ final class NormalizerTest extends TestCase
         self::assertSame('106', Normalizer::normalizeSchoolCode('0106'));
         self::assertSame('0', Normalizer::normalizeSchoolCode('0'), 'all-zero stays "0" (Central Office)');
         self::assertSame('0', Normalizer::normalizeSchoolCode('000'));
+    }
+
+    public function testResolvesSchoolByName(): void
+    {
+        // Feed carries a "School Name" column; it matches a known school and wins
+        // over any code lookup. schoolId resolves; the name is carried on the row.
+        $norm = new Normalizer([], [], ['Central High School' => 42]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '90', 'FirstName' => 'Maya', 'LastName' => 'Patel', 'School Name' => 'Central High School'];
+
+        $row = $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+
+        self::assertSame(42, $row->schoolId);
+        self::assertSame('Central High School', $row->schoolName);
+        self::assertSame([], $row->warnings);
+    }
+
+    public function testUnmatchedSchoolNameIsAHardError(): void
+    {
+        $norm = new Normalizer([], [], ['Central High School' => 42]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '91', 'FirstName' => 'Devon', 'LastName' => 'Mills', 'School Name' => 'Nonexistent Academy'];
+
+        $this->expectException(UnmatchedSchoolException::class);
+        $this->expectExceptionMessage('Nonexistent Academy');
+        $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+    }
+
+    public function testSchoolNameMatchIgnoresCaseAndPunctuation(): void
+    {
+        $norm = new Normalizer([], [], ['Martin Luther King Jr Elementary School' => 7]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '1', 'FirstName' => 'A', 'LastName' => 'B', 'School Name' => "  martin luther king, jr. elementary school "];
+
+        $row = $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+        self::assertSame(7, $row->schoolId);
+    }
+
+    public function testFallsBackToSchoolCodeWhenNoNameColumn(): void
+    {
+        // No "School Name" column present -> resolve the SchoolID code as before.
+        $norm = new Normalizer(['powerschool' => ['2100' => 5]], [], ['Central High School' => 42]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '90', 'FirstName' => 'Maya', 'LastName' => 'Patel', 'SchoolID' => '2100'];
+
+        $row = $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+        self::assertSame(5, $row->schoolId);
+        self::assertNull($row->schoolName);
+        self::assertSame([], $row->warnings);
+    }
+
+    public function testNormalizeSchoolNameFoldsCaseAndPunctuation(): void
+    {
+        self::assertSame(
+            Normalizer::normalizeSchoolName('Martin Luther King Jr Elementary School'),
+            Normalizer::normalizeSchoolName('  Martin Luther King, Jr. Elementary School ')
+        );
+        self::assertSame('central high school', Normalizer::normalizeSchoolName('Central High School'));
     }
 
     public function testDateParsingVariants(): void
