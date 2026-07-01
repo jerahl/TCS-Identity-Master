@@ -71,16 +71,14 @@ final class PersonController extends Controller
         // Live AD verification (Adaxes REST). Read-only and config-gated — when
         // ADAXES_* isn't set the service returns configured=false and the panel
         // simply explains how to turn it on. The lookup only fires when enabled.
+        //
+        // NOTE: this is display-only. Viewing a record must never mutate it — a
+        // GET that writes (activates a pending person, backfills the username)
+        // makes the list and detail views disagree and lets a mere page view
+        // change data. Linking the AD account + activating a provisioned person
+        // is the batch AdUsernameImporter's job (and OneSync write-back), not the
+        // detail page's.
         $adaxes = $this->adaxes->verify($person, $sourceIds);
-
-        // Backfill from the live match: record the objectGUID and fill the
-        // username (locked) / email / UPN where the golden record is empty, so
-        // future lookups resolve by GUID and the record reflects the real AD
-        // account. Only fires when something is actually missing; idempotent,
-        // audited, best-effort (never breaks the page).
-        if (!empty($adaxes['found']) && $this->needsAdBackfill($person, $sourceIds, $adaxes)) {
-            [$person, $sourceIds] = $this->backfillFromAd($id, $adaxes, $person, $sourceIds);
-        }
 
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
@@ -105,61 +103,6 @@ final class PersonController extends Controller
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
-    }
-
-    /**
-     * Is there anything to backfill from the matched AD account — a GUID we don't
-     * hold, or an empty username/email on the golden record?
-     *
-     * @param array<string,mixed> $person
-     * @param array<int,array<string,mixed>> $sourceIds
-     * @param array<string,mixed> $adaxes
-     */
-    private function needsAdBackfill(array $person, array $sourceIds, array $adaxes): bool
-    {
-        $guid = (string) ($adaxes['guid'] ?? '');
-        if ($guid !== '') {
-            $haveGuid = false;
-            foreach ($sourceIds as $s) {
-                if (($s['system'] ?? '') === 'ad' && (string) ($s['source_key'] ?? '') === $guid) {
-                    $haveGuid = true;
-                    break;
-                }
-            }
-            if (!$haveGuid) {
-                return true;
-            }
-        }
-        return trim((string) ($person['username'] ?? '')) === ''
-            || trim((string) ($person['email'] ?? '')) === '';
-    }
-
-    /**
-     * Record the matched AD account's objectGUID + fill empty username/email/UPN
-     * on the golden record (PersonWriter::linkAdAccount). Idempotent and audited;
-     * a write failure is logged and never breaks the page. Returns the refreshed
-     * [person, sourceIds].
-     *
-     * @param array<string,mixed> $person
-     * @param array<int,array<string,mixed>> $sourceIds
-     * @return array{0:array<string,mixed>, 1:array<int,array<string,mixed>>}
-     */
-    private function backfillFromAd(int $personId, array $adaxes, array $person, array $sourceIds): array
-    {
-        try {
-            $attrs = $adaxes['attributes'] ?? [];
-            $db = Db::connect(Db::ROLE_APP);
-            (new PersonWriter($db, new AuditService($db)))->linkAdAccount($personId, [
-                'guid'     => $adaxes['guid'] ?? null,
-                'username' => $attrs['samaccountname'] ?? null,
-                'email'    => $attrs['mail'] ?? null,
-                'upn'      => $attrs['userprincipalname'] ?? null,
-            ], $this->currentUser()['name']);
-            return [$this->people->find($personId) ?? $person, $this->people->sourceIds($personId)];
-        } catch (\Throwable $e) {
-            error_log('[idm] adaxes backfill: ' . $e->getMessage());
-            return [$person, $sourceIds];
-        }
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
