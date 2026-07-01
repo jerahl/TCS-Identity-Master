@@ -14,7 +14,7 @@ use PDO;
  * capped account_sync_event history.
  *
  * Mapping (verified against the live schema):
- *   os_users.userId        = our person_uuid  (sourceId = our IDM source)
+ *   os_users.userId        = our person_uuid  (sourceId = our IDM feeds: students + faculty)
  *   os_users.id            -> os_export_log.userId (numeric)
  *   os_export_log          = per (user, destination) export: action, actionStatus
  *   os_export_log_part     = detail messages (sourceId = os_export_log.id)
@@ -32,6 +32,26 @@ final class OneSyncResultImporter
     {
         $this->src = $src ?? Db::connectOneSyncSource();
         $this->app = $app ?? Db::connect(Db::ROLE_WRITEBACK);
+    }
+
+    /**
+     * The OneSync os_users.sourceId values our feeds land under. There are now two
+     * distinct feeds — students and faculty — each with its own source id, so we
+     * read users from every configured source. Falls back to the legacy single
+     * ONESYNC_DB_SOURCE_ID when the per-feed vars are unset.
+     *
+     * @return list<int> unique, positive source ids
+     */
+    public static function sourceIds(): array
+    {
+        $ids = [];
+        foreach (['ONESYNC_DB_SOURCE_ID_STUDENTS', 'ONESYNC_DB_SOURCE_ID_FACULTY', 'ONESYNC_DB_SOURCE_ID'] as $key) {
+            $val = (int) Config::get($key, '0');
+            if ($val > 0) {
+                $ids[$val] = $val;
+            }
+        }
+        return array_values($ids);
     }
 
     /** os_export_log.actionStatus -> account_sync_status.last_status. */
@@ -72,8 +92,11 @@ final class OneSyncResultImporter
     public function run(bool $dryRun = false, ?string $actor = null): array
     {
         $actor ??= 'system:import_onesync_db';
-        $sourceId = (int) Config::get('ONESYNC_DB_SOURCE_ID', '21');
+        $sourceIds = self::sourceIds();
         $counts = ['users' => 0, 'rows' => 0, 'upserted' => 0, 'failed' => 0, 'no_person' => 0, 'errors' => 0];
+        if ($sourceIds === []) {
+            return ['dry_run' => $dryRun, 'counts' => $counts, 'note' => 'No OneSync source ids configured (set ONESYNC_DB_SOURCE_ID_STUDENTS / ONESYNC_DB_SOURCE_ID_FACULTY).'];
+        }
 
         // Destinations: id -> name/typeId.
         $dests = [];
@@ -81,10 +104,10 @@ final class OneSyncResultImporter
             $dests[(int) $d['id']] = ['name' => (string) $d['name'], 'typeId' => (int) $d['typeId']];
         }
 
-        // Our users in OneSync (faculty/staff imported from our IDM source).
+        // Our users in OneSync (students + faculty imported from our IDM feeds).
         $idToUuid = [];
-        $u = $this->src->prepare('SELECT id, userId FROM os_users WHERE sourceId = :sid');
-        $u->execute([':sid' => $sourceId]);
+        $in = implode(',', array_map('intval', $sourceIds));
+        $u = $this->src->query("SELECT id, userId FROM os_users WHERE sourceId IN ({$in})");
         foreach ($u->fetchAll() as $r) {
             $uuid = trim((string) $r['userId']);
             if (strlen($uuid) === 36) {            // our person_uuid; skip non-UUID source ids
@@ -93,7 +116,8 @@ final class OneSyncResultImporter
         }
         $counts['users'] = count($idToUuid);
         if ($idToUuid === []) {
-            return ['dry_run' => $dryRun, 'counts' => $counts, 'note' => "No os_users with sourceId={$sourceId} (set ONESYNC_DB_SOURCE_ID)."];
+            $list = implode(', ', $sourceIds);
+            return ['dry_run' => $dryRun, 'counts' => $counts, 'note' => "No os_users with sourceId in ({$list}) (check ONESYNC_DB_SOURCE_ID_STUDENTS / ONESYNC_DB_SOURCE_ID_FACULTY)."];
         }
 
         // Latest export id per (user, destination), then fetch those rows.

@@ -37,4 +37,37 @@ final class OneSyncResultTest extends TestCase
         self::assertSame('CSV', OneSyncResultImporter::destType(2));
         self::assertNull(OneSyncResultImporter::destType(99));
     }
+
+    public function testSourceIdsReadsBothFeeds(): void
+    {
+        putenv('ONESYNC_DB_SOURCE_ID_STUDENTS=31');
+        putenv('ONESYNC_DB_SOURCE_ID_FACULTY=32');
+        putenv('ONESYNC_DB_SOURCE_ID'); // legacy unset
+
+        self::assertSame([31, 32], OneSyncResultImporter::sourceIds());
+
+        putenv('ONESYNC_DB_SOURCE_ID_STUDENTS');
+        putenv('ONESYNC_DB_SOURCE_ID_FACULTY');
+    }
+
+    public function testSourceIdsFallsBackToLegacyAndDedupes(): void
+    {
+        putenv('ONESYNC_DB_SOURCE_ID_STUDENTS');
+        putenv('ONESYNC_DB_SOURCE_ID_FACULTY=32');
+        putenv('ONESYNC_DB_SOURCE_ID=32'); // duplicate of faculty — must collapse
+
+        self::assertSame([32], OneSyncResultImporter::sourceIds());
+
+        putenv('ONESYNC_DB_SOURCE_ID_FACULTY');
+        putenv('ONESYNC_DB_SOURCE_ID');
+    }
+
+    public function testSourceIdsEmptyWhenNoneConfigured(): void
+    {
+        putenv('ONESYNC_DB_SOURCE_ID_STUDENTS');
+        putenv('ONESYNC_DB_SOURCE_ID_FACULTY');
+        putenv('ONESYNC_DB_SOURCE_ID');
+
+        self::assertSame([], OneSyncResultImporter::sourceIds());
+    }
 }
