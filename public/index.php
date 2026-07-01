@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 use App\Controller\AuthController;
 use App\Controller\DashboardController;
+use App\Controller\GoogleController;
 use App\Controller\ImportController;
 use App\Controller\PageController;
 use App\Controller\PersonController;
@@ -65,6 +66,7 @@ try {
     $users = new UserController();
     $audit = new \App\Controller\AuditController();
     $authCtl = new AuthController();
+    $google = new GoogleController();
 
     $router = new Router();
 
@@ -100,8 +102,11 @@ try {
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));
+    // Direct-to-Google provisioning (bypasses OneSync): link/create/push/suspend/restore.
+    $router->post('/people/{id}/google/{action}', $guard('edit', static fn(array $p) => $google->act($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
     $router->post('/import/fetch', $guard('edit', static fn() => $import->fetch()));
+    $router->post('/import/google-sync', $guard('edit', static fn() => $import->googleSync()));
 
     // ---- Admin only ----
     $router->get('/users', $guard('admin', static fn() => $users->index()));

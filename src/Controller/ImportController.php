@@ -8,9 +8,11 @@ use App\Config;
 use App\Import\Importer;
 use App\Import\ImportSource;
 use App\Http\Upload;
+use App\Service\GoogleWorkspaceService;
 use App\Service\ImportService;
 use App\Support\Csrf;
 use App\Sync\FeedSync;
+use App\Sync\GoogleSync;
 
 /**
  * Import / feed status: batch history with a drill-in to a batch's staged rows
@@ -39,6 +41,7 @@ final class ImportController extends Controller
             'sources' => ImportSource::webUploadable(),
             'sftpSources' => FeedSync::configuredSources(),
             'psOdbc'  => FeedSync::powerSchoolOdbcEnabled(),
+            'googleReady' => (new GoogleWorkspaceService())->configured(),
             'csrf'    => Csrf::token(),
         ], 'import', 'Configuration  /  Import & feeds', 'Import / feeds — TCS Identity Master');
     }
@@ -130,6 +133,40 @@ final class ImportController extends Controller
         } catch (\Throwable $e) {
             error_log('[idm] feed fetch: ' . $e->getMessage());
             $this->flash('Feed pull failed: ' . $e->getMessage());
+        }
+        return $this->redirect(url('/import'));
+    }
+
+    /**
+     * Reconcile the golden record to Google Workspace directly, bypassing
+     * OneSync (editor+). Supports a dry-run (plan only). Config-gated on
+     * GOOGLE_DIRECT_ENABLED + GOOGLE_SA_*; honors the threshold guardrail.
+     */
+    public function googleSync(): string
+    {
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect(url('/import'));
+        }
+        $sync = new GoogleSync();
+        if (!$sync->configured()) {
+            $this->flash('Direct Google provisioning is off (set GOOGLE_DIRECT_ENABLED=true plus the GOOGLE_SA_* service-account credentials and GOOGLE_ADMIN_SUBJECT).');
+            return $this->redirect(url('/import'));
+        }
+        $dryRun = !empty($_POST['dry_run']);
+        try {
+            $r = $sync->run($dryRun, $this->currentUser()['name']);
+            $c = $r['counts'];
+            if ($r['blocked']) {
+                $this->flash($r['note'] ?? 'Google sync blocked by the threshold guardrail — nothing written.');
+            } else {
+                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · in-sync %d · no-email %d · errors %d',
+                    $dryRun ? 'Google sync (dry run)' : 'Google sync',
+                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['in_sync'], $c['no_email'], $c['errors']));
+            }
+        } catch (\Throwable $e) {
+            error_log('[idm] google sync: ' . $e->getMessage());
+            $this->flash('Google sync failed: ' . $e->getMessage());
         }
         return $this->redirect(url('/import'));
     }

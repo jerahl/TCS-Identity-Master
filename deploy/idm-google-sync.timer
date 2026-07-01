@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the TCS Identity direct Google Workspace sync (nightly)
+
+[Timer]
+# 04:00 daily — after the feed imports (03:15) have refreshed the golden record.
+# Adjust to taste. A --dry-run pass first (manually or a second unit) is wise.
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
