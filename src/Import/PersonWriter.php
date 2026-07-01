@@ -576,6 +576,40 @@ final class PersonWriter
         return true;
     }
 
+    /** Assignment columns source reconciliation may overwrite (title comes from both feeds). */
+    private const ASSIGNMENT_OVERRIDABLE = ['title'];
+
+    /**
+     * Overwrite a column on one of the person's assignments with an operator-chosen
+     * reconciliation value (e.g. adopt PowerSchool's title). Whitelisted columns
+     * only (throws otherwise); the assignment must belong to the person. Audited +
+     * a lifecycle event. Returns false if the assignment is missing or unchanged.
+     */
+    public function setAssignmentField(int $personId, int $assignmentId, string $column, ?string $value, string $actor, string $summary): bool
+    {
+        if (!in_array($column, self::ASSIGNMENT_OVERRIDABLE, true)) {
+            throw new \InvalidArgumentException("Column '{$column}' is not an overridable assignment field.");
+        }
+        // $column is whitelisted above, so interpolating it is safe.
+        $stmt = $this->db->prepare("SELECT {$column} AS cur FROM assignment WHERE id = :aid AND person_id = :pid");
+        $stmt->execute([':aid' => $assignmentId, ':pid' => $personId]);
+        $row = $stmt->fetch();
+        if ($row === false) {
+            return false; // no such assignment for this person
+        }
+
+        $val = ($value === '' ? null : $value);
+        if ((string) ($row['cur'] ?? '') === (string) ($val ?? '')) {
+            return false; // unchanged
+        }
+
+        $this->db->prepare("UPDATE assignment SET {$column} = :v WHERE id = :aid AND person_id = :pid")
+            ->execute([':v' => $val, ':aid' => $assignmentId, ':pid' => $personId]);
+        $this->audit->log('assignment', $assignmentId, 'update', [$column => $row['cur']], [$column => $val], $actor);
+        $this->audit->lifecycle($personId, 'update', ['summary' => $summary], $actor);
+        return true;
+    }
+
     /** Lifecycle event type for a status transition. */
     public static function statusEventType(string $old, string $new): string
     {

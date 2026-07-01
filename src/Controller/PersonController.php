@@ -150,8 +150,9 @@ final class PersonController extends Controller
                 break;
             }
         }
-        $column = FieldMap::goldenColumn($key);
-        if ($row === null || empty($row['overridable']) || $column === null
+        $personCol = FieldMap::goldenColumn($key);
+        $assignCol = FieldMap::assignmentColumn($key);
+        if ($row === null || empty($row['overridable']) || ($personCol === null && $assignCol === null)
             || !in_array($row['state'], ['differ', 'missing'], true)) {
             $this->flash('That field can’t be reconciled.');
             return $this->redirect($back);
@@ -167,18 +168,32 @@ final class PersonController extends Controller
             $value = $parsed;
         }
 
-        // Ethnicity: keep the ALSDE code in step with the chosen source value.
-        $cols = [$column => ($value === '' ? null : $value)];
-        if ($column === 'ethnicity_source') {
-            $cols['ethnicity_code'] = $value === '' ? null : ($this->people->ethnicityCodeFor($value) ?? null);
-        }
-
         $sourceLabel = $source === 'nextgen' ? 'NextGen' : 'PowerSchool';
         $summary = sprintf('%s set from %s (source reconciliation)', $row['label'], $sourceLabel);
 
         try {
             $db = Db::connect(Db::ROLE_APP);
-            $changed = (new PersonWriter($db, new AuditService($db)))->setGoldenFields($id, $cols, $this->currentUser()['name'], $summary);
+            $writer = new PersonWriter($db, new AuditService($db));
+            $actor = $this->currentUser()['name'];
+
+            if ($assignCol !== null) {
+                // Assignment-backed field (title): write the person's primary
+                // assignment — the same row the reconciliation panel compares against.
+                $primary = $assignments[0] ?? null;
+                if ($primary === null) {
+                    $this->flash('No assignment on this record to update.');
+                    return $this->redirect($back);
+                }
+                $changed = $writer->setAssignmentField($id, (int) $primary['id'], $assignCol, ($value === '' ? null : $value), $actor, $summary);
+            } else {
+                // Person golden field. Keep the ALSDE code in step with an ethnicity pick.
+                $cols = [$personCol => ($value === '' ? null : $value)];
+                if ($personCol === 'ethnicity_source') {
+                    $cols['ethnicity_code'] = $value === '' ? null : ($this->people->ethnicityCodeFor($value) ?? null);
+                }
+                $changed = $writer->setGoldenFields($id, $cols, $actor, $summary);
+            }
+
             $this->flash($changed
                 ? sprintf('%s set to the %s value.', $row['label'], $sourceLabel)
                 : sprintf('%s already matches the %s value — no change.', $row['label'], $sourceLabel));

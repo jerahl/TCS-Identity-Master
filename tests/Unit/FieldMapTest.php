@@ -143,9 +143,11 @@ final class FieldMapTest extends TestCase
         // A person.* field present on both sides is overridable and names its column.
         self::assertTrue($rows['hr_email']['overridable']);
         self::assertSame('hr_email', $rows['hr_email']['golden']);
-        // Title lives on the assignment, not the golden person record — not overridable.
-        self::assertFalse($rows['title']['overridable']);
+        // Title comes from both feeds but lives on the assignment — overridable, with
+        // no person golden column (it writes the primary assignment instead).
+        self::assertTrue($rows['title']['overridable']);
         self::assertNull($rows['title']['golden']);
+        self::assertSame('title', FieldMap::assignmentColumn('title'));
         // School code is a different code space on each side — never overridable.
         self::assertFalse($rows['school_code']['overridable']);
         // DOB is PowerSchool-only (no NextGen side to choose between) — not overridable.

@@ -200,19 +200,34 @@ final class FieldMap
         return $f['nextgen'] !== null
             && $f['powerschool'] !== null
             && $f['key'] !== 'school_code'          // codes live in different spaces
-            && self::goldenColumn($f['key']) !== null;
+            && (self::goldenColumn($f['key']) !== null || self::assignmentColumn($f['key']) !== null);
     }
 
     /**
      * The `person` column a reconcile field writes to (golden target), or null
-     * when the value lives on the assignment (title/job_code) or is OneSync-owned.
+     * when the value lives on the assignment (title) or is OneSync-owned.
      */
     public static function goldenColumn(string $key): ?string
+    {
+        return self::targetColumn($key, 'person.');
+    }
+
+    /**
+     * The primary-`assignment` column a reconcile field writes to (e.g. title),
+     * or null when the value lives on the person record.
+     */
+    public static function assignmentColumn(string $key): ?string
+    {
+        return self::targetColumn($key, 'assignment.');
+    }
+
+    /** The column under $prefix a field's golden reference points at, or null. */
+    private static function targetColumn(string $key, string $prefix): ?string
     {
         foreach (self::FIELDS as $f) {
             if ($f['key'] === $key) {
                 $g = $f['golden'];
-                return ($g !== null && str_starts_with($g, 'person.')) ? substr($g, strlen('person.')) : null;
+                return ($g !== null && str_starts_with($g, $prefix)) ? substr($g, strlen($prefix)) : null;
             }
         }
         return null;
