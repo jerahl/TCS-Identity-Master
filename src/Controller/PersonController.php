@@ -270,6 +270,46 @@ final class PersonController extends Controller
         }
     }
 
+    /**
+     * Approve the disable of a person flagged on the dashboard "Not in NextGen —
+     * review to disable" panel. Sets status = 'disabled' (audited + a 'disable'
+     * lifecycle event via updateProfile), so OneSync disables — not orphans — the
+     * account on its next read of v_onesync_source. Editor+; CSRF-checked; a POST
+     * form (no inline JS, CSP-safe). Idempotent-ish: a no-op if already
+     * disabled/terminated. Always redirects back to the dashboard panel.
+     */
+    public function disable(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/dashboard') . '#disable';
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect($back);
+        }
+        $name = trim((string) $person['first_name'] . ' ' . (string) $person['last_name']);
+        if (in_array((string) $person['status'], ['disabled', 'terminated'], true)) {
+            $this->flash("{$name} is already {$person['status']} — no change.");
+            return $this->redirect($back);
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            (new PersonWriter($db, new AuditService($db)))
+                ->updateProfile($id, ['status' => 'disabled'], $this->currentUser()['name']);
+            $this->flash("{$name} disabled — OneSync will disable the account on its next read.");
+        } catch (\Throwable $e) {
+            error_log('[idm] person disable: ' . $e->getMessage());
+            $this->flash('Could not disable the record.');
+        }
+        return $this->redirect($back);
+    }
+
     /** Manual add form (for subs/contractors/interns not in HR). */
     public function addForm(array $old = [], string $error = ''): string
     {

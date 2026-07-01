@@ -422,11 +422,12 @@ changes, and all data mutations are written to `audit_log`.
   leavers NextGen drops without ever setting an end date (the panel shows both an
   "Exit date" and an "Off NextGen since" column so it's clear which fired).
   NextGen drives disable for its own people but never touches off-feed records,
-  so these are surfaced for an admin to review and disable (which makes OneSync
-  disable, not orphan, the account). It's a read-only flag — nothing is disabled
-  automatically. The same list is available on the CLI via
-  `php bin/flag_disable_candidates.php` (exit code 1 when any are flagged, so a
-  cron/monitor can alert).
+  so these are surfaced for review. Each row has a **Disable** button (editors+)
+  that sets the person to `disabled` — audited, with a `disable` lifecycle event
+  — so OneSync disables (not orphans) the account on its next read. Nothing is
+  disabled automatically; a human approves each one. The same list is available
+  on the CLI via `php bin/flag_disable_candidates.php` (exit code 1 when any are
+  flagged, so a cron/monitor can alert).
 
 **Staff drop-out tracking.** The NextGen import is a full-roster feed, so a
 person whose crosswalk id was active but is **absent from a completed import** is
