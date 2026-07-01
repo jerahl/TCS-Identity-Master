@@ -7,6 +7,7 @@ namespace App\Controller;
 use App\Db;
 use App\Import\FieldMap;
 use App\Import\NormalizedRow;
+use App\Import\Normalizer;
 use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AuditService;
@@ -102,6 +103,7 @@ final class PersonController extends Controller
             'hasPowerSchool' => $hasPowerSchool,
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
+            'csrf'           => Csrf::token(),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
 

@@ -12,10 +12,16 @@ use InvalidArgumentException;
  * custom map to the importer) to match the district's real export headers.
  *
  * Logical fields: source_key, employee_id, first, middle, last, preferred, dob,
- * gender, ethnicity, school_code, person_type, title, job_code, fte, hire_date,
- * position_start_date, end_date, is_primary, and the NextGen HR contact/position
- * fields hr_email, position_number, cctr_description, phone, address1, address2,
- * city, state_code, zip_code.
+ * gender, ethnicity, school_name, school_code, person_type, title, job_code, fte,
+ * hire_date, position_start_date, end_date, is_primary, and the NextGen HR
+ * contact/position fields hr_email, position_number, cctr_description, phone,
+ * address1, address2, city, state_code, zip_code.
+ *
+ * School resolution: when a feed maps school_name, the normalizer matches that
+ * name to a known school and ERRORS the row if it doesn't match; school_code is
+ * the numeric fallback for feeds that only carry a building code. The operator
+ * feeds below (intern/sub/contractor) map both, so a "School Name" column — when
+ * present — takes precedence over the "SchoolID" code.
  */
 final class ColumnMap
 {
@@ -57,8 +63,9 @@ final class ColumnMap
             'first'       => 'TEACHERS.First_Name',
             'last'        => 'TEACHERS.Last_Name',
         ],
-        // Intern roster (e.g. university placements). No employee id; school code
-        // is a PowerSchool SchoolID. person_type is forced to 'intern'.
+        // Intern roster (e.g. university placements). No employee id. A "School
+        // Name" column (matched to a known school) takes precedence over the
+        // numeric SchoolID code. person_type is forced to 'intern'.
         'intern' => [
             'source_key'  => 'InternID',
             'first'       => 'FirstName',
@@ -68,6 +75,7 @@ final class ColumnMap
             'dob'         => 'DOB',
             'gender'      => 'Gender',
             'ethnicity'   => 'Ethnicity',
+            'school_name' => 'School Name',
             'school_code' => 'SchoolID',
             'title'       => 'Placement',
             'fte'         => 'FTE',
@@ -86,6 +94,7 @@ final class ColumnMap
             'dob'         => 'DOB',
             'gender'      => 'Gender',
             'ethnicity'   => 'Ethnicity',
+            'school_name' => 'School Name',
             'school_code' => 'SchoolID',
             'title'       => 'Assignment',
             'fte'         => 'FTE',
@@ -104,6 +113,7 @@ final class ColumnMap
             'dob'         => 'DOB',
             'gender'      => 'Gender',
             'ethnicity'   => 'Ethnicity',
+            'school_name' => 'School Name',
             'school_code' => 'SchoolID',
             'title'       => 'Role',
             'hire_date'   => 'StartDate',
