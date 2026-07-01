@@ -10,7 +10,8 @@ declare(strict_types=1);
  *   php bin/import_onesync_db.php
  *
  * Reads OneSync read-only (ONESYNC_DB_*), writes as the write-back role. Joins
- * os_users.userId = our person_uuid (sourceId = ONESYNC_DB_SOURCE_ID, default 21).
+ * os_users.userId = our person_uuid, reading both IDM feeds
+ * (sourceId in ONESYNC_DB_SOURCE_ID_STUDENTS / ONESYNC_DB_SOURCE_ID_FACULTY).
  */
 
 use App\Import\OneSyncResultImporter;
@@ -33,6 +34,7 @@ if (isset($result['note'])) {
 }
 $c = $result['counts'];
 echo "  users {$c['users']}  ·  rows {$c['rows']}  ·  upserted {$c['upserted']}"
-    . "  ·  failed {$c['failed']}  ·  no-person {$c['no_person']}  ·  errors {$c['errors']}\n";
+    . "  ·  activated {$c['activated']}  ·  failed {$c['failed']}"
+    . "  ·  no-person {$c['no_person']}  ·  errors {$c['errors']}\n";
 
 exit($c['errors'] > 0 ? 1 : 0);

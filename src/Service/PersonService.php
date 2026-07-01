@@ -82,6 +82,12 @@ final class PersonService
                 $likes[] = "p.{$col} LIKE {$ph}";
                 $params[$ph] = '%' . $q . '%';
             }
+            // A first-and-last-name query (e.g. "John Smith") never lives in a
+            // single column, so match the concatenated full name in both orders.
+            $likes[] = "CONCAT_WS(' ', p.first_name, p.last_name) LIKE :qfl";
+            $params[':qfl'] = '%' . $q . '%';
+            $likes[] = "CONCAT_WS(' ', p.last_name, p.first_name) LIKE :qlf";
+            $params[':qlf'] = '%' . $q . '%';
             $where[] = '(' . implode(' OR ', $likes) . ')';
         }
 

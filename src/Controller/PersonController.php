@@ -72,16 +72,14 @@ final class PersonController extends Controller
         // Live AD verification (Adaxes REST). Read-only and config-gated — when
         // ADAXES_* isn't set the service returns configured=false and the panel
         // simply explains how to turn it on. The lookup only fires when enabled.
+        //
+        // NOTE: this is display-only. Viewing a record must never mutate it — a
+        // GET that writes (activates a pending person, backfills the username)
+        // makes the list and detail views disagree and lets a mere page view
+        // change data. Linking the AD account + activating a provisioned person
+        // is the batch AdUsernameImporter's job (and OneSync write-back), not the
+        // detail page's.
         $adaxes = $this->adaxes->verify($person, $sourceIds);
-
-        // Backfill from the live match: record the objectGUID and fill the
-        // username (locked) / email / UPN where the golden record is empty, so
-        // future lookups resolve by GUID and the record reflects the real AD
-        // account. Only fires when something is actually missing; idempotent,
-        // audited, best-effort (never breaks the page).
-        if (!empty($adaxes['found']) && $this->needsAdBackfill($person, $sourceIds, $adaxes)) {
-            [$person, $sourceIds] = $this->backfillFromAd($id, $adaxes, $person, $sourceIds);
-        }
 
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
@@ -107,156 +105,6 @@ final class PersonController extends Controller
             'idmOnly'        => $idmOnly,
             'csrf'           => Csrf::token(),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
-    }
-
-    /**
-     * Source reconciliation: adopt NextGen's or PowerSchool's value for a single
-     * golden-record field when the two disagree. Editor+; CSRF-checked; a POST
-     * form (no inline JS, CSP-safe). The chosen value is re-derived server-side
-     * from the staged sources — the form only names the field and the source — so
-     * the write can't be tampered with. Redirects back to the reconciliation panel.
-     */
-    public function reconcile(array $params): string
-    {
-        $id = (int) ($params['id'] ?? 0);
-        $back = url('/people/' . $id) . '#reconcile';
-
-        if (!Csrf::check($_POST['_csrf'] ?? null)) {
-            $this->flash('Invalid session token — please retry.');
-            return $this->redirect($back);
-        }
-        $person = $id > 0 ? $this->people->find($id) : null;
-        if ($person === null) {
-            http_response_code(404);
-            return $this->render('pages/not_found', ['message' => 'No person with that id.'], 'people', 'People  /  Not found', 'Not found');
-        }
-
-        $key = (string) ($_POST['field'] ?? '');
-        $source = (string) ($_POST['source'] ?? '');
-        if (!in_array($source, ['nextgen', 'powerschool'], true)) {
-            $this->flash('Pick a valid source.');
-            return $this->redirect($back);
-        }
-
-        // Rebuild the reconcile rows server-side so we adopt exactly the value the
-        // operator saw, and can re-check that the field is genuinely reconcilable.
-        $src = $this->people->latestSourceValues($id);
-        $idmOnly = $src['nextgen'] === null && $src['powerschool'] === null && empty($src['powerschool_stale']);
-        $assignments = $this->people->assignments($id);
-        $row = null;
-        foreach (FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly) as $r) {
-            if ($r['key'] === $key) {
-                $row = $r;
-                break;
-            }
-        }
-        $personCol = FieldMap::goldenColumn($key);
-        $assignCol = FieldMap::assignmentColumn($key);
-        if ($row === null || empty($row['overridable']) || ($personCol === null && $assignCol === null)
-            || !in_array($row['state'], ['differ', 'missing'], true)) {
-            $this->flash('That field can’t be reconciled.');
-            return $this->redirect($back);
-        }
-
-        $value = trim((string) ($source === 'nextgen' ? $row['ngValue'] : $row['psValue']));
-        if (FieldMap::isDateField($key) && $value !== '') {
-            $parsed = Normalizer::parseDate($value);
-            if ($parsed === null) {
-                $this->flash('Could not parse that date value.');
-                return $this->redirect($back);
-            }
-            $value = $parsed;
-        }
-
-        $sourceLabel = $source === 'nextgen' ? 'NextGen' : 'PowerSchool';
-        $summary = sprintf('%s set from %s (source reconciliation)', $row['label'], $sourceLabel);
-
-        try {
-            $db = Db::connect(Db::ROLE_APP);
-            $writer = new PersonWriter($db, new AuditService($db));
-            $actor = $this->currentUser()['name'];
-
-            if ($assignCol !== null) {
-                // Assignment-backed field (title): write the person's primary
-                // assignment — the same row the reconciliation panel compares against.
-                $primary = $assignments[0] ?? null;
-                if ($primary === null) {
-                    $this->flash('No assignment on this record to update.');
-                    return $this->redirect($back);
-                }
-                $changed = $writer->setAssignmentField($id, (int) $primary['id'], $assignCol, ($value === '' ? null : $value), $actor, $summary);
-            } else {
-                // Person golden field. Keep the ALSDE code in step with an ethnicity pick.
-                $cols = [$personCol => ($value === '' ? null : $value)];
-                if ($personCol === 'ethnicity_source') {
-                    $cols['ethnicity_code'] = $value === '' ? null : ($this->people->ethnicityCodeFor($value) ?? null);
-                }
-                $changed = $writer->setGoldenFields($id, $cols, $actor, $summary);
-            }
-
-            $this->flash($changed
-                ? sprintf('%s set to the %s value.', $row['label'], $sourceLabel)
-                : sprintf('%s already matches the %s value — no change.', $row['label'], $sourceLabel));
-        } catch (\Throwable $e) {
-            error_log('[idm] reconcile: ' . $e->getMessage());
-            $this->flash('Could not update the field.');
-        }
-        return $this->redirect($back);
-    }
-
-    /**
-     * Is there anything to backfill from the matched AD account — a GUID we don't
-     * hold, or an empty username/email on the golden record?
-     *
-     * @param array<string,mixed> $person
-     * @param array<int,array<string,mixed>> $sourceIds
-     * @param array<string,mixed> $adaxes
-     */
-    private function needsAdBackfill(array $person, array $sourceIds, array $adaxes): bool
-    {
-        $guid = (string) ($adaxes['guid'] ?? '');
-        if ($guid !== '') {
-            $haveGuid = false;
-            foreach ($sourceIds as $s) {
-                if (($s['system'] ?? '') === 'ad' && (string) ($s['source_key'] ?? '') === $guid) {
-                    $haveGuid = true;
-                    break;
-                }
-            }
-            if (!$haveGuid) {
-                return true;
-            }
-        }
-        return trim((string) ($person['username'] ?? '')) === ''
-            || trim((string) ($person['email'] ?? '')) === '';
-    }
-
-    /**
-     * Record the matched AD account's objectGUID + fill empty username/email/UPN
-     * on the golden record (PersonWriter::linkAdAccount). Idempotent and audited;
-     * a write failure is logged and never breaks the page. Returns the refreshed
-     * [person, sourceIds].
-     *
-     * @param array<string,mixed> $person
-     * @param array<int,array<string,mixed>> $sourceIds
-     * @return array{0:array<string,mixed>, 1:array<int,array<string,mixed>>}
-     */
-    private function backfillFromAd(int $personId, array $adaxes, array $person, array $sourceIds): array
-    {
-        try {
-            $attrs = $adaxes['attributes'] ?? [];
-            $db = Db::connect(Db::ROLE_APP);
-            (new PersonWriter($db, new AuditService($db)))->linkAdAccount($personId, [
-                'guid'     => $adaxes['guid'] ?? null,
-                'username' => $attrs['samaccountname'] ?? null,
-                'email'    => $attrs['mail'] ?? null,
-                'upn'      => $attrs['userprincipalname'] ?? null,
-            ], $this->currentUser()['name']);
-            return [$this->people->find($personId) ?? $person, $this->people->sourceIds($personId)];
-        } catch (\Throwable $e) {
-            error_log('[idm] adaxes backfill: ' . $e->getMessage());
-            return [$person, $sourceIds];
-        }
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
