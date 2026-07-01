@@ -28,7 +28,28 @@ final class DashboardService
         return (int) $this->db->query($sql)->fetchColumn();
     }
 
-    /** @return array{pendingReview:int,pendingActivation:int,missingUsername:int,unmapped:int,failedSync:int,lastFeed:?array} */
+    /**
+     * Shared predicate for "should be disabled" candidates: people who are no
+     * longer in NextGen (no ACTIVE NextGen crosswalk id — covers manual
+     * contractors/interns/subs and anyone dropped off the feed) whose exit date
+     * (person.end_date) is already in the past, yet are still enabled
+     * (active/pending). NextGen drives disable for its own people but never
+     * touches off-feed records, so without this flag they linger enabled forever.
+     * Read-only: this only surfaces them; an admin reviews and disables.
+     */
+    private const DISABLE_CANDIDATE_FROM_WHERE =
+        "FROM person p
+         WHERE p.status IN ('active','pending')
+           AND p.end_date IS NOT NULL
+           AND p.end_date < CURDATE()
+           AND NOT EXISTS (
+               SELECT 1 FROM person_source_id psi
+               WHERE psi.person_id = p.person_id
+                 AND psi.system = 'nextgen'
+                 AND psi.is_active = 1
+           )";
+
+    /** @return array{pendingReview:int,pendingActivation:int,missingUsername:int,unmapped:int,failedSync:int,disableFlagged:int,lastFeed:?array} */
     public function kpis(): array
     {
         $unmappedEth = $this->count(
@@ -57,8 +78,27 @@ final class DashboardService
             'missingUsername'   => $this->count("SELECT COUNT(*) FROM person WHERE (username IS NULL OR username = '') AND status <> 'terminated'"),
             'unmapped'          => $unmappedEth + $unmappedSchool,
             'failedSync'        => $this->count("SELECT COUNT(*) FROM account_sync_status WHERE last_status = 'Fail'"),
+            'disableFlagged'    => $this->count("SELECT COUNT(*) " . self::DISABLE_CANDIDATE_FROM_WHERE),
             'lastFeed'          => $lastFeed === false ? null : $lastFeed,
         ];
+    }
+
+    /**
+     * People to review for disabling: not in NextGen (no active NextGen crosswalk
+     * id) with a past exit date, still enabled. See DISABLE_CANDIDATE_FROM_WHERE.
+     * Read-only — surfaced on the dashboard and by bin/flag_disable_candidates.php.
+     */
+    public function disableCandidates(int $limit = 50): array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT p.person_id, p.first_name, p.last_name, p.person_type,
+                    p.status, p.end_date, p.source_of_record
+             " . self::DISABLE_CANDIDATE_FROM_WHERE . "
+             ORDER BY p.end_date ASC, p.last_name, p.first_name
+             LIMIT " . (int) $limit
+        );
+        $stmt->execute();
+        return $stmt->fetchAll();
     }
 
     /** Recent lifecycle activity across all people. */

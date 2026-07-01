@@ -411,9 +411,18 @@ changes, and all data mutations are written to `audit_log`.
 ## Dashboard, reference data & import status (Milestone 6)
 
 - **Home / health** (`/`): KPI cards (pending review, pending activation, missing
-  username, unmapped values, **failed syncs**, last feed) that link to the
-  filtered views; recent activity; last feed per source; and the failed-sync
-  rollup (accounts whose last OneSync sync failed).
+  username, unmapped values, **failed syncs**, **to disable**, last feed) that
+  link to the filtered views; recent activity; last feed per source; the
+  failed-sync rollup (accounts whose last OneSync sync failed); and a
+  **"Not in NextGen — past exit date"** panel flagging people who are no longer
+  in NextGen (no active NextGen crosswalk id — manual contractors/interns/subs,
+  or anyone dropped off the feed) whose exit date has passed but are still
+  enabled. NextGen drives disable for its own people but never touches off-feed
+  records, so these are surfaced for an admin to review and disable (which makes
+  OneSync disable, not orphan, the account). It's a read-only flag — nothing is
+  disabled automatically. The same list is available on the CLI via
+  `php bin/flag_disable_candidates.php` (exit code 1 when any are flagged, so a
+  cron/monitor can alert).
 - **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
   ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
   **unmapped values surfaced** — ethnicity values seen on records and school codes

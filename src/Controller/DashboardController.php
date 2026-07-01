@@ -31,6 +31,7 @@ final class DashboardController extends Controller
             'activity'    => $this->dash->recentActivity(),
             'feeds'       => $feeds,
             'failedSyncs' => $this->dash->failedSyncs(),
+            'disableCandidates' => $this->dash->disableCandidates(),
             'syncHealth'  => $syncHealth,
             'studentSync' => $studentSync,
             'alerts'      => $this->buildAlerts($syncHealth, $feeds, $studentSync),
