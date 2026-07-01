@@ -520,6 +520,62 @@ final class PersonWriter
         return true;
     }
 
+    /**
+     * Golden-record columns an operator may overwrite via source reconciliation
+     * (picking NextGen vs PowerSchool on the person page). Deliberately excludes
+     * username/email/upn/status and anything OneSync owns.
+     */
+    private const GOLDEN_OVERRIDABLE = [
+        'first_name', 'last_name', 'employee_id', 'hr_email', 'hire_date', 'end_date',
+        'ethnicity_source', 'ethnicity_code', 'gender', 'phone', 'address1', 'city', 'state_code', 'zip_code',
+    ];
+
+    /**
+     * Overwrite one or more golden-record columns with operator-chosen values from
+     * source reconciliation. Whitelisted columns only (throws otherwise); the same
+     * "only write when different" rule as the other writers, so a no-op picks make
+     * no audit noise. Audited (before/after) + a lifecycle event. Returns whether
+     * anything actually changed.
+     *
+     * @param array<string,?string> $values golden column => chosen value (null clears)
+     */
+    public function setGoldenFields(int $personId, array $values, string $actor, string $summary): bool
+    {
+        foreach (array_keys($values) as $col) {
+            if (!in_array($col, self::GOLDEN_OVERRIDABLE, true)) {
+                throw new \InvalidArgumentException("Column '{$col}' is not an overridable golden field.");
+            }
+        }
+
+        $before = $this->snapshot($personId);
+        if ($before === null) {
+            return false;
+        }
+
+        $set = [];
+        $params = [];
+        foreach ($values as $col => $val) {
+            if ((string) ($before[$col] ?? '') === (string) ($val ?? '')) {
+                continue; // unchanged
+            }
+            $set[] = "{$col} = :{$col}";
+            $params[":{$col}"] = $val;
+        }
+        if ($set === []) {
+            return false;
+        }
+
+        $params[':id'] = $personId;
+        $params[':actor'] = $actor;
+        $this->db->prepare('UPDATE person SET ' . implode(', ', $set) . ', updated_by = :actor WHERE person_id = :id')
+            ->execute($params);
+
+        $after = $this->snapshot($personId);
+        $this->audit->log('person', $personId, 'update', $before, $after, $actor);
+        $this->audit->lifecycle($personId, 'update', ['summary' => $summary], $actor);
+        return true;
+    }
+
     /** Lifecycle event type for a status transition. */
     public static function statusEventType(string $old, string $new): string
     {

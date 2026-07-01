@@ -100,6 +100,7 @@ try {
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));
+    $router->post('/people/{id}/reconcile', $guard('edit', static fn(array $p) => $person->reconcile($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
     $router->post('/import/fetch', $guard('edit', static fn() => $import->fetch()));
 

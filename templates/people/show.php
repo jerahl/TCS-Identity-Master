@@ -213,6 +213,7 @@ $eventTitle = [
     <?php elseif ($differs > 0): ?>
       <div class="identity-note" style="margin-bottom:14px; color:#B42318;">
         <strong><?= e((string) $differs) ?></strong> field<?= $differs === 1 ? '' : 's' ?> differ between NextGen and PowerSchool — review before the next OneSync run.
+        <?php if (!empty($canEdit)): ?><span style="color:#52677A;">Use <strong>Use this</strong> beside a value to write it to the golden record.</span><?php endif; ?>
       </div>
     <?php else: ?>
       <div class="identity-note" style="margin-bottom:14px; color:#1F7A3D;">
@@ -229,15 +230,39 @@ $eventTitle = [
           <tr><td colspan="4" style="font-weight:600; color:#22343F; background:#F4F7F9; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px;"><?= e($glabel) ?></td></tr>
           <?php foreach ($groupRows as $f):
               $isDiff = in_array($f['state'], ['differ', 'missing'], true);
-              $v = $verdict[$f['state']] ?? null; ?>
+              $v = $verdict[$f['state']] ?? null;
+              $canPick = !empty($canEdit) && !empty($f['overridable']) && $isDiff;
+              $pickBtn = static function (string $source, string $value) use ($f, $p, $csrf): string {
+                  if ($value === '') { return ''; }
+                  ob_start(); ?>
+                  <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/reconcile')) ?>" style="display:inline; margin-top:4px;">
+                    <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+                    <input type="hidden" name="field" value="<?= e($f['key']) ?>">
+                    <input type="hidden" name="source" value="<?= e($source) ?>">
+                    <button type="submit" title="Write this value to the golden record"
+                      style="cursor:pointer; font-size:10.5px; font-weight:600; color:#3D6478; background:#EAF1F5; border:1px solid #CFE0E9; border-radius:9px; padding:1px 8px;">Use this</button>
+                  </form>
+                  <?php return (string) ob_get_clean();
+              }; ?>
           <tr<?= $isDiff ? ' style="background:#FFF8F7;"' : '' ?>>
             <td>
               <span style="color:#22343F; font-weight:500;"><?= e($f['label']) ?></span>
               <?php if ($f['pii']): ?> <span class="pii-tag">PII</span><?php endif; ?>
               <div class="mono" style="font-size:10.5px; color:#9AA9B4;"><?= e($f['nextgen'] ?? '—') ?> · <?= e($f['powerschool'] ?? '—') ?></div>
             </td>
-            <td><?= $f['ngValue'] === '' ? '<span class="value-missing">—</span>' : e($f['ngValue']) ?></td>
-            <td><?= $f['psValue'] === '' ? '<span class="value-missing">—</span>' : e($f['psValue']) ?></td>
+            <?php
+              $goldenTag = '<span title="Currently on the golden record" style="margin-left:6px; font-size:10px; font-weight:600; color:#1F7A3D; background:#E7F4EC; border-radius:9px; padding:1px 7px;">● in golden</span>';
+            ?>
+            <td>
+              <?= $f['ngValue'] === '' ? '<span class="value-missing">—</span>' : e($f['ngValue']) ?>
+              <?php if (!empty($f['overridable']) && !empty($f['ngIsGolden'])): ?><?= $goldenTag ?><?php endif; ?>
+              <?php if ($canPick && empty($f['ngIsGolden'])): ?><div><?= $pickBtn('nextgen', $f['ngValue']) ?></div><?php endif; ?>
+            </td>
+            <td>
+              <?= $f['psValue'] === '' ? '<span class="value-missing">—</span>' : e($f['psValue']) ?>
+              <?php if (!empty($f['overridable']) && !empty($f['psIsGolden'])): ?><?= $goldenTag ?><?php endif; ?>
+              <?php if ($canPick && empty($f['psIsGolden'])): ?><div><?= $pickBtn('powerschool', $f['psValue']) ?></div><?php endif; ?>
+            </td>
             <td>
               <?php if ($v !== null): ?>
                 <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; color:<?= e($v[0]) ?>; background:<?= e($v[1]) ?>;"><?= e($v[2]) ?></span>

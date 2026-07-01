@@ -7,6 +7,7 @@ namespace App\Controller;
 use App\Db;
 use App\Import\FieldMap;
 use App\Import\NormalizedRow;
+use App\Import\Normalizer;
 use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AuditService;
@@ -104,7 +105,88 @@ final class PersonController extends Controller
             'hasPowerSchool' => $hasPowerSchool,
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
+            'csrf'           => Csrf::token(),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
+    }
+
+    /**
+     * Source reconciliation: adopt NextGen's or PowerSchool's value for a single
+     * golden-record field when the two disagree. Editor+; CSRF-checked; a POST
+     * form (no inline JS, CSP-safe). The chosen value is re-derived server-side
+     * from the staged sources — the form only names the field and the source — so
+     * the write can't be tampered with. Redirects back to the reconciliation panel.
+     */
+    public function reconcile(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id) . '#reconcile';
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            http_response_code(404);
+            return $this->render('pages/not_found', ['message' => 'No person with that id.'], 'people', 'People  /  Not found', 'Not found');
+        }
+
+        $key = (string) ($_POST['field'] ?? '');
+        $source = (string) ($_POST['source'] ?? '');
+        if (!in_array($source, ['nextgen', 'powerschool'], true)) {
+            $this->flash('Pick a valid source.');
+            return $this->redirect($back);
+        }
+
+        // Rebuild the reconcile rows server-side so we adopt exactly the value the
+        // operator saw, and can re-check that the field is genuinely reconcilable.
+        $src = $this->people->latestSourceValues($id);
+        $idmOnly = $src['nextgen'] === null && $src['powerschool'] === null && empty($src['powerschool_stale']);
+        $assignments = $this->people->assignments($id);
+        $row = null;
+        foreach (FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly) as $r) {
+            if ($r['key'] === $key) {
+                $row = $r;
+                break;
+            }
+        }
+        $column = FieldMap::goldenColumn($key);
+        if ($row === null || empty($row['overridable']) || $column === null
+            || !in_array($row['state'], ['differ', 'missing'], true)) {
+            $this->flash('That field can’t be reconciled.');
+            return $this->redirect($back);
+        }
+
+        $value = trim((string) ($source === 'nextgen' ? $row['ngValue'] : $row['psValue']));
+        if (FieldMap::isDateField($key) && $value !== '') {
+            $parsed = Normalizer::parseDate($value);
+            if ($parsed === null) {
+                $this->flash('Could not parse that date value.');
+                return $this->redirect($back);
+            }
+            $value = $parsed;
+        }
+
+        // Ethnicity: keep the ALSDE code in step with the chosen source value.
+        $cols = [$column => ($value === '' ? null : $value)];
+        if ($column === 'ethnicity_source') {
+            $cols['ethnicity_code'] = $value === '' ? null : ($this->people->ethnicityCodeFor($value) ?? null);
+        }
+
+        $sourceLabel = $source === 'nextgen' ? 'NextGen' : 'PowerSchool';
+        $summary = sprintf('%s set from %s (source reconciliation)', $row['label'], $sourceLabel);
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $changed = (new PersonWriter($db, new AuditService($db)))->setGoldenFields($id, $cols, $this->currentUser()['name'], $summary);
+            $this->flash($changed
+                ? sprintf('%s set to the %s value.', $row['label'], $sourceLabel)
+                : sprintf('%s already matches the %s value — no change.', $row['label'], $sourceLabel));
+        } catch (\Throwable $e) {
+            error_log('[idm] reconcile: ' . $e->getMessage());
+            $this->flash('Could not update the field.');
+        }
+        return $this->redirect($back);
     }
 
     /**

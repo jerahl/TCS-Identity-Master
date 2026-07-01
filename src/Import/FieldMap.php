@@ -150,7 +150,7 @@ final class FieldMap
      * @param array<string,mixed>|null $primary  primary assignment row
      * @param array<string,mixed>|null $ngRaw    raw NextGen feed row
      * @param array<string,mixed>|null $psFields PowerSchool field snapshot
-     * @return array<int,array{key:string,label:string,group:string,nextgen:?string,powerschool:?string,pii:bool,ngValue:string,psValue:string,state:string}>
+     * @return array<int,array{key:string,label:string,group:string,nextgen:?string,powerschool:?string,pii:bool,ngValue:string,psValue:string,state:string,golden:?string,overridable:bool}>
      */
     public static function reconcileRows(array $person, ?array $primary, ?array $ngRaw, ?array $psFields, bool $idmOnly = false): array
     {
@@ -169,6 +169,9 @@ final class FieldMap
             if ($psValue === '' && $f['nextgen'] === null && $f['powerschool'] !== null) {
                 $psValue = self::valueFor($f, $person, $primary);
             }
+            // The value currently on the golden record, and which staged side (if
+            // any) it matches — so the picker can show the operator's current choice.
+            $goldenValue = self::valueFor($f, $person, $primary);
             $rows[] = [
                 'key'         => $f['key'],
                 'label'       => $f['label'],
@@ -179,9 +182,46 @@ final class FieldMap
                 'ngValue'     => $ngValue,
                 'psValue'     => $psValue,
                 'state'       => self::reconcileState($f, $ngValue, $psValue, $hasNg, $hasPs),
+                // The golden-record column this field writes to (null when it lives
+                // on the assignment or is OneSync-owned), and whether an operator may
+                // pick NextGen vs PowerSchool for it (both sides comparable).
+                'golden'      => self::goldenColumn($f['key']),
+                'overridable' => self::isOverridable($f),
+                'ngIsGolden'  => $ngValue !== '' && self::valuesEqual($f['key'], $ngValue, $goldenValue),
+                'psIsGolden'  => $psValue !== '' && self::valuesEqual($f['key'], $psValue, $goldenValue),
             ];
         }
         return $rows;
+    }
+
+    /** True when a reconcile field can be resolved by picking a source value. */
+    private static function isOverridable(array $f): bool
+    {
+        return $f['nextgen'] !== null
+            && $f['powerschool'] !== null
+            && $f['key'] !== 'school_code'          // codes live in different spaces
+            && self::goldenColumn($f['key']) !== null;
+    }
+
+    /**
+     * The `person` column a reconcile field writes to (golden target), or null
+     * when the value lives on the assignment (title/job_code) or is OneSync-owned.
+     */
+    public static function goldenColumn(string $key): ?string
+    {
+        foreach (self::FIELDS as $f) {
+            if ($f['key'] === $key) {
+                $g = $f['golden'];
+                return ($g !== null && str_starts_with($g, 'person.')) ? substr($g, strlen('person.')) : null;
+            }
+        }
+        return null;
+    }
+
+    /** True when a field's compared values are dates (normalized before writing). */
+    public static function isDateField(string $key): bool
+    {
+        return in_array($key, self::DATE_KEYS, true);
     }
 
     /**

@@ -128,6 +128,55 @@ final class FieldMapTest extends TestCase
         self::assertSame('1985-03-09', $rows['dob']['psValue']);
     }
 
+    public function testReconcileMarksComparablePersonFieldsOverridable(): void
+    {
+        $ngRaw = [
+            'Employee Number' => '15241', 'First Name' => 'Jennifer', 'Last Name' => 'Marsh',
+            'EMail Address' => 'jmarsh@example.org', 'Job Code Desc' => 'Teacher',
+        ];
+        $psFields = [
+            'employee_id' => '15241', 'first_name' => 'Jennifer', 'last_name' => 'Marsh',
+            'hr_email' => 'different@example.org', 'title' => 'Teacher',
+        ];
+        $rows = $this->reconcile($ngRaw, $psFields);
+
+        // A person.* field present on both sides is overridable and names its column.
+        self::assertTrue($rows['hr_email']['overridable']);
+        self::assertSame('hr_email', $rows['hr_email']['golden']);
+        // Title lives on the assignment, not the golden person record — not overridable.
+        self::assertFalse($rows['title']['overridable']);
+        self::assertNull($rows['title']['golden']);
+        // School code is a different code space on each side — never overridable.
+        self::assertFalse($rows['school_code']['overridable']);
+        // DOB is PowerSchool-only (no NextGen side to choose between) — not overridable.
+        self::assertFalse($rows['dob']['overridable']);
+    }
+
+    public function testReconcileFlagsWhichSideIsCurrentlyGolden(): void
+    {
+        // Golden record currently holds the NextGen email; sources disagree.
+        $person = ['hr_email' => 'jmarsh@example.org'];
+        $ngRaw = ['Employee Number' => '1', 'First Name' => 'J', 'Last Name' => 'M', 'EMail Address' => 'jmarsh@example.org'];
+        $psFields = ['employee_id' => '1', 'first_name' => 'J', 'last_name' => 'M', 'hr_email' => 'different@example.org'];
+        $rows = $this->reconcile($ngRaw, $psFields, false, $person);
+
+        self::assertSame('differ', $rows['hr_email']['state']);
+        self::assertTrue($rows['hr_email']['ngIsGolden'], 'golden currently matches the NextGen value');
+        self::assertFalse($rows['hr_email']['psIsGolden']);
+    }
+
+    public function testGoldenColumnAndDateFieldHelpers(): void
+    {
+        self::assertSame('first_name', FieldMap::goldenColumn('first_name'));
+        self::assertSame('hr_email', FieldMap::goldenColumn('hr_email'));
+        self::assertNull(FieldMap::goldenColumn('title'), 'assignment field has no person golden column');
+        // school_code maps to primary_school_id, but is guarded out of overriding
+        // by overridable=false (codes differ across systems) and the writer whitelist.
+        self::assertSame('primary_school_id', FieldMap::goldenColumn('school_code'));
+        self::assertTrue(FieldMap::isDateField('hire_date'));
+        self::assertFalse(FieldMap::isDateField('hr_email'));
+    }
+
     public function testReconcileWithoutPowerSchoolGivesNoVerdict(): void
     {
         $ngRaw = ['Employee Number' => '15241', 'First Name' => 'Jennifer', 'Last Name' => 'Marsh'];
