@@ -34,6 +34,7 @@ if (isset($result['note'])) {
 }
 $c = $result['counts'];
 echo "  users {$c['users']}  ·  rows {$c['rows']}  ·  upserted {$c['upserted']}"
-    . "  ·  failed {$c['failed']}  ·  no-person {$c['no_person']}  ·  errors {$c['errors']}\n";
+    . "  ·  activated {$c['activated']}  ·  failed {$c['failed']}"
+    . "  ·  no-person {$c['no_person']}  ·  errors {$c['errors']}\n";
 
 exit($c['errors'] > 0 ? 1 : 0);

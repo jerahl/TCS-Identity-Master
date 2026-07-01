@@ -6,6 +6,7 @@ namespace App\Import;
 
 use App\Config;
 use App\Db;
+use App\Service\AuditService;
 use PDO;
 
 /**
@@ -21,17 +22,21 @@ use PDO;
  *   os_destinations.id     -> name / typeId (3=AD, 5=Google, 2=CSV/file)
  *
  * We take the latest export per (user, destination) and, for failures, attach the
- * most recent message(s). Reads OneSync read-only; writes as the write-back role.
+ * most recent message(s). A pending person who provisioned successfully (a
+ * non-Disable Success export) is flipped to 'active' — the account is now live.
+ * Reads OneSync read-only; writes as the write-back role.
  */
 final class OneSyncResultImporter
 {
     private PDO $src;   // OneSync DB (read-only)
     private PDO $app;   // our DB (write-back role)
+    private AuditService $audit;
 
-    public function __construct(?PDO $src = null, ?PDO $app = null)
+    public function __construct(?PDO $src = null, ?PDO $app = null, ?AuditService $audit = null)
     {
         $this->src = $src ?? Db::connectOneSyncSource();
         $this->app = $app ?? Db::connect(Db::ROLE_WRITEBACK);
+        $this->audit = $audit ?? new AuditService($this->app);
     }
 
     /**
@@ -93,7 +98,7 @@ final class OneSyncResultImporter
     {
         $actor ??= 'system:import_onesync_db';
         $sourceIds = self::sourceIds();
-        $counts = ['users' => 0, 'rows' => 0, 'upserted' => 0, 'failed' => 0, 'no_person' => 0, 'errors' => 0];
+        $counts = ['users' => 0, 'rows' => 0, 'upserted' => 0, 'activated' => 0, 'failed' => 0, 'no_person' => 0, 'errors' => 0];
         if ($sourceIds === []) {
             return ['dry_run' => $dryRun, 'counts' => $counts, 'note' => 'No OneSync source ids configured (set ONESYNC_DB_SOURCE_ID_STUDENTS / ONESYNC_DB_SOURCE_ID_FACULTY).'];
         }
@@ -168,19 +173,25 @@ final class OneSyncResultImporter
             }
         }
 
-        $upsert = $this->app->prepare(
-            'INSERT INTO account_sync_status
-               (person_id, person_uuid, destination, dest_type, last_action, last_status, last_sync_at, message)
-             VALUES (:pid, :uuid, :dest, :dtype, :action, :status, :ts, :msg)
-             ON DUPLICATE KEY UPDATE person_id = VALUES(person_id), dest_type = VALUES(dest_type),
-               last_action = VALUES(last_action), last_status = VALUES(last_status),
-               last_sync_at = VALUES(last_sync_at), message = VALUES(message)'
-        );
-        $event = $this->app->prepare(
-            'INSERT INTO account_sync_event (person_uuid, destination, action, status, message, occurred_at)
-             VALUES (:uuid, :dest, :action, :status, :msg, :ts)'
-        );
-        $findPerson = $this->app->prepare('SELECT person_id FROM person WHERE person_uuid = :u');
+        // Only prepare the write statements on a real run — a dry-run must not
+        // touch (or even prepare against) the write-back tables.
+        $upsert = $event = null;
+        if (!$dryRun) {
+            $upsert = $this->app->prepare(
+                'INSERT INTO account_sync_status
+                   (person_id, person_uuid, destination, dest_type, last_action, last_status, last_sync_at, message)
+                 VALUES (:pid, :uuid, :dest, :dtype, :action, :status, :ts, :msg)
+                 ON DUPLICATE KEY UPDATE person_id = VALUES(person_id), dest_type = VALUES(dest_type),
+                   last_action = VALUES(last_action), last_status = VALUES(last_status),
+                   last_sync_at = VALUES(last_sync_at), message = VALUES(message)'
+            );
+            $event = $this->app->prepare(
+                'INSERT INTO account_sync_event (person_uuid, destination, action, status, message, occurred_at)
+                 VALUES (:uuid, :dest, :action, :status, :msg, :ts)'
+            );
+        }
+        $findPerson = $this->app->prepare('SELECT person_id, status FROM person WHERE person_uuid = :u');
+        $activated = [];   // person_ids flipped pending->active this run (avoid re-processing)
 
         foreach ($logs as $r) {
             $uuid = $idToUuid[(int) $r['userId']] ?? null;
@@ -199,10 +210,13 @@ final class OneSyncResultImporter
 
             try {
                 $pid = null;
+                $personStatus = null;
                 $findPerson->execute([':u' => $uuid]);
-                $found = $findPerson->fetchColumn();
-                $pid = $found === false ? null : (int) $found;
-                if ($pid === null) {
+                $prow = $findPerson->fetch();
+                if ($prow !== false) {
+                    $pid = (int) $prow['person_id'];
+                    $personStatus = (string) $prow['status'];
+                } else {
                     $counts['no_person']++;
                 }
                 if (!$dryRun) {
@@ -216,6 +230,17 @@ final class OneSyncResultImporter
                         ':action' => $action, ':status' => $status, ':msg' => $msg, ':ts' => $ts]);
                 }
                 $counts['upserted']++;
+
+                // A pending person that provisioned successfully is now live — flip
+                // to active. Skip Disable (a successful disable must not activate).
+                if ($pid !== null && $personStatus === 'pending'
+                    && $status === 'Success' && $action !== 'Disable'
+                    && !isset($activated[$pid])) {
+                    $activated[$pid] = true;
+                    if ($dryRun || $this->activate($pid, $dest['name'], $actor)) {
+                        $counts['activated']++;
+                    }
+                }
             } catch (\Throwable $e) {
                 $counts['errors']++;
             }
@@ -225,6 +250,25 @@ final class OneSyncResultImporter
             $this->pruneEvents();
         }
         return ['dry_run' => $dryRun, 'counts' => $counts];
+    }
+
+    /**
+     * Flip a freshly-provisioned person from 'pending' to 'active'. The SQL guard
+     * only touches 'pending', so a disabled/terminated record is never overridden;
+     * audit + lifecycle are written only when the row actually changed. Returns
+     * true when the person was flipped to active.
+     */
+    private function activate(int $personId, string $destination, string $actor): bool
+    {
+        $stmt = $this->app->prepare("UPDATE person SET status = 'active' WHERE person_id = :id AND status = 'pending'");
+        $stmt->execute([':id' => $personId]);
+        if ($stmt->rowCount() === 0) {
+            return false;
+        }
+        $this->audit->log('person', $personId, 'update', ['status' => 'pending'], ['status' => 'active'], $actor);
+        $this->audit->lifecycle($personId, 'enable',
+            ['summary' => "Activated — account provisioned in {$destination} (OneSync result import)."], $actor);
+        return true;
     }
 
     /** Keep account_sync_event bounded (same cap as the CSV importer). */
