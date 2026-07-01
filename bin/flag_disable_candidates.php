@@ -5,8 +5,9 @@ declare(strict_types=1);
 /**
  * List people who should be reviewed for disabling: NOT in NextGen (no active
  * NextGen crosswalk id — manual contractors/interns/subs, or anyone dropped off
- * the feed) whose exit date (person.end_date) is already in the past, yet are
- * still enabled (active/pending).
+ * the feed), still enabled (active/pending), whose exit date (person.end_date)
+ * is already in the past OR who dropped from the NextGen feed more than
+ * NEXTGEN_DROPOUT_FLAG_DAYS days ago (regardless of exit date).
  *
  * NextGen drives disable for its own people, but never touches off-feed records,
  * so these would otherwise linger enabled forever. This is a READ-ONLY report —
@@ -44,16 +45,17 @@ if ($rows === []) {
     exit(0);
 }
 
-printf("%d person(s) not in NextGen with a past exit date, still enabled — review to disable:\n\n", count($rows));
-printf("  %-24s %-12s %-12s %-9s %s\n", 'Name', 'Type', 'Exit date', 'Status', 'Source');
+printf("%d person(s) not in NextGen, still enabled — review to disable:\n\n", count($rows));
+printf("  %-24s %-12s %-12s %-14s %-9s %s\n", 'Name', 'Type', 'Exit date', 'Off NextGen', 'Status', 'Source');
 foreach ($rows as $r) {
-    printf("  %-24s %-12s %-12s %-9s %s\n",
+    printf("  %-24s %-12s %-12s %-14s %-9s %s\n",
         substr(trim($r['first_name'] . ' ' . $r['last_name']), 0, 24),
         (string) $r['person_type'],
         (string) ($r['end_date'] ?? '—'),
+        $r['nextgen_last_seen'] ? substr((string) $r['nextgen_last_seen'], 0, 10) : '—',
         (string) $r['status'],
         (string) $r['source_of_record']
     );
 }
-echo "\nReview each on the dashboard (\"Not in NextGen — past exit date\" panel) and disable if they have truly left.\n";
+echo "\nReview each on the dashboard (\"Not in NextGen — review to disable\" panel) and disable if they have truly left.\n";
 exit(1);

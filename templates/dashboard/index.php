@@ -129,21 +129,22 @@ $cards = [
 </div>
 
 <div class="panel" id="disable" style="margin-top:18px;">
-  <h2 class="panel__title" style="margin-bottom:4px;">Not in NextGen — past exit date</h2>
-  <p class="panel__note" style="margin-bottom:14px;">People with no active NextGen record whose exit date has passed but are still enabled. NextGen never disables off-feed records — review each and disable so OneSync disables (not orphans) the account.</p>
+  <h2 class="panel__title" style="margin-bottom:4px;">Not in NextGen — review to disable</h2>
+  <p class="panel__note" style="margin-bottom:14px;">People with no active NextGen record, still enabled, whose <strong>exit date has passed</strong> or who <strong>dropped from the NextGen feed</strong> a while ago. NextGen never disables off-feed records — review each and disable so OneSync disables (not orphans) the account.</p>
   <?php $dc = $disableCandidates ?? []; ?>
   <?php if ($dc === []): ?>
     <p class="muted" style="font-size:12.5px;">Nothing to disable 🎉</p>
   <?php else: ?>
   <div class="table-wrap">
     <table class="table">
-      <thead><tr><th>Person</th><th>Type</th><th>Exit date</th><th>Status</th><th>Source</th></tr></thead>
+      <thead><tr><th>Person</th><th>Type</th><th>Exit date</th><th>Off NextGen since</th><th>Status</th><th>Source</th></tr></thead>
       <tbody>
         <?php foreach ($dc as $p): ?>
         <tr class="is-clickable" onclick="window.location='<?= e(url('/people/' . $p['person_id'])) ?>'">
           <td class="cell-name"><?= e(trim($p['first_name'] . ' ' . $p['last_name'])) ?></td>
           <td><?= e(ucfirst((string) $p['person_type'])) ?></td>
           <td class="mono" style="font-size:12px;"><?= e($p['end_date'] ?? '—') ?></td>
+          <td class="mono" style="font-size:12px;"><?= e($p['nextgen_last_seen'] ? substr((string) $p['nextgen_last_seen'], 0, 10) : '—') ?></td>
           <td><span class="badge badge--<?= e($p['status'] === 'active' ? 'active' : 'pending') ?>"><?= e($p['status']) ?></span></td>
           <td><?= e((string) $p['source_of_record']) ?></td>
         </tr>

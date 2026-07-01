@@ -414,13 +414,17 @@ changes, and all data mutations are written to `audit_log`.
   username, unmapped values, **failed syncs**, **to disable**, last feed) that
   link to the filtered views; recent activity; last feed per source; the
   failed-sync rollup (accounts whose last OneSync sync failed); and a
-  **"Not in NextGen — past exit date"** panel flagging people who are no longer
+  **"Not in NextGen — review to disable"** panel flagging people who are no longer
   in NextGen (no active NextGen crosswalk id — manual contractors/interns/subs,
-  or anyone dropped off the feed) whose exit date has passed but are still
-  enabled. NextGen drives disable for its own people but never touches off-feed
-  records, so these are surfaced for an admin to review and disable (which makes
-  OneSync disable, not orphan, the account). It's a read-only flag — nothing is
-  disabled automatically. The same list is available on the CLI via
+  or anyone dropped off the feed) and still enabled, who **either** have a past
+  exit date **or** dropped from the NextGen feed more than
+  `NEXTGEN_DROPOUT_FLAG_DAYS` (default 7) days ago — the second trigger catches
+  leavers NextGen drops without ever setting an end date (the panel shows both an
+  "Exit date" and an "Off NextGen since" column so it's clear which fired).
+  NextGen drives disable for its own people but never touches off-feed records,
+  so these are surfaced for an admin to review and disable (which makes OneSync
+  disable, not orphan, the account). It's a read-only flag — nothing is disabled
+  automatically. The same list is available on the CLI via
   `php bin/flag_disable_candidates.php` (exit code 1 when any are flagged, so a
   cron/monitor can alert).
 
