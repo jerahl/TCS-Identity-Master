@@ -11,28 +11,37 @@ See `docs/` for the full design:
 - `docs/Identity-DB-and-Dashboard-Design.md` — architecture
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
+- `docs/saml-sso-setup.md` — configure SAML SSO against the district IdP
+- `docs/server-hardening.md` — production hardening / HTTPS
+- `docs/onesync-api.md`, `docs/onesync-mapping.md` — the OneSync interface
+- `docs/cron-feed-pull.md` — schedule the nightly SFTP feed pull
 - `docs/dev-box-git-main.md` — swap the dev box git checkout back to `main`
 
-> **Status:** Milestone 7 (final) — SAML SSO + server-side RBAC, admin Users
-> screen, manual Add person, security headers + HTTPS enforcement, and
-> login/logout auditing. All seven milestones are in place; the app is
-> feature-complete per the build plan.
+> **Status:** All seven build-plan milestones are in place (through Milestone 7 —
+> SAML SSO + server-side RBAC, admin Users screen, manual Add person, security
+> headers + HTTPS enforcement, and login/logout auditing). Post-milestone
+> operational work has continued on top of that base: live Active Directory
+> verification via the Adaxes REST API, reading OneSync results straight from its
+> database, feed/API diagnostics, a name-case normalizer, and an admin/editor VPN
+> service-restart control.
 
 ## Stack
 
-PHP 8.2+ (developed on 8.4), MySQL 8+, plain PDO with prepared statements. No
-heavy framework. Server-rendered pages (added in later milestones).
+PHP 8.2+ (developed on 8.4), MySQL/MariaDB 8+/10.11+, plain PDO with prepared
+statements. No heavy framework — a small front controller and server-rendered
+PHP templates.
 
 ## Layout
 
 ```
-public/        web root (front controller + assets — later milestones)
-src/           app code (Config, Db, bootstrap; services/controllers later)
-bin/           CLI tools — migrate.php, seed.php (importers later)
+public/        web root (front controller + assets)
+src/           app code — Config, Db, bootstrap; Auth, Controller, Http,
+               Import, Matching, Service, Sync, Support, View
+bin/           CLI tools — migrate/seed, the importers, and diagnostics
 db/migrations/ ordered *.sql; 0001_init.sql == docs/schema.sql
 db/seeds/      reference CSVs (school, school_code_alias, ethnicity_map)
-docs/          specs
-tests/         PHPUnit (matcher suite lands in Milestone 3)
+docs/          specs and runbooks
+tests/         PHPUnit (config, matcher, and service suites)
 ```
 
 ## Quick start (Debian 12 dev server)
@@ -160,6 +169,15 @@ php bin/sftp_ls.php --dir=/Nextgen
 
 It prints the resolved home and a `[dir]/[file]` listing (with the server's real
 error if a path is wrong), so you can set `SFTP_<SOURCE>_DIR` to the exact path.
+
+**Diagnose a skipped feed.** If rows import as zero or get skipped, the CSV's
+delimiter or headers likely don't match the source's `ColumnMap`. Inspect a file
+— it detects the delimiter, lists the headers, and shows how each lines up with
+the expected logical fields:
+
+```sh
+php bin/feed_headers.php --system=nextgen --file=/var/idm/feeds/nextgen/staff.csv
+```
 
 **Import source categories.** Each feed is a first-class source (`src/Import/ImportSource.php`)
 that drives the person type and crosswalk provenance:
@@ -540,6 +558,15 @@ one JSON line per request — so you can see exactly why OneSync's calls fail (4
 wrong/missing token, 400 bad JSON, 422 unknown uniqueId). Turn it off once working.
 `tail -f /var/idm/onesync/api_debug.log` while OneSync runs.
 
+If the log stays empty, confirm it's enabled and that the web user can actually
+write to it — `bin/api_log_check.php` reports whether debug is on, where it writes,
+and writes a test line. Run it as the **same user the web server runs as**, or the
+writability result won't match what the API sees:
+
+```sh
+sudo -u www-data php bin/api_log_check.php
+```
+
 **One-time AD username link.** To adopt the usernames that already exist in AD
 (before OneSync was authoritative), import an AD export. Each row matches a person
 by the PowerSchool id (`TEACHERS.ID`, our crosswalk key) — falling back to the
@@ -623,6 +650,34 @@ php bin/import_writeback.php --pending     # apply onesync_writeback rows (appli
 > defaults) — confirm OneSync's real usernames-file and export-log columns and
 > adjust the maps. The sample files are keyed to the demo people's UUIDs.
 
+**Pull results from OneSync's own database.** Instead of CSVs, the API, or having
+OneSync write into our tables, the app can read provisioning results **straight
+from OneSync's MariaDB** (its `os_users` / `os_export_log` tables) and upsert them
+into `account_sync_status` (per-destination state + failure messages). It connects
+read-only via `ONESYNC_DB_*` and writes as the limited write-back role, joining
+`os_users.userId` to our `person_uuid` across both IDM feeds
+(`ONESYNC_DB_SOURCE_ID_STUDENTS` / `ONESYNC_DB_SOURCE_ID_FACULTY`; the legacy
+single `ONESYNC_DB_SOURCE_ID` is honored when those are unset).
+
+```sh
+php bin/import_onesync_db.php --dry-run   # read OneSync's DB, change nothing
+php bin/import_onesync_db.php             # upsert results into account_sync_status
+```
+
+Grant the `ONESYNC_DB_*` user **SELECT only** on OneSync's database. To map an
+unfamiliar OneSync schema (which tables/columns hold the minted username and the
+per-destination success/failure), use the read-only inspector:
+
+```sh
+php bin/onesync_db_inspect.php                          # tables + row counts
+php bin/onesync_db_inspect.php --table=os_export_log    # columns of one table
+php bin/onesync_db_inspect.php --table=os_users --sample=5   # + sample rows
+php bin/onesync_db_inspect.php --distinct=os_export_log.actionStatus  # decode enum ints
+```
+
+`--sample` prints real data (may include usernames/emails) — run it on a trusted
+terminal; the default is columns only.
+
 ## Active Directory verification (Adaxes REST API)
 
 The Provisioning panel shows what *OneSync reported* about each AD account. The
@@ -631,7 +686,8 @@ currently holds, fetched on demand from the [Adaxes REST API](https://www.adaxes
 and compared field-by-field to the golden record — account enabled/disabled,
 `sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. It is a
 verification aid only: the app **reads** from AD via Adaxes and never writes,
-enables, or modifies anything.
+enables, or modifies anything. The panel loads **asynchronously** after the rest
+of the person page renders, so a slow or unreachable Adaxes never blocks the page.
 
 It is off until configured. Set the base URL and a token (or a **read-only**
 service account) in `.env` (`ADAXES_*`, documented in `.env.example`):
@@ -785,6 +841,8 @@ composer install   # once, to get PHPUnit
 composer test      # or: ./vendor/bin/phpunit
 ```
 
-Milestone 1 ships smoke tests for the config loader. The thorough **matcher**
-suite (exact / employee_id / name+DOB / name-only-never-auto) arrives in
-Milestone 3.
+The PHPUnit suite under `tests/Unit/` covers the config loader, the **matcher**
+(exact / employee_id / name+DOB / name-only-never-auto), the importers and
+column maps, staff drop-out tracking, RBAC and CSRF, the OneSync write-back/result
+paths, AD username linking and the Adaxes service (with an injected HTTP client),
+name-case normalization, and the VPN monitor — among others.
