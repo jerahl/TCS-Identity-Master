@@ -102,6 +102,7 @@ try {
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
     $router->get('/add', $guard('edit', static fn() => $person->addForm()));
     $router->post('/add', $guard('edit', static fn() => $person->create()));
+    $router->get('/notify/{id}', $guard('edit', static fn(array $p) => (new \App\Controller\NotifyController())->show($p)));
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));

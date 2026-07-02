@@ -130,6 +130,7 @@ final class LoginsReportService
                     p.person_id, p.person_uuid, p.first_name, p.middle_name, p.last_name,
                     p.employee_id, p.dob, p.gender, p.ethnicity_source,
                     p.alsde_id, p.position_number, p.status,
+                    p.username, p.username_locked,
                     p.board_approval_date, p.board_approval_note,
                     COALESCE(p.position_start_date, p.hire_date) AS effective_date,
                     p.end_date,
@@ -192,10 +193,15 @@ final class LoginsReportService
             $toPosition = trim((string) ($r['position_number'] ?? ''));
         }
 
+        // Ready for an orientation checklist once a username is minted + locked.
+        $ready = (int) ($r['username_locked'] ?? 0) === 1
+            && trim((string) ($r['username'] ?? '')) !== '';
+
         return [
             'person_id'      => (int) $r['person_id'],
             'person_uuid'    => (string) $r['person_uuid'],
             'status'         => (string) $r['status'],
+            'checklist_ready' => $ready,
             'last_name'      => (string) $r['last_name'],
             'first_mi'       => trim((string) $r['first_name'] . $mi),
             'from_school'    => trim((string) ($r['from_school'] ?? '')),

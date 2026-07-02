@@ -36,6 +36,12 @@ $eventTitle = [
         </div>
       </div>
       <?php if (!empty($canEdit)): ?>
+      <?php if ($p['username']): ?>
+      <a class="btn btn--ghost" href="<?= e(url('/notify/' . $p['person_id'])) ?>" target="_blank" rel="noopener" title="Open the printable orientation checklist">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2h5L13 5.5V14a1 1 0 01-1 1H4.5a1 1 0 01-1-1V3a1 1 0 011-1z"/><path d="M9 2v4h4M6 9h4M6 11.5h3"/></svg>
+        Orientation checklist
+      </a>
+      <?php endif; ?>
       <a class="btn btn--ghost" href="<?= e(url('/people/' . $p['person_id'] . '/edit')) ?>">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L6 12l-2.7.7L4 10z"/></svg>
         Edit record

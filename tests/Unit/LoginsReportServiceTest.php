@@ -122,4 +122,11 @@ final class LoginsReportServiceTest extends TestCase
         self::assertSame('', $row['from_school']);
         self::assertSame('', $row['from_position']);
     }
+
+    public function testChecklistReadyOnlyWithMintedLockedUsername(): void
+    {
+        self::assertTrue(LoginsReportService::project($this->dbRow(['username' => 'jdoe', 'username_locked' => 1]))['checklist_ready']);
+        self::assertFalse(LoginsReportService::project($this->dbRow(['username' => 'jdoe', 'username_locked' => 0]))['checklist_ready']);
+        self::assertFalse(LoginsReportService::project($this->dbRow(['username' => '', 'username_locked' => 1]))['checklist_ready']);
+    }
 }

@@ -50,7 +50,7 @@ $dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
 <div class="card table-wrap">
   <table class="table">
     <thead>
-      <tr><?php foreach ($columns as $label): ?><th><?= e($label) ?></th><?php endforeach; ?></tr>
+      <tr><?php foreach ($columns as $label): ?><th><?= e($label) ?></th><?php endforeach; ?><?php if (!empty($canEdit)): ?><th>Checklist</th><?php endif; ?></tr>
     </thead>
     <tbody>
       <?php foreach ($rows as $row):
@@ -66,6 +66,15 @@ $dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
           <?php else: ?><?= e($dash($val)) ?><?php endif; ?>
         </td>
         <?php endforeach; ?>
+        <?php if (!empty($canEdit)): ?>
+        <td>
+          <?php if (!empty($row['checklist_ready'])): ?>
+            <a href="<?= e(url('/notify/' . $row['person_id'])) ?>" target="_blank" rel="noopener">Open</a>
+          <?php else: ?>
+            <span class="muted" title="No username minted yet">—</span>
+          <?php endif; ?>
+        </td>
+        <?php endif; ?>
       </tr>
       <?php endforeach; ?>
     </tbody>

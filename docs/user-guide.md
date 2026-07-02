@@ -30,7 +30,8 @@ in your browser.
 12. [Users (admins)](#12-users-admins)
 13. [Audit log (admins)](#13-audit-log-admins)
 14. [Everyday tasks — quick recipes](#14-everyday-tasks--quick-recipes)
-15. [Terms you'll see](#15-terms-youll-see)
+15. [Logins export & orientation checklists](#15-logins-export--orientation-checklists)
+16. [Terms you'll see](#16-terms-youll-see)
 
 ---
 
@@ -369,7 +370,52 @@ change their role once they've signed in.
 
 ---
 
-## 15. Terms you'll see
+## 15. Logins export & orientation checklists
+
+This replaces the old manual *Logins* spreadsheet and the Word mail-merge for
+new-employee account notifications.
+
+### The Logins export
+
+Open **Logins export** in the sidebar. It shows the golden record in the exact
+columns of the old Logins spreadsheet — last name, first name + MI, from/to
+school and position, effective and end dates, board approval, employee ID, DOB,
+gender, race, and ALSDE ID — pulled straight from what NextGen and PowerSchool
+already feed in. No more copying from NextGen by hand.
+
+- **Filter** by status, school, and an effective-date window (position start,
+  falling back to hire date), or search by name/ID.
+- **From School / From Position** are filled in automatically for a transfer (from
+  the person's previous assignment) and left blank for a brand-new hire.
+- Cells that still need a human — **Board Approval** and, for a brand-new hire not
+  yet in PowerSchool, **ALSDE ID** — are highlighted. Enter Board Approval on the
+  person's **Edit** screen; ALSDE ID fills in automatically once PowerSchool has
+  the person (or can be typed on the Edit screen).
+- **Download CSV** exports exactly what you see (respecting the current filters).
+
+### Orientation checklists
+
+Once OneSync has minted a person's username, you can generate their **Technology
+Orientation Checklist** — the New Teacher version for faculty, the
+Non-Instructional version for everyone else — pre-filled with their name, school,
+position, and their new **username, email, and sign-in**.
+
+- On a **person's record**, click **Orientation checklist** (editors/admins; it
+  appears once a username exists). It opens a print-ready page — use
+  **Print / Save as PDF**. The links are real, clickable hyperlinks, so the PDF
+  never has the broken-link problem the old Word *Finish & Merge* had.
+- On the **Logins export**, the **Checklist** column has an **Open** link for
+  everyone whose account is ready.
+- The checklist content is a starting template — your team can tailor the steps
+  and links to the district's current orientation.
+
+> **Prefer the old Word document?** You can keep the existing merge and just point
+> its data source at the Logins **Download CSV** instead of the hand-maintained
+> workbook — same document, authoritative data, no OneDrive step.
+
+---
+
+## 16. Terms you'll see
 
 - **Golden record** — the single, authoritative record for one person. Everything
   in this app revolves around keeping one golden record per human.
