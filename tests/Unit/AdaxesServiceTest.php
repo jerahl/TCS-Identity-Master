@@ -399,4 +399,36 @@ final class AdaxesServiceTest extends TestCase
         self::assertFalse($res['ok']);
         self::assertStringContainsString('authentication failed', (string) $res['error']);
     }
+
+    public function testGoldenCandidateMapsAdIdentityForLinking(): void
+    {
+        $svc = $this->service($this->objectResponse([
+            'objectGUID'        => '11111111-2222-3333-4444-555555555555',
+            'sAMAccountName'    => 'jsmith',
+            'userPrincipalName' => 'jsmith@example.org',
+            'mail'              => 'john.smith@example.org',
+            'accountDisabled'   => false,
+        ]));
+
+        $res = $svc->verify(['status' => 'pending'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        self::assertTrue($res['found']);
+
+        // The shape linkAdAccount() consumes: sAMAccountName→username,
+        // userPrincipalName→upn, mail→email, plus the objectGUID.
+        $ad = AdaxesService::goldenCandidate($res);
+        self::assertSame('11111111-2222-3333-4444-555555555555', $ad['guid']);
+        self::assertSame('jsmith', $ad['username']);
+        self::assertSame('jsmith@example.org', $ad['upn']);
+        self::assertSame('john.smith@example.org', $ad['email']);
+    }
+
+    public function testGoldenCandidateEmptyWhenNoAttributes(): void
+    {
+        // A not-found / off envelope yields nothing to adopt.
+        $ad = AdaxesService::goldenCandidate(['attributes' => [], 'guid' => null]);
+        self::assertNull($ad['guid']);
+        self::assertSame('', $ad['username']);
+        self::assertSame('', $ad['upn']);
+        self::assertSame('', $ad['email']);
+    }
 }
