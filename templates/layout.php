@@ -126,5 +126,6 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
     </main>
   </div>
 </div>
+<script src="<?= e(asset('assets/js/row-click.js')) ?>" defer></script>
 </body>
 </html>

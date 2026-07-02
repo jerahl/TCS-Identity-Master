@@ -64,7 +64,7 @@ $badge = static fn(string $mod): string => match ($mod) {
       <thead><tr><th>System</th><th>File</th><th>Time</th><th style="text-align:right;">Rows</th><th style="text-align:right;">Matched</th><th>Status</th></tr></thead>
       <tbody>
         <?php foreach ($batches as $b): ?>
-        <tr class="is-clickable" onclick="window.location='<?= e(url('/import', ['batch' => $b['batch_id']])) ?>'">
+        <tr class="is-clickable" data-href="<?= e(url('/import', ['batch' => $b['batch_id']])) ?>">
           <td class="cell-name"><?= e(ucfirst($b['system'])) ?></td>
           <td class="mono" style="font-size:12px;"><?= e($b['file_name'] ?? '—') ?></td>
           <td class="mono" style="font-size:12px;"><?= e($b['started_at']) ?></td>
@@ -94,7 +94,7 @@ $badge = static fn(string $mod): string => match ($mod) {
       <thead><tr><th>Incoming name</th><th>Source ID</th><th>Employee ID</th><th>Match outcome</th><th>Detail</th></tr></thead>
       <tbody>
         <?php foreach ($staged as $r): [$label, $mod] = Present::matchOutcome($r['match_status']); ?>
-        <tr<?= $r['matched_person_id'] ? ' class="is-clickable" onclick="window.location=\'' . e(url('/people/' . $r['matched_person_id'])) . '\'"' : '' ?>>
+        <tr<?= $r['matched_person_id'] ? ' class="is-clickable" data-href="' . e(url('/people/' . $r['matched_person_id'])) . '"' : '' ?>>
           <td class="cell-name"><?= e(trim($r['n_first'] . ' ' . $r['n_last'])) ?: '—' ?></td>
           <td class="mono"><?= e($r['n_source_key'] ?? '—') ?></td>
           <td class="mono"><?= e($r['n_employee_id'] ?? '—') ?></td>
