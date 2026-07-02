@@ -255,6 +255,112 @@ final class PersonController extends Controller
         return $this->redirect($back);
     }
 
+    /**
+     * Apply an operator's source pick from the "Source field reconciliation"
+     * panel: write one chosen value (NextGen or PowerSchool) to the golden
+     * record — or to the primary assignment, for the fields that live there
+     * (title). Editor+; CSRF-checked; a POST form (no inline JS, CSP-safe).
+     *
+     * The value written is read from the SAME reconcile rows the panel rendered
+     * (rebuilt here from the staged feeds), so what lands on the record is
+     * exactly what the operator saw beside the button — never a stale re-derived
+     * value. Only fields the panel marks overridable are accepted; the writers
+     * whitelist columns and skip no-op writes, so a redundant pick is quiet.
+     * Always redirects back to the person page.
+     */
+    public function reconcile(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect($back);
+        }
+
+        $fieldKey = (string) ($_POST['field'] ?? '');
+        $source   = (string) ($_POST['source'] ?? '');
+        if (!in_array($source, ['nextgen', 'powerschool'], true)) {
+            $this->flash('Unknown source — nothing written.');
+            return $this->redirect($back);
+        }
+
+        // Rebuild the reconcile rows exactly as show() does, so the value we
+        // write matches what was displayed beside the "Use this" button.
+        $assignments = $this->people->assignments($id);
+        $primary = $assignments[0] ?? null;
+        $src = $this->people->latestSourceValues($id);
+        $hasNextGen = $src['nextgen'] !== null;
+        $hasPowerSchool = $src['powerschool'] !== null;
+        $psStale = !empty($src['powerschool_stale']) && !$hasPowerSchool;
+        $idmOnly = !$hasNextGen && !$hasPowerSchool && !$psStale;
+        $rows = FieldMap::reconcileRows($person, $primary, $src['nextgen'], $src['powerschool'], $idmOnly);
+
+        $row = null;
+        foreach ($rows as $r) {
+            if ($r['key'] === $fieldKey) {
+                $row = $r;
+                break;
+            }
+        }
+        if ($row === null || empty($row['overridable'])) {
+            $this->flash('That field can’t be reconciled here.');
+            return $this->redirect($back);
+        }
+
+        $value = $source === 'nextgen' ? (string) $row['ngValue'] : (string) $row['psValue'];
+        if ($value === '') {
+            $this->flash('That source has no value for this field — nothing written.');
+            return $this->redirect($back);
+        }
+        if (FieldMap::isDateField($fieldKey)) {
+            $value = Normalizer::parseDate($value) ?? $value;
+        }
+
+        $sourceLabel = $source === 'powerschool' ? 'PowerSchool' : ($idmOnly ? 'IDM (current)' : 'NextGen');
+        $summary = "Reconciled {$row['label']} to the {$sourceLabel} value";
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $writer = new PersonWriter($db, new AuditService($db));
+            $actor = $this->currentUser()['name'];
+
+            $goldenCol = FieldMap::goldenColumn($fieldKey);
+            $assignmentCol = FieldMap::assignmentColumn($fieldKey);
+
+            if ($goldenCol !== null) {
+                $values = [$goldenCol => $value];
+                // Ethnicity carries a derived ALSDE code — keep the two in step.
+                if ($goldenCol === 'ethnicity_source') {
+                    $values['ethnicity_code'] = $this->people->ethnicityCodeFor($value);
+                }
+                $changed = $writer->setGoldenFields($id, $values, $actor, $summary);
+            } elseif ($assignmentCol !== null) {
+                if ($primary === null) {
+                    $this->flash('No primary assignment to update.');
+                    return $this->redirect($back);
+                }
+                $changed = $writer->setAssignmentField($id, (int) $primary['id'], $assignmentCol, $value, $actor, $summary);
+            } else {
+                $this->flash('That field isn’t writable.');
+                return $this->redirect($back);
+            }
+
+            $this->flash($changed
+                ? "{$row['label']} set to the {$sourceLabel} value — written to the golden record."
+                : "{$row['label']} already matched the {$sourceLabel} value — no change.");
+        } catch (\Throwable $e) {
+            error_log('[idm] person reconcile: ' . $e->getMessage());
+            $this->flash('Could not apply the reconciliation.');
+        }
+        return $this->redirect($back);
+    }
+
     /** Manual add form (for subs/contractors/interns not in HR). */
     public function addForm(array $old = [], string $error = ''): string
     {
