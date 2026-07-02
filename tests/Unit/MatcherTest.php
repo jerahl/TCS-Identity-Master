@@ -41,7 +41,7 @@ final class MatcherTest extends TestCase
         self::assertSame('source_id', $d->basis);
     }
 
-    public function testTier2EmployeeIdAutoMatches(): void
+    public function testTier2EmployeeIdAutoMatchesWhenNameAgrees(): void
     {
         $lk = new InMemoryMatchLookup();
         $lk->addPerson(20, 'John', 'Smith', null, '15241');
@@ -50,6 +50,48 @@ final class MatcherTest extends TestCase
         self::assertSame(MatchDecision::AUTO, $d->action);
         self::assertSame(20, $d->personId);
         self::assertSame('employee_id', $d->basis);
+    }
+
+    public function testTier2EmployeeIdCollisionWithDifferentNameGoesToReview(): void
+    {
+        // A sub's SubID happens to equal a teacher's employee number, but they are
+        // different people. The bare id must NOT auto-link (that would rename the
+        // teacher's golden record) — it goes to review with the clash surfaced.
+        $lk = new InMemoryMatchLookup();
+        $lk->addPerson(20, 'John', 'Smith', null, '4471');   // the teacher
+
+        $d = (new Matcher(90))->match($this->row(['first' => 'Maria', 'last' => 'Lopez', 'emp' => '4471', 'sourceKey' => 'SUB-1']), $lk);
+        self::assertSame(MatchDecision::REVIEW, $d->action, 'id match with a different name must never auto-link');
+        self::assertNull($d->personId);
+        self::assertSame('employee_id_conflict', $d->basis);
+        self::assertSame(20, $d->candidates[0]['person_id'], 'the clashing person is surfaced for review');
+    }
+
+    public function testTier2EmployeeIdMappingToMultiplePeopleGoesToReview(): void
+    {
+        // Two golden records already carry the same employee_id (a pre-existing
+        // collision). An incoming id match is ambiguous → review, never auto.
+        $lk = new InMemoryMatchLookup();
+        $lk->addPerson(21, 'John', 'Smith', null, '4471');
+        $lk->addPerson(22, 'John', 'Smith', null, '4471');
+
+        $d = (new Matcher(90))->match($this->row(['first' => 'John', 'last' => 'Smith', 'emp' => '4471', 'sourceKey' => 'X']), $lk);
+        self::assertSame(MatchDecision::REVIEW, $d->action);
+        self::assertNull($d->personId);
+        self::assertSame('employee_id_conflict', $d->basis);
+        self::assertCount(2, $d->candidates);
+    }
+
+    public function testTier2EmployeeIdTypoFallsThroughToNameTierWhenNoHolder(): void
+    {
+        // A mistyped id that no one holds must not block the name tiers: the row
+        // still gets a fair chance to match by name+DOB (here: no name match → NEW).
+        $lk = new InMemoryMatchLookup();
+        $lk->addPerson(20, 'John', 'Smith', '1980-01-01', '15241');
+
+        $d = (new Matcher(90))->match($this->row(['first' => 'Brand', 'last' => 'Newperson', 'emp' => '99999', 'sourceKey' => 'X']), $lk);
+        self::assertSame(MatchDecision::NEW, $d->action);
+        self::assertNull($d->personId);
     }
 
     public function testTier3NameDobExactAutoMatchesAboveThreshold(): void
