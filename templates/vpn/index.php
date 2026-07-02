@@ -60,7 +60,23 @@ $facts = static function (string $key, array $d) use ($fmtDur): array {
     <h1>VPN status</h1>
     <p>Live read-only view of the PowerSchool VPN tunnel from <code>pseast-vpn-monitor</code> — service, tunnel, and the route to the database behind it.</p>
   </div>
+  <?php if (!empty($canEdit) && !empty($controlEnabled)): ?>
+    <form method="post" action="<?= e(url('/vpn/restart')) ?>" style="flex:0 0 auto;"
+          onsubmit="return confirm('Restart the VPN service (<?= e($serviceUnit) ?>) now?\n\nThe PowerSchool tunnel will drop for a few seconds while it reconnects.');">
+      <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+      <button type="submit" class="btn btn--ghost" title="Restart <?= e($serviceUnit) ?> on this host">
+        <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 3.5v4h-4"/><path d="M15 7.5A6.5 6.5 0 1 0 16 11"/></svg>
+        Restart VPN service
+      </button>
+    </form>
+  <?php endif; ?>
 </div>
+
+<?php if (!empty($canEdit) && empty($controlEnabled)): ?>
+  <div class="notice notice--info" style="margin-bottom:14px;">
+    <div>Restart from the web UI is off. Set <code>VPN_CONTROL_ENABLED=true</code> (and grant the web user the sudoers rule in <code>deploy/idm-vpn-restart.sudoers</code>) to add a <strong>Restart VPN service</strong> button here.</div>
+  </div>
+<?php endif; ?>
 
 <?php if (!$configured): ?>
   <div class="notice notice--warn" style="margin-bottom:14px;">
@@ -137,7 +153,7 @@ $facts = static function (string $key, array $d) use ($fmtDur): array {
     <?php endforeach; ?>
   </div>
 
-  <p class="muted" style="font-size:11.5px; margin-top:14px;">Data from the read-only <code>pseast-vpn-monitor</code>. This page only displays status; it never starts, stops, or reconfigures the tunnel.</p>
+  <p class="muted" style="font-size:11.5px; margin-top:14px;">Status data comes from the read-only <code>pseast-vpn-monitor</code> and is only displayed here.<?php if (!empty($controlEnabled)): ?> The only action this page can take is the editor/admin <strong>Restart VPN service</strong> button, which asks systemd to restart the unit.<?php else: ?> This page never starts, stops, or reconfigures the tunnel.<?php endif; ?></p>
 
   <script>
     // Whole-page refresh so the server re-fetches the monitor snapshot.

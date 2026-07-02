@@ -104,6 +104,7 @@ try {
     $router->post('/people/{id}/reconcile', $guard('edit', static fn(array $p) => $person->reconcile($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
     $router->post('/import/fetch', $guard('edit', static fn() => $import->fetch()));
+    $router->post('/vpn/restart', $guard('edit', static fn() => (new \App\Controller\VpnController())->restart()));
 
     // ---- Admin only ----
     $router->get('/users', $guard('admin', static fn() => $users->index()));
