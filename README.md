@@ -789,6 +789,35 @@ GRANT SELECT ON tcs_identity.v_onesync_student_source TO 'onesync_ro'@'%'; -- st
 FLUSH PRIVILEGES;
 ```
 
+## Services (admin)
+
+The **Services** page (`/admin`, admin-only) is one place to see the health of
+every moving part and to run the background jobs on demand:
+
+- **Service status** — live cards for the application database, the OneSync
+  source DB (read), OneSync write-back freshness, the SFTP feed config, the
+  PowerSchool Oracle ODBC connection, and the VPN monitor. The OneSync source-DB
+  card is a live probe bounded by a short connect timeout (`SERVICE_PING_TIMEOUT`,
+  default 3s) so an unreachable host fails fast instead of hanging the page; the
+  app-DB card reuses the app's existing connection, and everything else reports
+  configuration presence.
+- **Jobs & last run** — the most recent **feed imports** (per source, from
+  `import_batch`), the **students sync** (`student_import_batch`), and the
+  **OneSync DB sync**. The OneSync DB sync had no run record of its own, so each
+  run — from cron (`bin/import_onesync_db.php`) or the button — now lands in a
+  new `service_run` table (job, origin, status, actor, counts, timing), which
+  also drives the **Recent runs** history.
+- **Run now** — admins can trigger the feed pull, the students sync, or the
+  OneSync DB sync from here. Each runs the same code path as its CLI/cron job,
+  synchronously in the request (like the existing feed-pull action), is
+  CSRF-protected, records a `service_run` row, and writes an `audit_log` entry
+  (entity `config`, action `service-run`). Buttons are hidden when the
+  underlying integration isn't configured.
+
+The app DB user needs `INSERT/UPDATE/SELECT` on `service_run` (covered by its
+existing "DML on app tables" grant). Run `php bin/migrate.php` to create the
+table (migration `0011_service_run.sql`).
+
 ## VPN status & restart
 
 The **VPN status** page (`/vpn`) relays the read-only `pseast-vpn-monitor`
