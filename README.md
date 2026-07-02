@@ -11,6 +11,7 @@ See `docs/` for the full design:
 - `docs/Identity-DB-and-Dashboard-Design.md` — architecture
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
+- `docs/dev-box-git-main.md` — swap the dev box git checkout back to `main`
 
 > **Status:** Milestone 7 (final) — SAML SSO + server-side RBAC, admin Users
 > screen, manual Add person, security headers + HTTPS enforcement, and
