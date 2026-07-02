@@ -585,6 +585,19 @@ aren't left unlinked — re-run the Employee List import to give them a GUID);
 `--all` removes those too. Each removal is audited and added to the person
 timeline.
 
+**Fix name casing.** Feeds sometimes deliver names all-caps or all-lowercase.
+Normalize every person's first/last name to conventional "first letter capital"
+form (`JAMES SMITH` / `james smith` → `James Smith`):
+
+```sh
+php bin/fix_name_case.php --dry-run    # preview what would change
+php bin/fix_name_case.php              # apply
+```
+
+Only rows whose casing actually changes are written; common exceptions are cased
+correctly (`McDonald`, `O'Brien`, `Smith-Jones`, generational suffix `III`). Each
+change is audited and added to the person timeline. Idempotent — safe to re-run.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 back **straight to the DB** (no files): insert usernames into `onesync_writeback`
 and upsert per-user success/failure into `account_sync_status`. The exact table +
