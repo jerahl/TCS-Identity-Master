@@ -846,6 +846,42 @@ install and `VPN_SERVICE_UNIT`. Leave `VPN_CONTROL_ENABLED=false` (the default)
 to keep the whole VPN feature read-only — the button won't appear and the route
 returns a "disabled" notice.
 
+## Security dashboard
+
+The **Security** page (`/security`, admin-only) is a read-only view of the
+host's security posture — the runtime state of the controls
+`scripts/harden-debian12.sh` configures:
+
+- **Firewall (ufw)** — active/inactive, default inbound policy, and the allow-rule
+  list (`ufw status verbose`).
+- **fail2ban** — running jails, per-jail failed/banned counts, and a live table of
+  **currently banned IPs** across all jails (`fail2ban-client status [<jail>]`).
+- **SSH daemon** — the effective `sshd -T` policy: port, `PermitRootLogin`,
+  `PasswordAuthentication` (flags password-auth / root-login exposure).
+- **Automatic updates** — `unattended-upgrades` active + whether a reboot is
+  pending.
+- **AppArmor** and **auditd** — service state (`systemctl is-active`).
+- **App HTTP hardening** — HTTPS enforcement, HSTS, and CSP from the app itself
+  (always shown; needs no host access).
+
+Reading firewall/fail2ban/sshd state needs root, so — exactly like the VPN
+restart — the app runs a small, fixed allow-list of **read-only** commands via
+`sudo -n` (no shell, argv arrays), each bounded by a timeout. The page never
+changes anything. It's **off** unless `SECURITY_STATUS_ENABLED=true`; when
+enabled, grant the web user the NOPASSWD sudoers rule:
+
+```sh
+sudo visudo -cf deploy/idm-security-status.sudoers            # syntax check
+sudo install -m 0440 -o root -g root deploy/idm-security-status.sudoers \
+     /etc/sudoers.d/idm-security-status
+```
+
+Confirm the tool paths on your host (`command -v ufw fail2ban-client sshd`) match
+the sudoers rule and the `SECURITY_*_BIN` env vars. With the feature off (or the
+sudoers rule absent), the host cards read "unknown" and only the app-level
+hardening card is shown. Configure the controls themselves — don't try to change
+them from here — with `scripts/harden-debian12.sh`.
+
 ## Operations / backups
 
 - **Backups (critical path).** This DB is now authoritative for staff identity.

@@ -1,0 +1,28 @@
+# Allow the web user (php-fpm) to READ host security state — nothing that changes it.
+#
+# Enables the admin /security dashboard (SECURITY_STATUS_ENABLED=true) to show
+# firewall, fail2ban, and sshd status. Every command below is read-only; the app
+# runs them with no shell as:  sudo -n <command>
+#
+# Install (validate with visudo, then drop in place):
+#   sudo visudo -cf deploy/idm-security-status.sudoers    # syntax check
+#   sudo install -m 0440 -o root -g root deploy/idm-security-status.sudoers \
+#        /etc/sudoers.d/idm-security-status
+#
+# Adjust the user (www-data on Debian/Ubuntu; nginx/apache elsewhere) to match
+# your php-fpm pool. Confirm the absolute tool paths on this host and keep them in
+# lockstep with SECURITY_UFW_BIN / SECURITY_FAIL2BAN_BIN / SECURITY_SSHD_BIN:
+#   command -v ufw fail2ban-client sshd
+# (Debian 12 defaults: /usr/sbin/ufw, /usr/bin/fail2ban-client, /usr/sbin/sshd.)
+#
+# These are STATUS-only commands. Do NOT broaden them (e.g. a bare `ufw` or a
+# trailing wildcard on sshd) — that would hand the web user control of the host.
+# `systemctl is-active` (AppArmor/auditd/unattended-upgrades) needs no sudo, so
+# it is intentionally NOT listed here.
+
+Cmnd_Alias IDM_SECSTATUS = /usr/sbin/ufw status verbose, \
+                           /usr/bin/fail2ban-client status, \
+                           /usr/bin/fail2ban-client status *, \
+                           /usr/sbin/sshd -T
+
+www-data ALL=(root) NOPASSWD: IDM_SECSTATUS
