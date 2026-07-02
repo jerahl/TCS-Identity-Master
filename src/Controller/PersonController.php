@@ -79,7 +79,14 @@ final class PersonController extends Controller
         // change data. Linking the AD account + activating a provisioned person
         // is the batch AdUsernameImporter's job (and OneSync write-back), not the
         // detail page's.
-        $adaxes = $this->adaxes->verify($person, $sourceIds);
+        //
+        // The lookup is a live REST round trip that can be slow, so we don't run
+        // it here — the page renders immediately with a loading indicator and the
+        // panel is fetched over AJAX from adaxes() below. Only when Adaxes isn't
+        // configured (nothing to look up, no HTTP) do we resolve the off-state
+        // envelope inline so the template can render it without a round trip.
+        $adaxesConfigured = $this->adaxes->configured();
+        $adaxes = $adaxesConfigured ? null : $this->adaxes->verify($person, $sourceIds);
 
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
@@ -94,6 +101,8 @@ final class PersonController extends Controller
             'p'          => $person,
             'sourceIds'  => $sourceIds,
             'adaxes'     => $adaxes,
+            'adaxesConfigured' => $adaxesConfigured,
+            'adaxesUrl'  => url('/people/' . $id . '/adaxes'),
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
@@ -105,6 +114,29 @@ final class PersonController extends Controller
             'idmOnly'        => $idmOnly,
             'csrf'           => Csrf::token(),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
+    }
+
+    /**
+     * AJAX fragment: the live Active Directory verification panel for a person,
+     * fetched by public/assets/js/person-adaxes.js after the detail page renders
+     * so the (potentially slow) Adaxes REST call never blocks the page load.
+     *
+     * Returns just the panel's inner HTML (no layout) for insertion into the
+     * #adaxes-live placeholder. Same read-only, config-gated, never-mutating
+     * contract as show(); 404s a missing person so the client shows an error.
+     */
+    public function adaxes(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            http_response_code(404);
+            return '';
+        }
+
+        $adaxes = $this->adaxes->verify($person, $this->people->sourceIds($id));
+
+        return \App\View\View::partial('people/_adaxes', ['adaxes' => $adaxes]);
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
