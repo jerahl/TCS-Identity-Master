@@ -129,4 +129,21 @@ final class ServiceRunLog
             return [];
         }
     }
+
+    /**
+     * Why the run log is unusable, or null when it's fine. Because start()/finish()
+     * swallow their errors (a logging failure must never break the job it records),
+     * a missing table or a missing grant would otherwise make every run silently
+     * vanish and read as "never run". The admin page calls this to tell the two
+     * apart and surface an actionable warning instead of a misleading empty state.
+     */
+    public function unavailableReason(): ?string
+    {
+        try {
+            $this->db()->query('SELECT 1 FROM service_run LIMIT 1');
+            return null;
+        } catch (\Throwable $e) {
+            return $e->getMessage();
+        }
+    }
 }

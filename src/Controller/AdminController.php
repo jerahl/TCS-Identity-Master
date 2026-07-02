@@ -54,6 +54,7 @@ final class AdminController extends Controller
             'studentSync'  => $this->safe(fn() => $this->dash->studentSync(), []),
             'onesyncLast'  => $this->runs->last('onesync_db'),
             'recentRuns'   => $this->runs->recent(20),
+            'runLogError'  => $this->runs->unavailableReason(),
             'canRunFeeds'  => FeedSync::configuredSources() !== [] || FeedSync::powerSchoolOdbcEnabled(),
             'canRunStudents' => FeedSync::powerSchoolOdbcEnabled(),
             'canRunOnesync'  => OneSyncResultImporter::sourceIds() !== []

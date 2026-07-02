@@ -3,7 +3,7 @@
  * @var array $services @var array $feeds @var array $studentSync
  * @var ?array $onesyncLast @var array $recentRuns @var string $csrf
  * @var bool $canRunFeeds @var bool $canRunStudents @var bool $canRunOnesync
- * @var bool $canAdmin
+ * @var bool $canAdmin @var ?string $runLogError
  */
 use App\Service\ServiceRunLog;
 use App\View\Present;
@@ -59,6 +59,13 @@ $runForm = static function (string $action, string $label, bool $enabled, string
 </div>
 
 <h2 class="panel__title" style="margin-bottom:10px;">Jobs &amp; last run</h2>
+
+<?php if (!empty($runLogError)): ?>
+  <div class="notice notice--warn" style="margin-bottom:14px;">
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="#9A6A12" stroke-width="1.7" style="flex:0 0 17px; margin-top:1px;"><path d="M9 1.5L17 15.5H1L9 1.5z" stroke-linejoin="round"/><path d="M9 7v3.5" stroke-linecap="round"/><circle cx="9" cy="12.7" r=".6" fill="#9A6A12" stroke="none"/></svg>
+    <div><strong>Run history is unavailable</strong> — the <code>service_run</code> table can't be read, so last-run and recent-run data below will look empty even after a job succeeds. Apply the latest migration (<code>php bin/migrate.php</code>) and make sure the app DB user has <code>INSERT/UPDATE/SELECT</code> on <code>service_run</code>. Jobs still run; only the bookkeeping is missing.</div>
+  </div>
+<?php endif; ?>
 
 <!-- Feed imports -->
 <div class="panel" style="margin-bottom:16px;">
