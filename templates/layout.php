@@ -46,6 +46,11 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor"><rect x="2" y="3" width="14" height="2.4" rx="1.2"/><rect x="2" y="8" width="14" height="2.4" rx="1.2"/><rect x="2" y="13" width="14" height="2.4" rx="1.2"/></svg>
         <span>People</span>
       </a>
+      <a class="nav-item<?= $nav('logins') ?>" href="<?= e(url('/logins')) ?>">
+        <span class="nav-item__bar"></span>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.2" y="2.5" width="13.6" height="13" rx="2"/><path d="M2.2 6.5h13.6M6.7 6.5v9" stroke-linecap="round"/></svg>
+        <span>Logins export</span>
+      </a>
 <?php if (!empty($canEdit)): ?>
       <a class="nav-item<?= $nav('add') ?>" href="<?= e(url('/add')) ?>">
         <span class="nav-item__bar"></span>

@@ -628,7 +628,8 @@ final class PersonWriter
     {
         $stmt = $this->db->prepare(
             'SELECT person_type, status, first_name, middle_name, last_name, preferred_name, dob, gender,
-                    ethnicity_source, ethnicity_code, alsde_id, employee_id, primary_school_id, notes
+                    ethnicity_source, ethnicity_code, alsde_id, employee_id, primary_school_id,
+                    board_approval_date, board_approval_note, notes
              FROM person WHERE person_id = :id'
         );
         $stmt->execute([':id' => $personId]);

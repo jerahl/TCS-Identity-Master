@@ -96,6 +96,7 @@ $eventTitle = [
           <div><div class="kv__label">Employee ID</div><div class="kv__value mono"><?= e($dash($p['employee_id'])) ?></div></div>
           <div><div class="kv__label">Hire date</div><div class="kv__value mono"><?= e($dash($p['hire_date'])) ?></div></div>
           <div><div class="kv__label">End date</div><div class="kv__value mono"><?= e($dash($p['end_date'])) ?></div></div>
+          <div><div class="kv__label">Board approval</div><div class="kv__value mono"><?= e($dash($p['board_approval_date'] ?? null)) ?><?php if (!empty($p['board_approval_note'])): ?> <span class="muted" style="font-family:inherit;">· <?= e($p['board_approval_note']) ?></span><?php endif; ?></div></div>
         </div>
       </div>
 

@@ -62,6 +62,13 @@ $st = Present::status($p['status']);
     </div>
     <p class="muted" style="font-size:11.5px; margin:6px 0 0;">ALSDE ethnicity code is resolved from the raw value via the ethnicity map on save.</p>
 
+    <div class="form-section">Board approval</div>
+    <div class="form-grid form-grid--3">
+      <div><label class="field-label">Approval date</label><input class="field mono" name="board_approval_date" value="<?= $v('board_approval_date') ?>" placeholder="YYYY-MM-DD"></div>
+      <div style="grid-column:span 2;"><label class="field-label">Note</label><input class="field" name="board_approval_note" value="<?= $v('board_approval_note') ?>" placeholder="e.g. Agenda item 4.2, or “pending”"></div>
+    </div>
+    <p class="muted" style="font-size:11.5px; margin:6px 0 0;">Recorded from the board agenda — no feed provides this. Included in the Logins export.</p>
+
     <div class="form-section">Notes</div>
     <textarea class="field" name="notes" style="min-height:80px; padding:10px 12px; height:auto;"><?= $v('notes') ?></textarea>
 

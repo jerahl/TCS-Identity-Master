@@ -80,6 +80,8 @@ CREATE TABLE person (
   primary_school_id INT         NULL,
   hire_date        DATE         NULL,
   end_date         DATE         NULL,
+  board_approval_date DATE      NULL,                -- board-approved hire/transfer date (0011; Logins export)
+  board_approval_note VARCHAR(120) NULL,             -- optional agenda item / status (0011)
 
   -- assigned identity: minted by OneSync, written back here. Immutable once set.
   username         VARCHAR(64)  NULL,

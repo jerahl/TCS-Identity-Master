@@ -93,6 +93,10 @@ try {
     $router->get('/import', $guard('view', static fn() => $import->index()));
     $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
 
+    $logins = new \App\Controller\LoginsController();
+    $router->get('/logins', $guard('view', static fn() => $logins->index()));
+    $router->get('/logins.csv', $guard('view', static fn() => $logins->csv()));
+
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
