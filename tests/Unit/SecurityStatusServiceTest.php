@@ -123,13 +123,92 @@ final class SecurityStatusServiceTest extends TestCase
             }
             return ['code' => 0, 'out' => "active\n"];
         };
-        $svc = new SecurityStatusService(true, $this->bins(), 6, $runner, 'sudo');
+        $svc = new SecurityStatusService(true, $this->bins(), 6, $runner, 'sudo', useSudo: true, snapshotFile: '');
         $snap = $svc->snapshot();
 
         self::assertFalse($seenJailArg, 'a jail name with illegal chars must never be passed to sudo');
         $names = array_column($snap['jails'], 'name');
         self::assertNotContains('sshd;rm', $names);
         self::assertContains('ok-jail', $names);
+    }
+
+    public function testCollectorRunsCommandsWithoutSudo(): void
+    {
+        $cmds = [];
+        $runner = function (array $cmd) use (&$cmds) {
+            $cmds[] = $cmd;
+            $joined = implode(' ', $cmd);
+            if (str_contains($joined, 'ufw')) {
+                return ['code' => 0, 'out' => self::UFW];
+            }
+            if (str_contains($joined, 'sshd -T')) {
+                return ['code' => 0, 'out' => self::SSHD];
+            }
+            if (str_contains($joined, 'fail2ban-client status')) {
+                return ['code' => 0, 'out' => "`- Jail list:\t\n"];
+            }
+            return ['code' => 0, 'out' => "active\n"];
+        };
+        // useSudo:false is how the root collector runs — commands must be bare.
+        $svc = new SecurityStatusService(true, $this->bins(), 6, $runner, 'sudo', useSudo: false, snapshotFile: '');
+        $report = $svc->hostReport();
+
+        self::assertNotSame([], $cmds);
+        foreach ($cmds as $cmd) {
+            self::assertNotContains('sudo', $cmd, 'collector (root) must not prefix sudo');
+            self::assertNotSame('-n', $cmd[1] ?? '', 'no sudo -n when running as root');
+        }
+        self::assertSame('ok', $report['cards'][0]['state']); // firewall parsed from UFW
+    }
+
+    public function testFileModeReadsSnapshotWithoutRunningCommands(): void
+    {
+        $file = $this->tempSnapshot([
+            'generated_at' => time(),         // fresh
+            'cards' => [
+                ['key' => 'firewall', 'label' => 'Firewall (ufw)', 'state' => 'ok', 'detail' => 'Active.', 'facts' => []],
+            ],
+            'jails' => [['name' => 'sshd', 'banned' => 1, 'total_banned' => 3, 'failed' => 0]],
+            'bannedIps' => [['jail' => 'sshd', 'ip' => '203.0.113.7']],
+        ]);
+        $ran = false;
+        $runner = function () use (&$ran) {
+            $ran = true;
+            return ['code' => 0, 'out' => ''];
+        };
+        $svc = new SecurityStatusService(true, $this->bins(), 6, $runner, 'sudo', useSudo: true, snapshotFile: $file);
+        $snap = $svc->snapshot();
+
+        self::assertFalse($ran, 'file mode must not execute any command');
+        self::assertSame('file', $snap['source']);
+        self::assertSame([['jail' => 'sshd', 'ip' => '203.0.113.7']], $snap['bannedIps']);
+        // app card + fresh collector card + the one card from the file.
+        self::assertSame('app_headers', $snap['cards'][0]['key']);
+        $collector = $this->card($snap, 'collector');
+        self::assertSame('ok', $collector['state']);
+        self::assertSame('ok', $this->card($snap, 'firewall')['state']); // card came from the file
+        @unlink($file);
+    }
+
+    public function testFileModeFlagsStaleSnapshot(): void
+    {
+        $file = $this->tempSnapshot([
+            'generated_at' => time() - 5000,  // way past the default 600s max age
+            'cards' => [], 'jails' => [], 'bannedIps' => [],
+        ]);
+        $svc = new SecurityStatusService(true, $this->bins(), 6, fn() => ['code' => 0, 'out' => ''], 'sudo', useSudo: true, snapshotFile: $file);
+        $snap = $svc->snapshot();
+        self::assertSame('warn', $this->card($snap, 'collector')['state']);
+        @unlink($file);
+    }
+
+    public function testFileModeMissingFileShowsUnknownCollectorCard(): void
+    {
+        $svc = new SecurityStatusService(true, $this->bins(), 6, fn() => ['code' => 0, 'out' => ''], 'sudo', useSudo: true, snapshotFile: '/no/such/idm-snapshot.json');
+        $snap = $svc->snapshot();
+        self::assertSame('file', $snap['source']);
+        self::assertSame('unknown', $this->card($snap, 'collector')['state']);
+        self::assertSame([], $snap['bannedIps']);
     }
 
     public function testParseUfw(): void
@@ -161,6 +240,14 @@ final class SecurityStatusServiceTest extends TestCase
     }
 
     // ---- helpers --------------------------------------------------------------
+
+    /** Write a snapshot JSON to a temp file and return its path. */
+    private function tempSnapshot(array $data): string
+    {
+        $file = tempnam(sys_get_temp_dir(), 'idm-sec-');
+        file_put_contents($file, json_encode($data));
+        return $file;
+    }
 
     /** @return array<string,string> */
     private function bins(): array
@@ -197,7 +284,7 @@ final class SecurityStatusServiceTest extends TestCase
             }
             return ['code' => 1, 'out' => ''];
         };
-        return new SecurityStatusService(true, $this->bins(), 6, $runner, 'sudo');
+        return new SecurityStatusService(true, $this->bins(), 6, $runner, 'sudo', useSudo: true, snapshotFile: '');
     }
 
     /** @param array{cards:list<array>} $snap */

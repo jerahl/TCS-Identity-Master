@@ -1,0 +1,19 @@
+[Unit]
+Description=TCS Identity — collect host security posture for the /security page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as ROOT so it can read ufw / fail2ban / sshd state directly (no sudo,
+# no sudoers rule). It only READS status and writes a world-readable JSON file
+# for the web app; it changes nothing on the host.
+User=root
+Group=root
+WorkingDirectory=/var/www/idm
+ExecStart=/usr/bin/php /var/www/idm/bin/security_snapshot.php
+TimeoutStartSec=60
+Nice=10
+# Light sandboxing: the collector only reads state and writes one file.
+ProtectHome=yes
+NoNewPrivileges=yes

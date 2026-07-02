@@ -11,6 +11,7 @@ $tone = static fn(string $s): string => $badgeFor[$s] ?? 'disabled';
 $cards = $snapshot['cards'] ?? [];
 $jails = $snapshot['jails'] ?? [];
 $banned = $snapshot['bannedIps'] ?? [];
+$source = $snapshot['source'] ?? 'off';
 ?>
 <div class="page-head">
   <div>
@@ -21,7 +22,7 @@ $banned = $snapshot['bannedIps'] ?? [];
 
 <?php if (empty($snapshot['enabled'])): ?>
   <div class="notice notice--info" style="margin-bottom:14px;">
-    <div>Host security probes are off. Set <code>SECURITY_STATUS_ENABLED=true</code> and grant the web user the read-only sudoers rule in <code><?= e($sudoersFile) ?></code> to show firewall, fail2ban, and SSH status here. The app-level HTTP hardening below is always shown.</div>
+    <div>Host security probes are off. Set <code>SECURITY_STATUS_ENABLED=true</code> to show firewall, fail2ban, and SSH status here. On a hardened host, install the root collector timer (<code>deploy/idm-security-snapshot.timer</code>) and point <code>SECURITY_STATUS_FILE</code> at its output; the app reads that file with no elevated access. The app-level HTTP hardening below is always shown.</div>
   </div>
 <?php endif; ?>
 
@@ -96,5 +97,10 @@ $banned = $snapshot['bannedIps'] ?? [];
 <?php endif; ?>
 
 <p class="muted" style="font-size:11.5px; margin-top:14px;">
-  Host signals are read with a small, fixed allow-list of read-only commands run via <span class="mono">sudo -n</span> (no shell); this page starts, stops, and changes nothing. Configure the controls themselves with <span class="mono">scripts/harden-debian12.sh</span>.
+  <?php if ($source === 'file'): ?>
+    Host signals come from a JSON snapshot written out-of-band by the root <span class="mono">idm-security-snapshot</span> timer; the web app only reads it (no elevated access).
+  <?php elseif ($source === 'live'): ?>
+    Host signals are read live with a small, fixed allow-list of read-only commands run via <span class="mono">sudo -n</span> (no shell).
+  <?php endif; ?>
+  This page starts, stops, and changes nothing. Configure the controls themselves with <span class="mono">scripts/harden-debian12.sh</span>.
 </p>

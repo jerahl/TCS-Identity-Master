@@ -6,6 +6,7 @@ namespace App\Service;
 
 use App\Config;
 use App\Http\Security;
+use App\Sync\Freshness;
 use RuntimeException;
 
 /**
@@ -38,17 +39,24 @@ final class SecurityStatusService
     private int $timeout;
     /** @var callable(array):array{code:int,out:string} */
     private $runner;
+    private bool $useSudo;
+    private string $snapshotFile;
+    private int $maxAge;
 
     /**
      * @param array<string,string>|null $bins override tool paths (ufw, fail2ban, sshd, systemctl)
      * @param callable(array):array{code:int,out:string}|null $runner runs an argv array -> exit code + combined output
+     * @param bool|null $useSudo prefix privileged commands with `sudo -n` (web); false when already root (collector)
+     * @param string|null $snapshotFile read a pre-collected JSON snapshot from here instead of running commands live
      */
     public function __construct(
         ?bool $enabled = null,
         ?array $bins = null,
         ?int $timeout = null,
         ?callable $runner = null,
-        ?string $sudo = null
+        ?string $sudo = null,
+        ?bool $useSudo = null,
+        ?string $snapshotFile = null
     ) {
         $this->enabled = $enabled ?? Config::bool('SECURITY_STATUS_ENABLED', false);
         $this->sudo = $sudo ?? (string) Config::get('SECURITY_SUDO_BIN', 'sudo');
@@ -60,6 +68,9 @@ final class SecurityStatusService
         ];
         $this->timeout = $timeout ?? max(2, Config::int('SECURITY_STATUS_TIMEOUT', 6));
         $this->runner = $runner ?? fn(array $cmd): array => $this->run($cmd);
+        $this->useSudo = $useSudo ?? true;
+        $this->snapshotFile = $snapshotFile ?? trim((string) Config::get('SECURITY_STATUS_FILE', ''));
+        $this->maxAge = max(60, Config::int('SECURITY_SNAPSHOT_MAX_AGE', 600));
     }
 
     public function enabled(): bool
@@ -68,30 +79,99 @@ final class SecurityStatusService
     }
 
     /**
-     * The full snapshot the page renders.
+     * The full snapshot the page renders. The app-level HTTP-hardening card is
+     * always computed live (it's per-request and needs no privilege). The host
+     * cards come from one of two sources:
+     *   - a JSON file written out-of-band by a root collector (bin/security_snapshot.php
+     *     via the idm-security-snapshot timer) — the default on a hardened host,
+     *     where php-fpm can't spawn processes; or
+     *   - live commands run in-request via `sudo -n` when no snapshot file is set.
      *
-     * @return array{enabled:bool,cards:list<array>,jails:list<array>,bannedIps:list<array{jail:string,ip:string}>}
+     * @return array{enabled:bool,source:string,generated_at?:int,cards:list<array>,jails:list<array>,bannedIps:list<array{jail:string,ip:string}>}
      */
     public function snapshot(): array
     {
-        // The app-level HTTP hardening card needs no privilege, so it always shows.
         $cards = [$this->appHardening()];
-        $jails = [];
-        $banned = [];
+        if (!$this->enabled) {
+            return ['enabled' => false, 'source' => 'off', 'cards' => $cards, 'jails' => [], 'bannedIps' => []];
+        }
+        if ($this->snapshotFile !== '') {
+            return $this->fromFile($cards);
+        }
+        $host = $this->hostReport();
+        return [
+            'enabled'   => true,
+            'source'    => 'live',
+            'cards'     => array_merge($cards, $host['cards']),
+            'jails'     => $host['jails'],
+            'bannedIps' => $host['bannedIps'],
+        ];
+    }
 
-        if ($this->enabled) {
-            $cards[] = $this->firewall();
+    /**
+     * The host-command portion of the snapshot (everything that needs root):
+     * firewall, fail2ban, sshd, updates, AppArmor, auditd. This is what the root
+     * collector serializes to the snapshot file; the app card is added on read.
+     *
+     * @return array{cards:list<array>,jails:list<array>,bannedIps:list<array{jail:string,ip:string}>}
+     */
+    public function hostReport(): array
+    {
+        [$f2bCard, $jails, $banned] = $this->fail2ban();
+        $cards = [
+            $this->firewall(),
+            $f2bCard,
+            $this->ssh(),
+            $this->autoUpdates(),
+            $this->unit('AppArmor', 'apparmor', 'Mandatory access control confining services.'),
+            $this->unit('auditd', 'auditd', 'Kernel audit of auth, sudoers, and SSH config changes.'),
+        ];
+        return ['cards' => $cards, 'jails' => $jails, 'bannedIps' => $banned];
+    }
 
-            [$f2bCard, $jails, $banned] = $this->fail2ban();
-            $cards[] = $f2bCard;
-
-            $cards[] = $this->ssh();
-            $cards[] = $this->autoUpdates();
-            $cards[] = $this->unit('AppArmor', 'apparmor', 'Mandatory access control confining services.');
-            $cards[] = $this->unit('auditd', 'auditd', 'Kernel audit of auth, sudoers, and SSH config changes.');
+    /**
+     * Read the collector's JSON snapshot and fold it in behind the (live) app
+     * card, with a freshness card so a stopped collector is obvious rather than
+     * showing stale data as if it were current.
+     *
+     * @param list<array> $appCards
+     */
+    private function fromFile(array $appCards): array
+    {
+        $miss = function (string $detail) use ($appCards): array {
+            $appCards[] = $this->card('collector', 'Host status collector', 'unknown', $detail, [['File', $this->snapshotFile]]);
+            return ['enabled' => true, 'source' => 'file', 'cards' => $appCards, 'jails' => [], 'bannedIps' => []];
+        };
+        if (!is_file($this->snapshotFile) || !is_readable($this->snapshotFile)) {
+            return $miss('No snapshot yet — is the idm-security-snapshot timer installed and running? (see deploy/)');
+        }
+        $data = json_decode((string) @file_get_contents($this->snapshotFile), true);
+        if (!is_array($data) || !isset($data['cards']) || !is_array($data['cards'])) {
+            return $miss('Snapshot file is missing or not valid JSON — check the collector timer.');
         }
 
-        return ['enabled' => $this->enabled, 'cards' => $cards, 'jails' => $jails, 'bannedIps' => $banned];
+        $gen = (int) ($data['generated_at'] ?? 0);
+        $age = max(0, time() - $gen);
+        $stale = $gen === 0 || $age > $this->maxAge;
+        $when = $gen === 0 ? 'unknown' : Freshness::ago($age);
+        $freshCard = $this->card(
+            'collector',
+            'Host status collector',
+            $stale ? 'warn' : 'ok',
+            $stale
+                ? "Snapshot is stale (collected {$when}); the idm-security-snapshot timer may have stopped."
+                : "Collected {$when} by the idm-security-snapshot timer.",
+            [['Collected', $when], ['Max age', $this->maxAge . 's']]
+        );
+
+        return [
+            'enabled'      => true,
+            'source'       => 'file',
+            'generated_at' => $gen,
+            'cards'        => array_merge($appCards, [$freshCard], $data['cards']),
+            'jails'        => is_array($data['jails'] ?? null) ? $data['jails'] : [],
+            'bannedIps'    => is_array($data['bannedIps'] ?? null) ? $data['bannedIps'] : [],
+        ];
     }
 
     // ---- individual cards -----------------------------------------------------
@@ -380,8 +460,10 @@ final class SecurityStatusService
         if ($out !== '') {
             return 'Command failed: ' . $out;
         }
-        return 'Command failed (exit ' . (int) ($res['code'] ?? 1)
-            . ') — check the sudoers rule for the web user (deploy/idm-security-status.sudoers).';
+        $hint = $this->useSudo
+            ? 'check the sudoers rule for the web user (deploy/idm-security-status.sudoers), or use the collector timer.'
+            : 'is the tool installed and is the collector running as root?';
+        return 'Command failed (exit ' . (int) ($res['code'] ?? 1) . ') — ' . $hint;
     }
 
     /**
@@ -392,7 +474,7 @@ final class SecurityStatusService
      */
     private function exec(array $cmd, bool $sudo): array
     {
-        if ($sudo) {
+        if ($sudo && $this->useSudo) {
             $cmd = array_merge([$this->sudo, '-n'], $cmd);
         }
         try {

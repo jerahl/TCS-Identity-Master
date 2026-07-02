@@ -864,11 +864,32 @@ host's security posture — the runtime state of the controls
 - **App HTTP hardening** — HTTPS enforcement, HSTS, and CSP from the app itself
   (always shown; needs no host access).
 
-Reading firewall/fail2ban/sshd state needs root, so — exactly like the VPN
-restart — the app runs a small, fixed allow-list of **read-only** commands via
-`sudo -n` (no shell, argv arrays), each bounded by a timeout. The page never
-changes anything. It's **off** unless `SECURITY_STATUS_ENABLED=true`; when
-enabled, grant the web user the NOPASSWD sudoers rule:
+Reading firewall/fail2ban/sshd state needs root. The page never changes
+anything; it's **off** unless `SECURITY_STATUS_ENABLED=true`. There are two ways
+to feed it, because `harden-debian12.sh` **disables `proc_open` in php-fpm** — so
+on a properly hardened host the web app cannot run these commands itself:
+
+**1. Collector + JSON file (recommended; required on a hardened host).** A root
+systemd timer runs `bin/security_snapshot.php`, which reads the host state
+(directly, as root — no sudo) and writes a world-readable JSON file. The web app
+just reads that file — no `proc_open`, no sudo in the web tier, so php-fpm stays
+fully locked down. Install the timer and point the app at its output:
+
+```sh
+sudo install -m 0644 deploy/idm-security-snapshot.service /etc/systemd/system/
+sudo install -m 0644 deploy/idm-security-snapshot.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now idm-security-snapshot.timer
+# then in .env:  SECURITY_STATUS_ENABLED=true  and  SECURITY_STATUS_FILE=/var/idm/security-status.json
+```
+
+The page shows how long ago the snapshot was collected and flags it stale past
+`SECURITY_SNAPSHOT_MAX_AGE` (default 600s) so a stopped timer is obvious. Adjust
+`WorkingDirectory`/`ExecStart` paths in the unit files to your install.
+
+**2. Live via sudo (only where php-fpm may spawn processes — i.e. not hardened).**
+Leave `SECURITY_STATUS_FILE` unset and the app runs a small, fixed allow-list of
+read-only commands via `sudo -n`, which needs the NOPASSWD rule:
 
 ```sh
 sudo visudo -cf deploy/idm-security-status.sudoers            # syntax check
@@ -876,11 +897,15 @@ sudo install -m 0440 -o root -g root deploy/idm-security-status.sudoers \
      /etc/sudoers.d/idm-security-status
 ```
 
+> If every host card reads **"unknown"** while only the App-HTTP card shows, the
+> web app can't execute commands — that's the hardened-host `proc_open` case
+> above. Use the collector (option 1). If just the *sudo* commands fail, check
+> the sudoers rule and that the web user matches.
+
 Confirm the tool paths on your host (`command -v ufw fail2ban-client sshd`) match
-the sudoers rule and the `SECURITY_*_BIN` env vars. With the feature off (or the
-sudoers rule absent), the host cards read "unknown" and only the app-level
-hardening card is shown. Configure the controls themselves — don't try to change
-them from here — with `scripts/harden-debian12.sh`.
+the `SECURITY_*_BIN` env vars (and the sudoers rule, for live mode). Configure the
+controls themselves — don't try to change them from here — with
+`scripts/harden-debian12.sh`.
 
 ## Operations / backups
 
