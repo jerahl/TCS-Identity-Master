@@ -300,7 +300,7 @@ $eventTitle = [
         </div>
       </div>
     <?php else: ?>
-      <?= \App\View\View::partial('people/_adaxes', ['adaxes' => $adaxes, 'verdict' => $verdict]) ?>
+      <?= \App\View\View::partial('people/_adaxes', ['adaxes' => $adaxes, 'verdict' => $verdict, 'p' => $p, 'canEdit' => $canEdit ?? false, 'csrf' => $csrf ?? '']) ?>
     <?php endif; ?>
   </div>
 

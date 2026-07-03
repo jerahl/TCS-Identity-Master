@@ -136,7 +136,80 @@ final class PersonController extends Controller
 
         $adaxes = $this->adaxes->verify($person, $this->people->sourceIds($id));
 
-        return \App\View\View::partial('people/_adaxes', ['adaxes' => $adaxes]);
+        return \App\View\View::partial('people/_adaxes', [
+            'adaxes'  => $adaxes,
+            'p'       => $person,
+            'canEdit' => $this->auth()->can('edit'),
+            'csrf'    => Csrf::token(),
+        ]);
+    }
+
+    /**
+     * Adopt a pending person's live Active Directory identity as the golden
+     * record: write the AD sAMAccountName (username, locked), userPrincipalName
+     * (UPN) and mail (email) — filling only the values the golden record still
+     * lacks — and link the objectGUID crosswalk. Setting the username activates
+     * the pending person. Editor+; CSRF-checked; a POST form (no inline JS,
+     * CSP-safe). This is a deliberate operator action, not a view side effect —
+     * the same contract as the source-reconciliation "Use this" writes.
+     *
+     * Restricted to pending people: an active record's username/email/UPN are
+     * owned by OneSync and must not be reshaped from a page action. The AD values
+     * are re-fetched live here (never trusted from the client) so what lands on
+     * the record is exactly what AD holds now. Always redirects back to the person.
+     */
+    public function acceptAdaxes(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect($back);
+        }
+        if ((string) $person['status'] !== 'pending') {
+            $this->flash("Only a pending person can adopt AD identity here — this record is {$person['status']}.");
+            return $this->redirect($back);
+        }
+
+        // Re-fetch AD live rather than trusting anything from the client.
+        $adaxes = $this->adaxes->verify($person, $this->people->sourceIds($id));
+        if (empty($adaxes['configured'])) {
+            $this->flash('Live AD verification is off — nothing to adopt.');
+            return $this->redirect($back);
+        }
+        if (empty($adaxes['ok'])) {
+            $this->flash('Could not reach Active Directory — nothing written.');
+            return $this->redirect($back);
+        }
+        if (empty($adaxes['found'])) {
+            $this->flash('No matching Active Directory account — nothing to adopt.');
+            return $this->redirect($back);
+        }
+
+        $ad = AdaxesService::goldenCandidate($adaxes);
+        if ($ad['username'] === '' && $ad['upn'] === '' && $ad['email'] === '') {
+            $this->flash('The AD account has no username, UPN or email to adopt.');
+            return $this->redirect($back);
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $writer = new PersonWriter($db, new AuditService($db));
+            $notes = $writer->linkAdAccount($id, $ad, $this->currentUser()['name']);
+            $this->flash($notes === []
+                ? 'The golden record already matched Active Directory — no change.'
+                : 'Adopted the Active Directory identity: ' . implode('; ', $notes) . '.');
+        } catch (\Throwable $e) {
+            error_log('[idm] adaxes accept: ' . $e->getMessage());
+            $this->flash('Could not adopt the Active Directory identity.');
+        }
+        return $this->redirect($back);
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];

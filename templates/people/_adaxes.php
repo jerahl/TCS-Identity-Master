@@ -9,8 +9,15 @@
  *
  * @var array $adaxes  the AdaxesService::verify() envelope
  * @var array $verdict optional state→[color,bg,label] map (falls back below)
+ * @var array $p       optional person row (drives the "accept as golden" action)
+ * @var bool  $canEdit optional — whether the operator may write the golden record
+ * @var string $csrf   optional CSRF token for the accept form
  */
 use App\View\Present;
+
+$p = $p ?? [];
+$canEdit = !empty($canEdit);
+$csrf = $csrf ?? '';
 
 // Same state vocabulary the reconciliation panel uses; self-contained so the
 // partial renders correctly whether or not the caller passed $verdict.
@@ -57,6 +64,34 @@ $adId = $adaxes['identifier'] ?? null;
       The golden record and Active Directory agree on every comparable field.
     </div>
   <?php endif; ?>
+
+  <?php
+    // "Accept AD as the golden record" — only offered for a pending person, to
+    // an editor, and only when AD holds a Username/UPN/Email the golden record
+    // is still missing (the values linkAdAccount() would fill). An active
+    // record's identity is OneSync's to own, so the action never appears there.
+    $adAttrs = $adaxes['attributes'] ?? [];
+    $isPending = (string) ($p['status'] ?? '') === 'pending';
+    $fillable = [];
+    foreach (['Username' => ['samaccountname', 'username'], 'UPN' => ['userprincipalname', 'upn'], 'Email' => ['mail', 'email']] as $lbl => $keys) {
+        if (trim((string) ($adAttrs[$keys[0]] ?? '')) !== '' && trim((string) ($p[$keys[1]] ?? '')) === '') {
+            $fillable[] = $lbl;
+        }
+    }
+  ?>
+  <?php if ($canEdit && $isPending && $fillable !== []): ?>
+    <div class="identity-note" style="margin-bottom:14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <form method="post" action="<?= e(url('/people/' . ($p['person_id'] ?? '') . '/adaxes/accept')) ?>" style="display:inline; margin:0;">
+        <input type="hidden" name="_csrf" value="<?= e($csrf) ?>">
+        <button type="submit" title="Write the AD Username, UPN and Email to the golden record and activate this pending person"
+          style="cursor:pointer; font-size:11.5px; font-weight:600; color:#1F7A3D; background:#E7F4EC; border:1px solid #B7E0C6; border-radius:9px; padding:3px 12px;">
+          Accept AD as golden record
+        </button>
+      </form>
+      <span style="color:#52677A;">Adopts the AD <?= e(implode(', ', $fillable)) ?> for this pending person — the username is locked and the record is activated.</span>
+    </div>
+  <?php endif; ?>
+
   <p class="panel__note" style="margin:0 0 12px;">
     <?php if ($adBy === 'objectGUID'): ?>
       Matched by <span class="mono">objectGUID</span> = <span class="mono"><?= e((string) $adId) ?></span>.

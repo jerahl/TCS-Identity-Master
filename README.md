@@ -684,10 +684,20 @@ The Provisioning panel shows what *OneSync reported* about each AD account. The
 **Active Directory (live)** panel on the person detail page shows what AD itself
 currently holds, fetched on demand from the [Adaxes REST API](https://www.adaxes.com/sdk/ApiDocumentation.RESTApi/)
 and compared field-by-field to the golden record — account enabled/disabled,
-`sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. It is a
-verification aid only: the app **reads** from AD via Adaxes and never writes,
-enables, or modifies anything. The panel loads **asynchronously** after the rest
+`sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. The
+lookup is **read-only** against AD: the app never writes, enables, or modifies
+anything in Active Directory. The panel loads **asynchronously** after the rest
 of the person page renders, so a slow or unreachable Adaxes never blocks the page.
+
+For a **pending** person, an editor can **Accept AD as golden record** from the
+panel — a deliberate `POST` action (never a side effect of viewing) that adopts
+the AD `sAMAccountName`, `userPrincipalName`, and `mail` as the golden `username`
+(set + locked), `upn`, and `email`, links the `objectGUID` into the crosswalk,
+and activates the person. It fills only the values the golden record is still
+missing — present values are never overwritten — and is audited like any other
+golden-record write. The button appears only when AD holds an identity value the
+record lacks; an active record's identity stays OneSync's to own, so the action
+is never offered there.
 
 It is off until configured. Set the base URL and a token (or a **read-only**
 service account) in `.env` (`ADAXES_*`, documented in `.env.example`):

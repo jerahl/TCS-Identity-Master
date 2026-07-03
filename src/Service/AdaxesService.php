@@ -378,6 +378,28 @@ final class AdaxesService
         return count(array_filter($comparison, static fn($r) => in_array($r['state'], ['differ', 'missing'], true)));
     }
 
+    /**
+     * The identity values from a verify() envelope that may be adopted as the
+     * golden record: sAMAccountName→username, userPrincipalName→upn, mail→email,
+     * plus the objectGUID for the crosswalk link. Shaped exactly for
+     * PersonWriter::linkAdAccount(). Returns empty strings (and null guid) when
+     * the lookup found no account or the attribute is absent — the caller decides
+     * whether there is anything worth writing.
+     *
+     * @param Envelope $envelope
+     * @return array{guid:?string, username:string, upn:string, email:string}
+     */
+    public static function goldenCandidate(array $envelope): array
+    {
+        $attrs = is_array($envelope['attributes'] ?? null) ? $envelope['attributes'] : [];
+        return [
+            'guid'     => $envelope['guid'] ?? null,
+            'username' => trim((string) ($attrs['samaccountname'] ?? '')),
+            'upn'      => trim((string) ($attrs['userprincipalname'] ?? '')),
+            'email'    => trim((string) ($attrs['mail'] ?? '')),
+        ];
+    }
+
     // ---- internals ----------------------------------------------------------
 
     /** @param array<int,array<string,mixed>> $sourceIds */
