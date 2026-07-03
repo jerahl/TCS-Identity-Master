@@ -7,6 +7,7 @@ OneSync provisions exactly **one user per person** instead of one per source.
 
 See `docs/` for the full design:
 - `docs/user-guide.md` — **end-user guide** for the web app (front-end users)
+- `docs/data-flow.md` — **end-to-end data flow** (imports → internal processes → OneSync loop → destinations)
 - `docs/schema.sql` — the data model (source of `db/migrations/0001_init.sql`)
 - `docs/Identity-DB-and-Dashboard-Design.md` — architecture
 - `docs/claude-design-prompt.md` — dashboard UI spec
