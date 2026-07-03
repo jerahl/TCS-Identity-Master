@@ -14,6 +14,7 @@ See `docs/` for the full design:
 - `docs/saml-sso-setup.md` — configure SAML SSO against the district IdP
 - `docs/server-hardening.md` — production hardening / HTTPS
 - `docs/onesync-api.md`, `docs/onesync-mapping.md` — the OneSync interface
+- `docs/mcp-server.md` — the MCP server for Claude (per-user keys, role-gated tools)
 - `docs/cron-feed-pull.md` — schedule the nightly SFTP feed pull
 - `docs/dev-box-git-main.md` — swap the dev box git checkout back to `main`
 
@@ -520,6 +521,32 @@ returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is t
 `v_onesync_source.ID` (person UUID). Same guarantees as the CSV path below.
 
 Full reference: [`docs/onesync-api.md`](docs/onesync-api.md).
+
+### MCP server for Claude
+
+An MCP (Model Context Protocol) server lets Claude query — and, for the right
+roles, act on — the identity system at `POST /mcp`. Unlike the OneSync API's
+shared secret, auth here is **per user**: each person mints their own API key
+(**Settings ▸ API keys**, or `bin/api_key.php`) and sends it as
+`Authorization: Bearer <key>`. A key acts as its owner, and the owner's app role
+(`readonly`/`editor`/`admin`) bounds which tools Claude can list and call —
+checked live on every request, so revoking or downgrading takes effect at once.
+
+```sh
+# Mint a key from the CLI (or use the Settings ▸ API keys page)
+php bin/api_key.php create --email=you@tuscaloosacityschools.com --label="Claude Desktop"
+
+# Connect Claude Code
+claude mcp add --transport http tcs-identity https://idm.example.org/mcp \
+  --header "Authorization: Bearer $KEY"
+```
+
+Tools range from read-only (`search_people`, `get_person`, `dashboard_summary`,
+`list_failed_syncs`, `list_review_queue`) through editor (`confirm_match`,
+`reject_match`) to admin (`list_users`); writes are audited as `mcp:<email>`.
+Set `MCP_ENABLED=false` to disable the endpoint.
+
+Full reference: [`docs/mcp-server.md`](docs/mcp-server.md).
 
 ### Students passthrough
 
