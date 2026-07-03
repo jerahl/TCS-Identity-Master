@@ -254,23 +254,41 @@ final class ReviewService
 
         $this->db->beginTransaction();
         try {
+            // Compare-and-swap: claim the case before touching any person. If the
+            // staged row is no longer awaiting review (already decided, a replayed
+            // POST, or another admin resolved it first) the guarded UPDATE matches
+            // nothing and we abort — so a stale/replayed request can't graft the
+            // staged row onto a person again.
+            $claim = $this->db->prepare(
+                "UPDATE staging_record SET match_status = 'merged', matched_person_id = :pid
+                 WHERE id = :sid AND match_status = 'needs_review'"
+            );
+            $claim->execute([':pid' => $candidatePersonId, ':sid' => $stagingId]);
+            if ($claim->rowCount() === 0) {
+                throw new RuntimeException('This case has already been resolved.');
+            }
+
+            // The target must be a person that was actually offered as a pending
+            // candidate for THIS staged row. Without this, a hand-crafted person id
+            // could be confirmed and overwrite an arbitrary golden record.
+            $confirmCandidate = $this->db->prepare(
+                "UPDATE match_candidate SET status = 'confirmed', decided_by = :actor, decided_at = CURRENT_TIMESTAMP
+                 WHERE staging_id = :sid AND candidate_person_id = :pid AND status = 'pending'"
+            );
+            $confirmCandidate->execute([':actor' => $actor, ':sid' => $stagingId, ':pid' => $candidatePersonId]);
+            if ($confirmCandidate->rowCount() === 0) {
+                throw new RuntimeException('That person was not a pending match candidate for this row.');
+            }
+
             $this->writer->attachSourceId($candidatePersonId, $row->sourceSystem(), $row->sourceKey, $actor);
             $this->writer->updateHrFields($candidatePersonId, $row, $actor);
             $this->writer->upsertAssignment($candidatePersonId, $row, $actor);
 
-            // Resolve candidates for this staged row.
-            $this->db->prepare(
-                "UPDATE match_candidate SET status = 'confirmed', decided_by = :actor, decided_at = CURRENT_TIMESTAMP
-                 WHERE staging_id = :sid AND candidate_person_id = :pid AND status = 'pending'"
-            )->execute([':actor' => $actor, ':sid' => $stagingId, ':pid' => $candidatePersonId]);
+            // Resolve the remaining candidates for this staged row.
             $this->db->prepare(
                 "UPDATE match_candidate SET status = 'rejected', decided_by = :actor, decided_at = CURRENT_TIMESTAMP
                  WHERE staging_id = :sid AND candidate_person_id <> :pid AND status = 'pending'"
             )->execute([':actor' => $actor, ':sid' => $stagingId, ':pid' => $candidatePersonId]);
-
-            $this->db->prepare(
-                "UPDATE staging_record SET match_status = 'merged', matched_person_id = :pid WHERE id = :sid"
-            )->execute([':pid' => $candidatePersonId, ':sid' => $stagingId]);
 
             $this->audit->log('match', $stagingId, 'merge', null,
                 ['staging_id' => $stagingId, 'linked_person_id' => $candidatePersonId, 'system' => $row->system, 'source_key' => $row->sourceKey], $actor);
@@ -299,6 +317,18 @@ final class ReviewService
 
         $this->db->beginTransaction();
         try {
+            // Compare-and-swap: claim the case before creating anything. A replayed
+            // reject (double-click, browser re-POST) or a second admin acting on
+            // the same case would otherwise create a duplicate brand-new person for
+            // one staged row.
+            $claim = $this->db->prepare(
+                "UPDATE staging_record SET match_status = 'new' WHERE id = :sid AND match_status = 'needs_review'"
+            );
+            $claim->execute([':sid' => $stagingId]);
+            if ($claim->rowCount() === 0) {
+                throw new RuntimeException('This case has already been resolved.');
+            }
+
             $pid = $this->writer->createPerson($row, $actor);
             $this->writer->attachSourceId($pid, $row->sourceSystem(), $row->sourceKey, $actor);
             $this->writer->upsertAssignment($pid, $row, $actor);
@@ -309,7 +339,7 @@ final class ReviewService
             )->execute([':actor' => $actor, ':sid' => $stagingId]);
 
             $this->db->prepare(
-                "UPDATE staging_record SET match_status = 'new', matched_person_id = :pid WHERE id = :sid"
+                "UPDATE staging_record SET matched_person_id = :pid WHERE id = :sid"
             )->execute([':pid' => $pid, ':sid' => $stagingId]);
 
             $this->audit->log('match', $stagingId, 'update', null,

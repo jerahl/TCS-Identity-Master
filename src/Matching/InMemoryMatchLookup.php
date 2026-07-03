@@ -40,14 +40,15 @@ final class InMemoryMatchLookup implements MatchLookup
         return null;
     }
 
-    public function findPersonIdByEmployeeId(string $employeeId): ?int
+    public function findPersonsByEmployeeId(string $employeeId): array
     {
+        $out = [];
         foreach ($this->persons as $p) {
-            if (($p['employee_id'] ?? null) !== null && (string) $p['employee_id'] === (string) $employeeId) {
-                return $p['person_id'];
+            if (($p['employee_id'] ?? null) !== null && $p['employee_id'] !== '' && (string) $p['employee_id'] === (string) $employeeId) {
+                $out[] = ['person_id' => $p['person_id'], 'first_name' => $p['first_name'], 'last_name' => $p['last_name']];
             }
         }
-        return null;
+        return $out;
     }
 
     public function findByLastName(string $lastName): array
