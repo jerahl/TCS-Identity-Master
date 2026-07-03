@@ -70,6 +70,11 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 1.5l6.5 2.6v4.3c0 4-2.8 6.6-6.5 8.1C5.3 15 2.5 12.4 2.5 8.4V4.1L9 1.5z" stroke-linejoin="round"/><path d="M6.2 9.2l2 2 3.6-3.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>VPN status</span>
       </a>
+      <a class="nav-item<?= $nav('apikeys') ?>" href="<?= e(url('/settings/api-keys')) ?>">
+        <span class="nav-item__bar"></span>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="6" cy="9" r="3.2"/><path d="M9.2 9H16M13 9v3M15.4 9v2.2" stroke-linecap="round"/></svg>
+        <span>API keys</span>
+      </a>
 <?php if (!empty($canAdmin)): ?>
       <a class="nav-item<?= $nav('users') ?>" href="<?= e(url('/users')) ?>">
         <span class="nav-item__bar"></span>

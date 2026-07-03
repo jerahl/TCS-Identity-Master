@@ -75,6 +75,11 @@ try {
     $router->post('/api/onesync/username', static fn() => $api->username());
     $router->post('/api/onesync/sync-status', static fn() => $api->syncStatus());
 
+    // ---- MCP server for Claude (per-user API key auth; role gates the tools) ----
+    $mcp = new \App\Controller\McpController();
+    $router->post('/mcp', static fn() => $mcp->handle());
+    $router->get('/mcp', static fn() => $mcp->handle());
+
     // ---- Public (no auth) ----
     $router->get('/login', static fn() => $authCtl->loginPage());
     $router->get('/saml/login', static fn() => $authCtl->samlLogin());
@@ -93,6 +98,12 @@ try {
     $router->get('/reference', $guard('view', static fn() => $reference->index()));
     $router->get('/import', $guard('view', static fn() => $import->index()));
     $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
+
+    // Self-service API keys (any authenticated user manages their own keys).
+    $apiKeys = new \App\Controller\ApiKeyController();
+    $router->get('/settings/api-keys', $guard('view', static fn() => $apiKeys->index()));
+    $router->post('/settings/api-keys/create', $guard('view', static fn() => $apiKeys->create()));
+    $router->post('/settings/api-keys/revoke', $guard('view', static fn() => $apiKeys->revoke()));
 
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
