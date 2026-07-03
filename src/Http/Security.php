@@ -14,7 +14,9 @@ use App\Config;
  * allows 'unsafe-inline' plus the fonts stylesheet host (style attributes can't
  * be covered by a hash or nonce). Keep this in lockstep with the nginx CSP in
  * scripts/harden-debian12.sh — the browser enforces both headers, so any drift
- * blocks whatever one policy omits.
+ * blocks whatever one policy omits. One route overrides this header:
+ * /reference/data-flow (ReferenceController::dataflow) re-sends CSP with
+ * script-src 'unsafe-eval' for its diagram runtime — scoped to that page only.
  */
 final class Security
 {

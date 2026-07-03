@@ -5,6 +5,11 @@ what feeds in, what the app does internally, what it hands to OneSync, and
 what OneSync does with it. Written to be handed to design as the source for
 a detailed flow chart — a suggested swim-lane breakdown is at the end.
 
+> **Interactive version:** the flow chart built from this doc ships in the
+> app itself at **`/reference/data-flow`** (linked from the Reference page) —
+> pan/zoom, per-node detail, layer toggles, and animated new-hire / leaver
+> traces.
+
 ---
 
 ## 1. The big picture
