@@ -60,6 +60,11 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="2" width="15" height="14" rx="2"/><path d="M1.5 6.7h15M7 6.7V16"/></svg>
         <span>Reference data</span>
       </a>
+      <a class="nav-item<?= $nav('dataflow') ?>" href="<?= e(url('/reference/data-flow')) ?>">
+        <span class="nav-item__bar"></span>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="2.5" width="5" height="4" rx="1"/><rect x="11.5" y="2.5" width="5" height="4" rx="1"/><rect x="6.5" y="11.5" width="5" height="4" rx="1"/><path d="M4 6.5v3.5h10V6.5M9 10v1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Data flow chart</span>
+      </a>
       <a class="nav-item<?= $nav('import') ?>" href="<?= e(url('/import')) ?>">
         <span class="nav-item__bar"></span>
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v8M5.5 7L9 10.5 12.5 7"/><path d="M2.5 12.5v2a1 1 0 001 1h11a1 1 0 001-1v-2"/></svg>
