@@ -86,6 +86,11 @@ $nav = static fn(string $key): string => $activeNav === $key ? ' is-active' : ''
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7.2 2.5h3.6l.5 2 1.8 1 2-.7 1.8 3.1-1.5 1.4v2l1.5 1.4-1.8 3.1-2-.7-1.8 1-.5 2H7.2l-.5-2-1.8-1-2 .7L1.1 15l1.5-1.4v-2L1.1 10.2 2.9 7.1l2 .7 1.8-1 .5-2z" stroke-linejoin="round"/><circle cx="9" cy="9" r="2.4"/></svg>
         <span>Services</span>
       </a>
+      <a class="nav-item<?= $nav('security') ?>" href="<?= e(url('/security')) ?>">
+        <span class="nav-item__bar"></span>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 1.5l6.5 2.6v4.3c0 4-2.8 6.6-6.5 8.1C5.3 15 2.5 12.4 2.5 8.4V4.1L9 1.5z" stroke-linejoin="round"/><path d="M6.4 9l1.8 1.8L11.8 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Security</span>
+      </a>
 <?php endif; ?>
     </nav>
 

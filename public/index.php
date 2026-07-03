@@ -65,6 +65,7 @@ try {
     $users = new UserController();
     $audit = new \App\Controller\AuditController();
     $admin = new \App\Controller\AdminController();
+    $security = new \App\Controller\SecurityController();
     $authCtl = new AuthController();
 
     $router = new Router();
@@ -116,6 +117,7 @@ try {
     $router->post('/admin/run/feeds', $guard('admin', static fn() => $admin->runFeeds()));
     $router->post('/admin/run/students', $guard('admin', static fn() => $admin->runStudents()));
     $router->post('/admin/run/onesync-db', $guard('admin', static fn() => $admin->runOnesyncDb()));
+    $router->get('/security', $guard('admin', static fn() => $security->index()));
 
     $router->setNotFound(static fn() => $page->notFound());
 
