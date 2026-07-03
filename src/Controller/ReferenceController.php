@@ -37,4 +37,34 @@ final class ReferenceController extends Controller
             'fieldGroups'    => FieldMap::GROUPS,
         ], 'ref', 'Configuration  /  Reference data', 'Reference data — TCS Identity Master');
     }
+
+    /**
+     * Interactive data-flow chart (sources → IDM → OneSync → destinations) —
+     * a self-contained standalone page, served behind the auth gate like every
+     * other route. Its diagram runtime evaluates the chart definition with
+     * `new Function`, which the site-wide CSP (script-src 'self') forbids, so
+     * this response replaces the CSP with one that adds 'unsafe-eval' — scoped
+     * to this page only; everything else (no inline/external script, no remote
+     * fonts) stays as strict as the global policy. Keep in lockstep with the
+     * nginx CSP in scripts/harden-debian12.sh (the browser enforces both).
+     */
+    public function dataflow(): string
+    {
+        header(
+            "Content-Security-Policy: default-src 'self'; "
+            . "style-src 'self' 'unsafe-inline'; "
+            . "font-src 'self'; "
+            . "img-src 'self' data:; "
+            . "script-src 'self' 'unsafe-eval'; "
+            . "object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
+        );
+
+        $file = dirname(__DIR__, 2) . '/templates/reference/dataflow.html';
+        $html = @file_get_contents($file);
+        if ($html === false) {
+            http_response_code(404);
+            return 'Data-flow page not installed (templates/reference/dataflow.html missing).';
+        }
+        return $html;
+    }
 }
