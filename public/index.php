@@ -116,7 +116,14 @@ try {
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
     $router->get('/add', $guard('edit', static fn() => $person->addForm()));
     $router->post('/add', $guard('edit', static fn() => $person->create()));
-    $router->get('/notify/{id}', $guard('edit', static fn(array $p) => (new \App\Controller\NotifyController())->show($p)));
+    // Orientation checklists. Literal routes are registered before /notify/{id}
+    // so "templates"/"bulk" aren't captured as an id.
+    $notify = new \App\Controller\NotifyController();
+    $router->get('/notify/templates', $guard('edit', static fn() => $notify->templates()));
+    $router->post('/notify/templates/save', $guard('edit', static fn() => $notify->saveTemplate()));
+    $router->post('/notify/bulk', $guard('edit', static fn() => $notify->bulk()));
+    $router->get('/notify/{id}', $guard('edit', static fn(array $p) => $notify->show($p)));
+    $router->get('/notify/{id}/pdf', $guard('edit', static fn(array $p) => $notify->pdf($p)));
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Service\LoginsReportService;
+use App\Support\Csrf;
 
 /**
  * The Logins export (view + CSV) — the golden record in the columns of the manual
@@ -47,6 +48,7 @@ final class LoginsController extends Controller
             'columns'       => LoginsReportService::columns(),
             'filters'       => $filters,
             'schoolOptions' => $this->report->schoolOptions(),
+            'csrf'          => Csrf::token(),
         ], 'logins', 'Logins export', 'Logins export — TCS Identity Master');
     }
 

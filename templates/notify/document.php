@@ -1,5 +1,5 @@
 <?php
-/** @var string $title @var string $body */
+/** @var string $title @var string $body @var string $pdfUrl */
 ?><!doctype html>
 <html lang="en">
 <head>
@@ -18,6 +18,7 @@
     .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     h1 { font-size: 21px; margin: 0 0 2px; }
     .sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+    .intro { font-size: 14px; margin: 0 0 18px; }
     .acct { border: 1px solid var(--line); border-radius: 9px; padding: 16px 18px; margin: 0 0 22px; background: #F8FBFC; }
     .acct h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--accent); margin: 0 0 12px; }
     .kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; font-size: 14px; }
@@ -41,7 +42,8 @@
 </head>
 <body>
   <div class="toolbar">
-    <button class="btn btn--primary" id="print-btn" type="button">Print / Save as PDF</button>
+    <?php if (!empty($pdfUrl)): ?><a class="btn btn--primary" href="<?= e($pdfUrl) ?>">Download PDF</a><?php endif; ?>
+    <button class="btn" id="print-btn" type="button">Print</button>
   </div>
   <div class="sheet">
     <?= $body ?>

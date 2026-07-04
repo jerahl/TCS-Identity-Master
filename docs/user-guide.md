@@ -401,13 +401,31 @@ Non-Instructional version for everyone else — pre-filled with their name, scho
 position, and their new **username, email, and sign-in**.
 
 - On a **person's record**, click **Orientation checklist** (editors/admins; it
-  appears once a username exists). It opens a print-ready page — use
-  **Print / Save as PDF**. The links are real, clickable hyperlinks, so the PDF
-  never has the broken-link problem the old Word *Finish & Merge* had.
+  appears once a username exists). It opens a preview with a **Download PDF**
+  button (a real PDF generated on the server) and a **Print** option. The links
+  are genuine, clickable hyperlinks, so the PDF never has the broken-link problem
+  the old Word *Finish & Merge* had.
 - On the **Logins export**, the **Checklist** column has an **Open** link for
   everyone whose account is ready.
-- The checklist content is a starting template — your team can tailor the steps
-  and links to the district's current orientation.
+- **Generate all at once.** On the Logins export, **Generate all checklists**
+  produces one PDF per ready person in the current filter and downloads them as a
+  single ZIP. Every generation (single or bulk) is written to the audit log and
+  the person's timeline.
+
+### Editing the checklist content
+
+Click **Edit checklist content** on the Logins export (editors/admins) to change
+the heading, intro, and steps for each variant. Content uses a simple format:
+
+- Start a section with `## Section name`.
+- Start each step with `- step text`.
+- Add links as `[label](https://example.com)` — only `http`/`https` links become
+  clickable.
+- The placeholders `{name}`, `{username}`, `{email}`, `{school}`, `{position}`,
+  and `{start_date}` are filled in per person.
+
+Account details are always inserted live regardless of the template. **Reset to
+default** restores the built-in content for a variant.
 
 > **Prefer the old Word document?** You can keep the existing merge and just point
 > its data source at the Logins **Download CSV** instead of the hand-maintained

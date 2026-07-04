@@ -13,6 +13,7 @@ $eventTitle = [
     'create' => 'Record created', 'update' => 'Record updated', 'disable' => 'Account disabled',
     'enable' => 'Account enabled', 'terminate' => 'Record terminated', 'convert' => 'Record converted',
     'merge' => 'Records merged', 'username_assigned' => 'Username assigned by OneSync',
+    'notify' => 'Orientation checklist generated',
 ];
 ?>
 <div class="detail">

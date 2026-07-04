@@ -149,7 +149,7 @@ CREATE TABLE assignment (
 CREATE TABLE lifecycle_event (
   id          BIGINT      NOT NULL AUTO_INCREMENT,
   person_id   BIGINT      NOT NULL,
-  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned') NOT NULL,
+  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned','notify') NOT NULL,
   detail      JSON        NULL,
   occurred_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   actor       VARCHAR(60) NULL,                      -- user or 'system:<job>'
@@ -162,13 +162,25 @@ CREATE TABLE audit_log (
   id         BIGINT      NOT NULL AUTO_INCREMENT,
   entity     ENUM('person','assignment','source_id','match','school','config') NOT NULL,
   entity_id  BIGINT      NULL,
-  action     ENUM('insert','update','delete','merge') NOT NULL,
+  action     ENUM('insert','update','delete','merge','notify') NOT NULL,
   before_json JSON       NULL,
   after_json  JSON       NULL,
   actor      VARCHAR(60) NULL,
   at         DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_audit_entity (entity, entity_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Editable content for the orientation-checklist variants (0014). One row per
+-- doc; absent rows fall back to built-in defaults in NotifyTemplateService.
+CREATE TABLE notify_template (
+  doc         VARCHAR(40)  NOT NULL,                 -- 'new_teacher' | 'non_instructional'
+  heading     VARCHAR(160) NOT NULL,
+  intro       TEXT         NULL,
+  body        MEDIUMTEXT   NULL,                     -- safe mini-markup (## / - / [label](url))
+  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  updated_by  VARCHAR(60)  NULL,
+  PRIMARY KEY (doc)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ----------------------------------------------------------------------------

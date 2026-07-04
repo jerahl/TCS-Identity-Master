@@ -15,16 +15,31 @@ $statusOpts = ['all' => 'All statuses', 'pending' => 'Pending', 'active' => 'Act
 // Cells we highlight when blank: the two that still need a human touch.
 $flagBlank = ['board_approval' => true, 'alsde_id' => true];
 $dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
+$readyCount = count(array_filter($rows, static fn($r) => !empty($r['checklist_ready'])));
 ?>
 <div class="page-head">
   <div>
     <h1>Logins export</h1>
     <p><?= e(count($rows)) ?> record<?= count($rows) === 1 ? '' : 's' ?> — the golden record in the Logins spreadsheet layout</p>
   </div>
-  <a class="btn btn--primary" href="<?= e(url('/logins.csv', $base)) ?>">
-    <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v9M5.5 7.5L9 11l3.5-3.5"/><path d="M2.5 13v2a1 1 0 001 1h11a1 1 0 001-1v-2"/></svg>
-    Download CSV
-  </a>
+  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+    <?php if (!empty($canEdit)): ?>
+    <a class="btn btn--ghost" href="<?= e(url('/notify/templates')) ?>">Edit checklist content</a>
+    <?php if ($readyCount > 0): ?>
+    <form method="post" action="<?= e(url('/notify/bulk')) ?>" style="margin:0;">
+      <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+      <?php foreach ($base as $k => $v): ?><input type="hidden" name="<?= e($k) ?>" value="<?= e($v) ?>"><?php endforeach; ?>
+      <button class="btn btn--ghost" type="submit" title="Generate a PDF checklist for every person with a minted username in this view">
+        Generate all checklists (<?= e($readyCount) ?>)
+      </button>
+    </form>
+    <?php endif; ?>
+    <?php endif; ?>
+    <a class="btn btn--primary" href="<?= e(url('/logins.csv', $base)) ?>">
+      <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v9M5.5 7.5L9 11l3.5-3.5"/><path d="M2.5 13v2a1 1 0 001 1h11a1 1 0 001-1v-2"/></svg>
+      Download CSV
+    </a>
+  </div>
 </div>
 
 <form class="filters" method="get" action="<?= e(url('/logins')) ?>">

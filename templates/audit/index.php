@@ -2,10 +2,10 @@
 /** @var array $rows @var int $total @var int $page @var int $perPage @var int $pages @var array $filters */
 
 $entityOpts = ['all' => 'All entities', 'person' => 'Person', 'assignment' => 'Assignment', 'source_id' => 'Source ID', 'match' => 'Match', 'school' => 'School', 'config' => 'Config', 'user' => 'User'];
-$actionOpts = ['all' => 'All actions', 'insert' => 'Insert', 'update' => 'Update', 'delete' => 'Delete', 'merge' => 'Merge', 'login' => 'Login', 'logout' => 'Logout'];
+$actionOpts = ['all' => 'All actions', 'insert' => 'Insert', 'update' => 'Update', 'delete' => 'Delete', 'merge' => 'Merge', 'notify' => 'Notify', 'login' => 'Login', 'logout' => 'Logout'];
 $actionMod = static fn(string $a): string => match ($a) {
     'insert', 'login', 'merge' => 'active',
-    'update' => 'pending',
+    'update', 'notify' => 'pending',
     'delete' => 'terminated',
     'logout' => 'disabled',
     default => 'disabled',
