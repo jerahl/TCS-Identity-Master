@@ -20,7 +20,8 @@ $labels = ['new_teacher' => 'New Teacher', 'non_instructional' => 'Non-Instructi
       <strong>Formatting:</strong> start a section with <code>## Section name</code>, and each step with
       <code>- step text</code>. Add links as <code>[label](https://example.com)</code> (only <code>http</code>/<code>https</code>
       links become clickable). Placeholders <code>{name}</code>, <code>{username}</code>, <code>{email}</code>,
-      <code>{school}</code>, <code>{position}</code>, <code>{start_date}</code> are replaced per person.
+      <code>{employeeid}</code>, <code>{school}</code>, <code>{position}</code>, <code>{start_date}</code> are
+      replaced per person.
     </div>
   </div>
 

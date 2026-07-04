@@ -421,8 +421,8 @@ the heading, intro, and steps for each variant. Content uses a simple format:
 - Start each step with `- step text`.
 - Add links as `[label](https://example.com)` — only `http`/`https` links become
   clickable.
-- The placeholders `{name}`, `{username}`, `{email}`, `{school}`, `{position}`,
-  and `{start_date}` are filled in per person.
+- The placeholders `{name}`, `{username}`, `{email}`, `{employeeid}`, `{school}`,
+  `{position}`, and `{start_date}` are filled in per person.
 
 Account details are always inserted live regardless of the template. **Reset to
 default** restores the built-in content for a variant.

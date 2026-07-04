@@ -283,6 +283,7 @@ final class NotifyController extends Controller
                 'name'       => $displayName,
                 'username'   => trim((string) ($person['username'] ?? '')),
                 'email'      => trim((string) ($person['email'] ?? '')),
+                'employeeid' => trim((string) ($person['employee_id'] ?? '')),
                 'school'     => $school,
                 'position'   => $position,
                 'start_date' => $startDate,
