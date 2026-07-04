@@ -160,9 +160,9 @@ CREATE TABLE lifecycle_event (
 
 CREATE TABLE audit_log (
   id         BIGINT      NOT NULL AUTO_INCREMENT,
-  entity     ENUM('person','assignment','source_id','match','school','config') NOT NULL,
+  entity     ENUM('person','assignment','source_id','match','school','config','user') NOT NULL,
   entity_id  BIGINT      NULL,
-  action     ENUM('insert','update','delete','merge','notify') NOT NULL,
+  action     ENUM('insert','update','delete','merge','login','logout','notify') NOT NULL,
   before_json JSON       NULL,
   after_json  JSON       NULL,
   actor      VARCHAR(60) NULL,

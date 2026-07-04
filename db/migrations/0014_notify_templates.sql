@@ -12,7 +12,7 @@
 --     action, with a per-person timeline entry.
 -- ============================================================================
 
-CREATE TABLE notify_template (
+CREATE TABLE IF NOT EXISTS notify_template (
   doc         VARCHAR(40)  NOT NULL,                 -- 'new_teacher' | 'non_instructional'
   heading     VARCHAR(160) NOT NULL,
   intro       TEXT         NULL,
@@ -22,8 +22,9 @@ CREATE TABLE notify_template (
   PRIMARY KEY (doc)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Preserve the existing values (login/logout came from 0002) and add 'notify'.
 ALTER TABLE audit_log
-  MODIFY COLUMN action ENUM('insert','update','delete','merge','notify') NOT NULL;
+  MODIFY COLUMN action ENUM('insert','update','delete','merge','login','logout','notify') NOT NULL;
 
 ALTER TABLE lifecycle_event
   MODIFY COLUMN event_type
