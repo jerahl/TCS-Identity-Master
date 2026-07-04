@@ -22,7 +22,7 @@ every POST, audit + lifecycle on every write, PHPUnit coverage.
 
 ## Phase 0 — data model (one migration)
 
-New migration `db/migrations/0011_logins_workflow.sql` (additive; MySQL
+New migration `db/migrations/0013_logins_workflow.sql` (additive; MySQL
 auto-commits DDL, so it must be independently safe — same rule as the others):
 
 ```sql
@@ -200,7 +200,7 @@ who have no PowerSchool record yet. Two options, in preference order:
 
 | Phase | Deliverable | Depends on | Risk |
 |---|---|---|---|
-| 0 | Migration `0011` | — | low (additive) |
+| 0 | Migration `0013` | — | low (additive) |
 | 1 | Board Approval editable | 0 | low |
 | 2 | Logins export (screen + CSV) | 0,1 | med (from/to query) |
 | 3 | Orientation PDFs | 2 | med (PDF lib / CSP) |

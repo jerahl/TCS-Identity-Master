@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the TCS Identity host security snapshot every couple of minutes
+
+[Timer]
+# Refresh shortly after boot, then every 2 minutes. Keep the interval below
+# SECURITY_SNAPSHOT_MAX_AGE (default 600s) so the /security page never shows the
+# snapshot as stale under normal operation.
+OnBootSec=60
+OnUnitActiveSec=120
+AccuracySec=15
+
+[Install]
+WantedBy=timers.target

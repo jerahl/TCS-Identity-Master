@@ -12,6 +12,7 @@
   <a class="tab<?= $tab === 'schools' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'schools'])) ?>">Schools map</a>
   <a class="tab<?= $tab === 'ethnicity' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'ethnicity'])) ?>">Ethnicity map</a>
   <a class="tab<?= $tab === 'mapping' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'mapping'])) ?>">Field mapping</a>
+  <a class="tab" href="<?= e(url('/reference/data-flow')) ?>" title="Interactive chart of the full pipeline: sources → IDM → OneSync → destinations">Data flow chart ↗</a>
 </div>
 
 <?php if ($tab === 'mapping'): ?>

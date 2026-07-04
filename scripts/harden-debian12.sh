@@ -384,7 +384,11 @@ add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" alway
 # Keep this in lockstep with src/Http/Security.php — the app sends its own CSP
 # too, and the browser enforces BOTH, so any drift blocks whatever one omits
 # (e.g. the Google Fonts stylesheet, or inline style="" attributes).
-add_header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'; object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'" always;
+# script-src carries 'unsafe-eval' ONLY because /reference/data-flow (the
+# interactive data-flow chart) needs it; the app-level CSP still denies eval on
+# every other route, and the effective policy is the intersection of the two —
+# so eval stays blocked site-wide except on that one page.
+add_header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; script-src 'self' 'unsafe-eval'; object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'" always;
 EOF
     if nginx -t 2>/dev/null; then
         systemctl reload nginx 2>/dev/null || true

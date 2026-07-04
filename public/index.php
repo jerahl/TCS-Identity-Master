@@ -64,6 +64,8 @@ try {
     $import = new ImportController();
     $users = new UserController();
     $audit = new \App\Controller\AuditController();
+    $admin = new \App\Controller\AdminController();
+    $security = new \App\Controller\SecurityController();
     $authCtl = new AuthController();
 
     $router = new Router();
@@ -73,6 +75,11 @@ try {
     $router->get('/api/onesync/ping', static fn() => $api->ping());
     $router->post('/api/onesync/username', static fn() => $api->username());
     $router->post('/api/onesync/sync-status', static fn() => $api->syncStatus());
+
+    // ---- MCP server for Claude (per-user API key auth; role gates the tools) ----
+    $mcp = new \App\Controller\McpController();
+    $router->post('/mcp', static fn() => $mcp->handle());
+    $router->get('/mcp', static fn() => $mcp->handle());
 
     // ---- Public (no auth) ----
     $router->get('/login', static fn() => $authCtl->loginPage());
@@ -90,12 +97,19 @@ try {
     $router->get('/people/{id}/adaxes', $guard('view', static fn(array $p) => $person->adaxes($p)));
     $router->get('/review', $guard('view', static fn() => $review->index()));
     $router->get('/reference', $guard('view', static fn() => $reference->index()));
+    $router->get('/reference/data-flow', $guard('view', static fn() => $reference->dataflow()));
     $router->get('/import', $guard('view', static fn() => $import->index()));
     $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
 
     $logins = new \App\Controller\LoginsController();
     $router->get('/logins', $guard('view', static fn() => $logins->index()));
     $router->get('/logins.csv', $guard('view', static fn() => $logins->csv()));
+
+    // Self-service API keys (any authenticated user manages their own keys).
+    $apiKeys = new \App\Controller\ApiKeyController();
+    $router->get('/settings/api-keys', $guard('view', static fn() => $apiKeys->index()));
+    $router->post('/settings/api-keys/create', $guard('view', static fn() => $apiKeys->create()));
+    $router->post('/settings/api-keys/revoke', $guard('view', static fn() => $apiKeys->revoke()));
 
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
@@ -107,6 +121,7 @@ try {
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));
     $router->post('/people/{id}/reconcile', $guard('edit', static fn(array $p) => $person->reconcile($p)));
+    $router->post('/people/{id}/adaxes/accept', $guard('edit', static fn(array $p) => $person->acceptAdaxes($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
     $router->post('/import/fetch', $guard('edit', static fn() => $import->fetch()));
     $router->post('/vpn/restart', $guard('edit', static fn() => (new \App\Controller\VpnController())->restart()));
@@ -116,6 +131,11 @@ try {
     $router->post('/users/role', $guard('admin', static fn() => $users->updateRole()));
     $router->post('/users/add', $guard('admin', static fn() => $users->addUser()));
     $router->get('/audit', $guard('admin', static fn() => $audit->index()));
+    $router->get('/admin', $guard('admin', static fn() => $admin->index()));
+    $router->post('/admin/run/feeds', $guard('admin', static fn() => $admin->runFeeds()));
+    $router->post('/admin/run/students', $guard('admin', static fn() => $admin->runStudents()));
+    $router->post('/admin/run/onesync-db', $guard('admin', static fn() => $admin->runOnesyncDb()));
+    $router->get('/security', $guard('admin', static fn() => $security->index()));
 
     $router->setNotFound(static fn() => $page->notFound());
 

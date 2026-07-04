@@ -7,6 +7,7 @@ OneSync provisions exactly **one user per person** instead of one per source.
 
 See `docs/` for the full design:
 - `docs/user-guide.md` — **end-user guide** for the web app (front-end users)
+- `docs/data-flow.md` — **end-to-end data flow** (imports → internal processes → OneSync loop → destinations); an interactive chart of it is in-app at `/reference/data-flow`
 - `docs/schema.sql` — the data model (source of `db/migrations/0001_init.sql`)
 - `docs/Identity-DB-and-Dashboard-Design.md` — architecture
 - `docs/claude-design-prompt.md` — dashboard UI spec
@@ -14,6 +15,7 @@ See `docs/` for the full design:
 - `docs/saml-sso-setup.md` — configure SAML SSO against the district IdP
 - `docs/server-hardening.md` — production hardening / HTTPS
 - `docs/onesync-api.md`, `docs/onesync-mapping.md` — the OneSync interface
+- `docs/mcp-server.md` — the MCP server for Claude (per-user keys, role-gated tools)
 - `docs/cron-feed-pull.md` — schedule the nightly SFTP feed pull
 - `docs/dev-box-git-main.md` — swap the dev box git checkout back to `main`
 
@@ -521,6 +523,32 @@ returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is t
 
 Full reference: [`docs/onesync-api.md`](docs/onesync-api.md).
 
+### MCP server for Claude
+
+An MCP (Model Context Protocol) server lets Claude query — and, for the right
+roles, act on — the identity system at `POST /mcp`. Unlike the OneSync API's
+shared secret, auth here is **per user**: each person mints their own API key
+(**Settings ▸ API keys**, or `bin/api_key.php`) and sends it as
+`Authorization: Bearer <key>`. A key acts as its owner, and the owner's app role
+(`readonly`/`editor`/`admin`) bounds which tools Claude can list and call —
+checked live on every request, so revoking or downgrading takes effect at once.
+
+```sh
+# Mint a key from the CLI (or use the Settings ▸ API keys page)
+php bin/api_key.php create --email=you@tuscaloosacityschools.com --label="Claude Desktop"
+
+# Connect Claude Code
+claude mcp add --transport http tcs-identity https://idm.example.org/mcp \
+  --header "Authorization: Bearer $KEY"
+```
+
+Tools range from read-only (`search_people`, `get_person`, `dashboard_summary`,
+`list_failed_syncs`, `list_review_queue`) through editor (`confirm_match`,
+`reject_match`) to admin (`list_users`); writes are audited as `mcp:<email>`.
+Set `MCP_ENABLED=false` to disable the endpoint.
+
+Full reference: [`docs/mcp-server.md`](docs/mcp-server.md).
+
 ### Students passthrough
 
 Students are **not** part of the staff golden-record model — no matching, no
@@ -684,10 +712,20 @@ The Provisioning panel shows what *OneSync reported* about each AD account. The
 **Active Directory (live)** panel on the person detail page shows what AD itself
 currently holds, fetched on demand from the [Adaxes REST API](https://www.adaxes.com/sdk/ApiDocumentation.RESTApi/)
 and compared field-by-field to the golden record — account enabled/disabled,
-`sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. It is a
-verification aid only: the app **reads** from AD via Adaxes and never writes,
-enables, or modifies anything. The panel loads **asynchronously** after the rest
+`sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. The
+lookup is **read-only** against AD: the app never writes, enables, or modifies
+anything in Active Directory. The panel loads **asynchronously** after the rest
 of the person page renders, so a slow or unreachable Adaxes never blocks the page.
+
+For a **pending** person, an editor can **Accept AD as golden record** from the
+panel — a deliberate `POST` action (never a side effect of viewing) that adopts
+the AD `sAMAccountName`, `userPrincipalName`, and `mail` as the golden `username`
+(set + locked), `upn`, and `email`, links the `objectGUID` into the crosswalk,
+and activates the person. It fills only the values the golden record is still
+missing — present values are never overwritten — and is audited like any other
+golden-record write. The button appears only when AD holds an identity value the
+record lacks; an active record's identity stays OneSync's to own, so the action
+is never offered there.
 
 It is off until configured. Set the base URL and a token (or a **read-only**
 service account) in `.env` (`ADAXES_*`, documented in `.env.example`):
@@ -789,6 +827,35 @@ GRANT SELECT ON tcs_identity.v_onesync_student_source TO 'onesync_ro'@'%'; -- st
 FLUSH PRIVILEGES;
 ```
 
+## Services (admin)
+
+The **Services** page (`/admin`, admin-only) is one place to see the health of
+every moving part and to run the background jobs on demand:
+
+- **Service status** — live cards for the application database, the OneSync
+  source DB (read), OneSync write-back freshness, the SFTP feed config, the
+  PowerSchool Oracle ODBC connection, and the VPN monitor. The OneSync source-DB
+  card is a live probe bounded by a short connect timeout (`SERVICE_PING_TIMEOUT`,
+  default 3s) so an unreachable host fails fast instead of hanging the page; the
+  app-DB card reuses the app's existing connection, and everything else reports
+  configuration presence.
+- **Jobs & last run** — the most recent **feed imports** (per source, from
+  `import_batch`), the **students sync** (`student_import_batch`), and the
+  **OneSync DB sync**. The OneSync DB sync had no run record of its own, so each
+  run — from cron (`bin/import_onesync_db.php`) or the button — now lands in a
+  new `service_run` table (job, origin, status, actor, counts, timing), which
+  also drives the **Recent runs** history.
+- **Run now** — admins can trigger the feed pull, the students sync, or the
+  OneSync DB sync from here. Each runs the same code path as its CLI/cron job,
+  synchronously in the request (like the existing feed-pull action), is
+  CSRF-protected, records a `service_run` row, and writes an `audit_log` entry
+  (entity `config`, action `service-run`). Buttons are hidden when the
+  underlying integration isn't configured.
+
+The app DB user needs `INSERT/UPDATE/SELECT` on `service_run` (covered by its
+existing "DML on app tables" grant). Run `php bin/migrate.php` to create the
+table (migration `0011_service_run.sql`).
+
 ## VPN status & restart
 
 The **VPN status** page (`/vpn`) relays the read-only `pseast-vpn-monitor`
@@ -816,6 +883,67 @@ Adjust the user (Debian's `www-data`) and unit name in that file to match your
 install and `VPN_SERVICE_UNIT`. Leave `VPN_CONTROL_ENABLED=false` (the default)
 to keep the whole VPN feature read-only — the button won't appear and the route
 returns a "disabled" notice.
+
+## Security dashboard
+
+The **Security** page (`/security`, admin-only) is a read-only view of the
+host's security posture — the runtime state of the controls
+`scripts/harden-debian12.sh` configures:
+
+- **Firewall (ufw)** — active/inactive, default inbound policy, and the allow-rule
+  list (`ufw status verbose`).
+- **fail2ban** — running jails, per-jail failed/banned counts, and a live table of
+  **currently banned IPs** across all jails (`fail2ban-client status [<jail>]`).
+- **SSH daemon** — the effective `sshd -T` policy: port, `PermitRootLogin`,
+  `PasswordAuthentication` (flags password-auth / root-login exposure).
+- **Automatic updates** — `unattended-upgrades` active + whether a reboot is
+  pending.
+- **AppArmor** and **auditd** — service state (`systemctl is-active`).
+- **App HTTP hardening** — HTTPS enforcement, HSTS, and CSP from the app itself
+  (always shown; needs no host access).
+
+Reading firewall/fail2ban/sshd state needs root. The page never changes
+anything; it's **off** unless `SECURITY_STATUS_ENABLED=true`. There are two ways
+to feed it, because `harden-debian12.sh` **disables `proc_open` in php-fpm** — so
+on a properly hardened host the web app cannot run these commands itself:
+
+**1. Collector + JSON file (recommended; required on a hardened host).** A root
+systemd timer runs `bin/security_snapshot.php`, which reads the host state
+(directly, as root — no sudo) and writes a world-readable JSON file. The web app
+just reads that file — no `proc_open`, no sudo in the web tier, so php-fpm stays
+fully locked down. Install the timer and point the app at its output:
+
+```sh
+sudo install -m 0644 deploy/idm-security-snapshot.service /etc/systemd/system/
+sudo install -m 0644 deploy/idm-security-snapshot.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now idm-security-snapshot.timer
+# then in .env:  SECURITY_STATUS_ENABLED=true  and  SECURITY_STATUS_FILE=/var/idm/security-status.json
+```
+
+The page shows how long ago the snapshot was collected and flags it stale past
+`SECURITY_SNAPSHOT_MAX_AGE` (default 600s) so a stopped timer is obvious. Adjust
+`WorkingDirectory`/`ExecStart` paths in the unit files to your install.
+
+**2. Live via sudo (only where php-fpm may spawn processes — i.e. not hardened).**
+Leave `SECURITY_STATUS_FILE` unset and the app runs a small, fixed allow-list of
+read-only commands via `sudo -n`, which needs the NOPASSWD rule:
+
+```sh
+sudo visudo -cf deploy/idm-security-status.sudoers            # syntax check
+sudo install -m 0440 -o root -g root deploy/idm-security-status.sudoers \
+     /etc/sudoers.d/idm-security-status
+```
+
+> If every host card reads **"unknown"** while only the App-HTTP card shows, the
+> web app can't execute commands — that's the hardened-host `proc_open` case
+> above. Use the collector (option 1). If just the *sudo* commands fail, check
+> the sudoers rule and that the web user matches.
+
+Confirm the tool paths on your host (`command -v ufw fail2ban-client sshd`) match
+the `SECURITY_*_BIN` env vars (and the sudoers rule, for live mode). Configure the
+controls themselves — don't try to change them from here — with
+`scripts/harden-debian12.sh`.
 
 ## Operations / backups
 

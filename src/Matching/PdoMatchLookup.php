@@ -27,14 +27,21 @@ final class PdoMatchLookup implements MatchLookup
         return $id === false ? null : (int) $id;
     }
 
-    public function findPersonIdByEmployeeId(string $employeeId): ?int
+    public function findPersonsByEmployeeId(string $employeeId): array
     {
         $stmt = $this->db->prepare(
-            "SELECT person_id FROM person WHERE employee_id = :emp AND employee_id <> '' LIMIT 1"
+            "SELECT person_id, first_name, last_name FROM person WHERE employee_id = :emp AND employee_id <> ''"
         );
         $stmt->execute([':emp' => $employeeId]);
-        $id = $stmt->fetchColumn();
-        return $id === false ? null : (int) $id;
+        $out = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $out[] = [
+                'person_id' => (int) $r['person_id'],
+                'first_name' => (string) $r['first_name'],
+                'last_name' => (string) $r['last_name'],
+            ];
+        }
+        return $out;
     }
 
     public function findByLastName(string $lastName): array
