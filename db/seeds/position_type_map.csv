@@ -1,11 +1,218 @@
 job_code,person_type,description
-TCH,faculty,Teacher
-CNS,faculty,Counselor
-LIB,faculty,Library Media Specialist
-SLP,faculty,Speech Language Pathologist
-PRIN,faculty,Principal
-APRN,faculty,Assistant Principal
-CUST,staff,Custodian
-CNW,staff,Child Nutrition Worker
-BUS,staff,Bus Driver
-SEC,staff,Secretary / Bookkeeper
+C129,staff,Coordinator of Fine Arts
+C169,staff,Program Specialist - SDC
+C185,staff,Technology Specialist - SDC
+CI07,staff,Federal Programs Specialist
+CI08,staff,Deputy Superintendent
+CI09,staff,Edu Liaison Specialist - SDC
+CI13,staff,Ed Admin - Saban Center
+CI14,staff,Coord Instructional Technology
+CI15,faculty,Instructional Coach
+CI16,staff,Coord Pre-Kindergarten
+CI17,faculty,Instructional Technology Coach
+CI21,faculty,Literacy Specialist PK-12
+CI24,staff,Data Analyst & Counsling Admin
+CI26,staff,Coordinator of Testing
+CI28,faculty,Curriculum Specialist
+CI32,staff,Director of Middle School Educ
+CI34,staff,Director Student Literacy
+CI36,staff,Director of Federal Programs
+CI37,staff,Director of Technology
+CI44,staff,Director of Special Education
+CI50,staff,ESL Coordinator
+CI51,faculty,ESL - Specialist
+CI53,faculty,ESL Teacher
+CI62,faculty,Math Coach - School
+CI64,faculty,Math Specialist - Elementary
+CI65,faculty,Math Specialist - 207
+CI67,faculty,Psychologist
+CI68,faculty,Psychometrist
+CI69,faculty,NBCT Support Coach
+CI70,faculty,Reading Coach - Mult Schools
+CI72,faculty,Literacy Coach
+CI74,faculty,Reading Intervention
+CI76,faculty,Reading Specialist - Elemen
+CI80,staff,Sch Improvement/Turnaround Adm
+CI83,faculty,ARI-Region Literacy Specialist
+CI89,staff,Secretary Secondary Education
+CI90,staff,Secretary Special Education
+CI91,staff,Secretary Technology Departmen
+CI94,faculty,Speech Language Pathologist
+CI95,faculty,Literacy Engagement Specialist
+CN02,staff,CNP Assistant
+CN03,staff,CNP Bookkeeper
+CN04,staff,CNP Director
+CN05,staff,CNP Database Manager
+CN06,staff,CNP Manager
+CN07,staff,CNP Secretary
+CN08,staff,CNP Specialist
+FA02,staff,Air Conditioning
+FA07,staff,Facilities Maintenance Manager
+FA14,staff,Electrician
+FA16,staff,Executive Director Facilities
+FA18,staff,Facilities Data Entry Clerk
+FA23,staff,Auxiliary Services Lead
+FA24,staff,Lead Electrician
+FA25,staff,Lead Carpenter
+FA27,staff,Lead HVAC Control Technician
+FA28,staff,Lead Plumber
+FA34,staff,Plumber
+FA35,staff,Athletic Grounds Maintenance
+FA36,staff,School Maintenance
+FA40,staff,Sec Exec Director Facilities
+FI03,staff,Accounting Coordinator
+FI04,staff,Bookkeeper
+FI06,staff,Bookkeeper
+FI08,staff,Bookkeeper
+FI14,staff,Bookkeeper
+FI16,staff,Chief School Financial Officer
+FI20,staff,Computer Technician
+FI21,staff,IT Technician Supervisor
+FI23,staff,Info Tech Security Specialist
+FI26,staff,Head Bookkeeper
+FI28,staff,Internal Auditor
+FI30,staff,Coor - Network Administrator
+FI35,staff,Payroll Benefits Specialist
+FI36,staff,Payroll Supervisor
+FI38,staff,Sec CSFO & General Fund Bkkpr
+FI40,staff,Student Database Manager
+GA,staff,Student Services Specialist
+GA04,staff,"Director, Attend & Pupil Srvcs"
+GA06,staff,Director of Public Relations
+GA09,staff,Admin of Social Services
+GA11,staff,Coordinator of Athletics
+GA14,staff,ESL - Social Worker
+GA15,staff,Comm Resource Mgr/SW
+GA19,staff,RN Nurse - Supervisor
+GA20,staff,Registered School Nurse
+GA21,staff,Coordinator of Nursing
+GA24,staff,Sec Attendance & Pupil Srvcs
+GA26,staff,Sec Director of Student Srvcs
+GA28,staff,Sec General Administration
+GA29,staff,Sec General Admin Dept
+GA32,staff,Social Worker
+GA33,staff,Digital Comm. Spec./Webmaster
+GA34,staff,Video & Media Specialist
+GA35,staff,ESL - Billingual Secretary
+GA36,staff,Social Worker - 245 Days
+GA37,staff,Mental Health Social Worker
+GA38,staff,Mental Health RN
+GA39,staff,Mental Health Therapist
+PE02,staff,Benefits Supervisor
+PE04,staff,Asst Superintendent/Operations
+PE08,staff,Personnel Clerk
+PE12,staff,HR Generalist
+PE14,staff,Director of HR
+PE15,staff,Sec Exec Dir of Personnel
+PE19,staff,Human Resources Specialist
+SA02,faculty,Asst Principal - Elementary
+SA04,faculty,Assistant Principal - High
+SA06,faculty,Assistant Principal - Middle
+SA08,faculty,Principal - Elementary
+SA10,faculty,Principal - High
+SA12,faculty,Principal - Middle
+SA14,faculty,Principal - TCT
+SA16,faculty,Assistant Principal
+SA17,faculty,Assistant Principal 245 Days
+SC02,faculty,AHSGE Teacher
+SC03,faculty,Alternative Teacher
+SC05,faculty,Counselor - Elementary
+SC06,faculty,Counselor - High
+SC07,faculty,Counselor - Middle
+SC09,faculty,Elementary Teacher
+SC10,faculty,Elementary Teacher - Art
+SC11,faculty,Elem Teacher - Phy Education
+SC12,faculty,Elem Teacher - Pre-K
+SC13,faculty,Elem Teacher - Kindergarten
+SC14,faculty,Elementary Teacher - Music
+SC15,faculty,Elementary Teacher - 1st Grade
+SC16,faculty,Elementary Teacher - 2nd Grade
+SC17,faculty,Elementary Teacher - 3rd Grade
+SC18,faculty,Elementary Teacher - 4th Grade
+SC19,faculty,Elementary Teacher - 5th Grade
+SC22,faculty,High School Teacher
+SC23,faculty,HS Teacher - 9th-12th Art
+SC24,faculty,HS Teacher - 9th-12th Band Dir
+SC25,faculty,HS Teacher - Busnss Marktng Ed
+SC26,faculty,HS Teacher - Choral Music
+SC27,faculty,HS Teacher - Computer Applictn
+SC28,faculty,HS Teacher - Drama
+SC29,faculty,HS Teacher - Fam & Cnsmr Scnc
+SC30,faculty,HS Teacher - French
+SC32,faculty,HS Teacher - Health
+SC33,faculty,HS Teacher - Health/Phy Ed
+SC34,faculty,HS Teacher - JROTC
+SC35,faculty,HS Teacher - Language Arts
+SC36,faculty,HS Teacher - Math
+SC37,faculty,HS Teacher - Science
+SC38,faculty,HS Teacher - Social Science
+SC39,faculty,HS Teacher - Spanish
+SC40,faculty,HS Teacher - Phy Education
+SC41,faculty,Library Media Spec - Elem
+SC42,faculty,Library Media Spec - High
+SC43,faculty,Library Media Spec - Middle
+SC44,faculty,Middle School Teacher
+SC45,faculty,Middle Sch Teach - 6th Grade
+SC46,faculty,Middle Sch Teach - 7th-8th Art
+SC47,faculty,Middle Teach - 7-8th Band Dir
+SC48,faculty,Middle Teach - 7-8th Chor Mus
+SC50,faculty,Middle Teach - 7-8th Lang Arts
+SC51,faculty,Middle Teach - 7th-8th Math
+SC52,faculty,Middle Teach - 7th-8th Science
+SC53,faculty,Middle Teach - 7th-8th Soc Sci
+SC54,faculty,Middle Teach - Phy Education
+SC55,faculty,Reading Intervention
+SC56,faculty,Spec Ed Teacher - Elementary
+SC57,faculty,Spec Ed Teacher - High
+SC58,faculty,Spec Ed Teacher - Middle
+SC59,faculty,Strings Teacher
+SC60,faculty,TCT - Teacher
+SC61,faculty,TCT - Advertising Design Teach
+SC64,faculty,TCT - Cosmetology Teacher
+SC68,faculty,TCT - Health Teacher
+SC69,faculty,TCT - Masonry Teacher
+SC70,faculty,TCT - TV Production Teacher
+SC71,faculty,TCT - Welding Teacher
+SC72,faculty,Special Education Teacher
+SC73,faculty,HS Teacher - English/German
+SC74,faculty,Middle Sch Teach - Career Dis
+SC75,faculty,Library Media Spec - Elem/Midd
+SC76,faculty,Career Coach
+SC77,faculty,Intervention Teacher
+SC78,faculty,IB Coordinator
+SS04,staff,Aide - Alternative Instructnal
+SS06,staff,Aide - Instructional
+SS08,staff,Aide - Library
+SS10,staff,Aide - Physical Education
+SS12,staff,Aide - Pre-Kindergarten
+SS14,staff,Aide - Special Education
+SS18,staff,Custodian
+SS20,staff,Dean of Students
+SS24,staff,In-School Suspension Monitor
+SS25,staff,Dual Enrollment Facilitator
+SS27,staff,Sign Language Interpreter
+SS28,staff,Licensed Practical Nurse
+SS32,staff,Receptionist - High
+SS36,staff,Registrar
+SS38,staff,School Bookkeeper
+SS40,staff,School Maintenance
+SS46,staff,School Secretary - High
+SS48,staff,School Secretary - Middle
+SS49,staff,Secretary/Bookkeeper
+SS50,staff,Sec-Bookkeeper Elementary
+SS54,staff,Security Monitor
+SS57,staff,TCT - Career Coach
+SS60,staff,Billingual Specialist
+SU08,staff,Secretary Superintendent
+SU10,staff,Superintendent of Schools
+TR02,staff,Bus Aide
+TR03,staff,Bus Aide/LPN
+TR04,staff,Bus Driver
+TR06,staff,Coordinator of Transportation
+TR08,staff,Director of Transportation
+TR11,staff,Dispatcher/Route Specialist
+TR12,staff,Mechanic - Transportation
+TR13,staff,Shop Assistant
+TR14,staff,Shop Foreman & Mechanic
+TR16,staff,Transportation Clerk
+TR18,staff,Transportation Sec/Bookkeeper
