@@ -147,6 +147,24 @@ newest wins), `no_person` (no person matches `uniqueId`), `skipped` (blank
 - Send it in the JSON body only — never in the URL/query string, which proxies
   and access logs record.
 
+#### One-time backfill (accounts created before this endpoint)
+
+For people OneSync provisioned before the endpoint existed, load their
+passwords once from a CSV, by hand, from a trusted shell:
+
+```sh
+php bin/backfill_passwords.php --file=/path/to/passwords.csv --dry-run   # verify matches first
+php bin/backfill_passwords.php --file=/path/to/passwords.csv --unlink    # import + delete the CSV
+```
+
+Header row required; each row needs `password` plus `uniqueId` (preferred) or
+`username` (headers are case-insensitive; `uuid`/`id`, `user`, and
+`temp_password` aliases are accepted). Same encryption, same guardrails, same
+audit trail as the API; the script never prints or logs a password. There is
+deliberately no scheduled/file-drop variant — the CSV holds plaintext
+passwords, so keep it out of feed/backup/synced directories and delete it as
+soon as the import succeeds (`--unlink` does this for you).
+
 ---
 
 ## Single event or batch
