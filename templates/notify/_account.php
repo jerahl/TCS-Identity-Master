@@ -1,5 +1,8 @@
 <?php
-/** The "Your account" box. @var array $person */
+/**
+ * The "Your account" box.
+ * @var array $person @var string $tempPassword @var string $tempPasswordFallback
+ */
 $dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
 ?>
 <div class="acct">
@@ -7,6 +10,12 @@ $dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
   <dl class="kv">
     <dt>Username</dt><dd class="mono"><?= e($dash($person['username'] ?? '')) ?></dd>
     <dt>Email</dt><dd class="mono"><?= e($dash($person['email'] ?? '')) ?></dd>
+    <dt>Temporary password</dt>
+    <?php if (($tempPassword ?? '') !== ''): ?>
+    <dd class="mono"><?= e($tempPassword) ?></dd>
+    <?php else: ?>
+    <dd><em><?= e($tempPasswordFallback ?? 'provided by your school') ?></em></dd>
+    <?php endif; ?>
     <?php if (trim((string) ($person['upn'] ?? '')) !== ''): ?>
     <dt>Sign-in (UPN)</dt><dd class="mono"><?= e($person['upn']) ?></dd>
     <?php endif; ?>

@@ -117,7 +117,9 @@ golden record matched `uniqueId`), `skipped` (missing `uniqueId`/`destination`),
 ### `POST /api/onesync/password`
 
 Records the **initial (temporary) password** OneSync set when it created the
-account, so the orientation workflow can hand it to the new hire.
+account. The orientation checklist shows it in the "Your account" box (and via
+the `{temp_password}` placeholder); until one arrives the checklist falls back
+to the "provided by your school/supervisor" wording.
 
 | Field      | Required | Notes                               |
 |------------|----------|-------------------------------------|
