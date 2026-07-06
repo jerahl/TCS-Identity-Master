@@ -1,5 +1,5 @@
 <?php
-/** @var string $tab @var array $schools @var array $ethnicity @var array $unmappedEth @var array $unmappedSchool @var array $fieldMap @var array $fieldGroups */
+/** @var string $tab @var array $schools @var array $ethnicity @var array $positions @var array $unmappedEth @var array $unmappedSchool @var array $unmappedJobs @var array $fieldMap @var array $fieldGroups */
 ?>
 <div class="page-head">
   <div>
@@ -11,6 +11,7 @@
 <div class="tabs">
   <a class="tab<?= $tab === 'schools' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'schools'])) ?>">Schools map</a>
   <a class="tab<?= $tab === 'ethnicity' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'ethnicity'])) ?>">Ethnicity map</a>
+  <a class="tab<?= $tab === 'positions' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'positions'])) ?>">Positions map</a>
   <a class="tab<?= $tab === 'mapping' ? ' is-on' : '' ?>" href="<?= e(url('/reference', ['tab' => 'mapping'])) ?>">Field mapping</a>
   <a class="tab" href="<?= e(url('/reference/data-flow')) ?>" title="Interactive chart of the full pipeline: sources → IDM → OneSync → destinations">Data flow chart ↗</a>
 </div>
@@ -73,6 +74,41 @@
     <div class="chips">
       <?php foreach ($unmappedSchool as $u): ?>
         <span class="warn-chip"><?= e(ucfirst($u['system'])) ?> <strong><?= e($u['code']) ?></strong> · <?= e($u['n']) ?>×</span>
+      <?php endforeach; ?>
+    </div>
+  </div>
+  <?php endif; ?>
+
+<?php elseif ($tab === 'positions'): ?>
+  <div class="panel" style="margin-bottom:16px; max-width:640px;">
+    <h2 class="panel__title" style="margin-bottom:4px;">Job code → person type</h2>
+    <p class="panel__note" style="margin:0;">Classifies employees from the NextGen HR feed by their job code. A code mapped to <strong>Faculty</strong> imports as faculty; codes not in the map default to <strong>Staff</strong>, so it's enough to list the faculty codes.</p>
+  </div>
+  <div class="card table-wrap" style="max-width:640px;">
+    <table class="table">
+      <thead><tr><th>Job code</th><th>Person type</th><th>Description</th></tr></thead>
+      <tbody>
+        <?php if ($positions === []): ?>
+        <tr><td colspan="3" class="muted">No position mappings yet — everyone imports as Staff. Seed db/seeds/position_type_map.csv and run bin/seed.php.</td></tr>
+        <?php endif; ?>
+        <?php foreach ($positions as $p): ?>
+        <tr>
+          <td class="mono"><?= e($p['job_code']) ?></td>
+          <td><span class="badge badge--<?= $p['person_type'] === 'faculty' ? 'active' : 'disabled' ?>"><?= e(ucfirst($p['person_type'])) ?></span></td>
+          <td class="muted"><?= e($p['description'] ?? '—') ?></td>
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+
+  <?php if ($unmappedJobs !== []): ?>
+  <div class="panel" style="margin-top:18px; max-width:640px;">
+    <h2 class="panel__title" style="margin-bottom:4px;">Job codes with no mapping</h2>
+    <p class="panel__note" style="margin-bottom:12px;">Seen on assignments but not in the map — these people import as Staff. Fine if they are staff; add a mapping if any should be Faculty.</p>
+    <div class="chips">
+      <?php foreach ($unmappedJobs as $u): ?>
+        <span class="warn-chip"><strong><?= e($u['code']) ?></strong><?= ($u['title'] ?? '') !== '' ? ' ' . e($u['title']) : '' ?> · <?= e($u['n']) ?>×</span>
       <?php endforeach; ?>
     </div>
   </div>

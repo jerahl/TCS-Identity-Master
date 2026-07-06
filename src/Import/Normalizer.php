@@ -13,6 +13,7 @@ use PDO;
  *   school name  -> school_id   (school.name, strict — an unmatched name errors)
  *   school code  -> school_id   (school_code_alias, per system)
  *   ethnicity    -> ALSDE code  (ethnicity_map)
+ *   job code     -> person_type (position_type_map — classifies faculty vs staff)
  * A feed that carries a school *name* column resolves it by name (see the note on
  * the resolution order in normalize()); feeds that only carry a numeric code fall
  * back to the code alias. Unresolved codes/ethnicities are kept raw and recorded
@@ -31,16 +32,29 @@ final class Normalizer
     private readonly array $schoolAliasNorm;
     /** @var array<string,int> normalizeSchoolName(name) => school_id */
     private readonly array $schoolNameIndex;
+    /** @var array<string,string> lower(job_code) => person_type */
+    private readonly array $positionTypeMap;
 
     /**
      * @param array<string,array<string,int>> $schoolAlias  [system][code] => school_id
      * @param array<string,string> $ethnicityMap            lower(source_value) => alsde_code
      * @param array<string,int> $schoolNames                school name => school_id (any casing/punctuation)
+     * @param array<string,string> $positionTypeMap         job_code => person_type (any casing)
      */
-    public function __construct(array $schoolAlias, array $ethnicityMap, array $schoolNames = [])
+    public function __construct(array $schoolAlias, array $ethnicityMap, array $schoolNames = [], array $positionTypeMap = [])
     {
         $this->schoolAlias = $schoolAlias;
         $this->ethnicityMap = $ethnicityMap;
+
+        // Job codes are matched case-insensitively (feeds are inconsistent about
+        // casing). The map may be partial by design — unmapped codes fall through
+        // to the source default ('staff' on create), so a district can list only
+        // its faculty codes.
+        $positions = [];
+        foreach ($positionTypeMap as $code => $type) {
+            $positions[mb_strtolower(trim((string) $code), 'UTF-8')] ??= (string) $type;
+        }
+        $this->positionTypeMap = $positions;
 
         // Normalize school names into a case-/punctuation-insensitive index so a
         // feed value like "Martin Luther King, Jr. Elementary" resolves to the
@@ -87,6 +101,15 @@ final class Normalizer
         return $this->schoolNameIndex[self::normalizeSchoolName($name)] ?? null;
     }
 
+    /** Resolve a job code to a person_type via the position map; null if unmapped. */
+    public function resolvePositionType(?string $jobCode): ?string
+    {
+        if ($jobCode === null || trim($jobCode) === '') {
+            return null;
+        }
+        return $this->positionTypeMap[mb_strtolower(trim($jobCode), 'UTF-8')] ?? null;
+    }
+
     /** Resolve a school code to school_id for an alias group (leading-zero tolerant). */
     public function resolveSchool(string $aliasSystem, ?string $code): ?int
     {
@@ -115,7 +138,11 @@ final class Normalizer
         foreach ($db->query('SELECT school_id, name FROM school')->fetchAll() as $r) {
             $names[(string) $r['name']] = (int) $r['school_id'];
         }
-        return new self($alias, $eth, $names);
+        $positions = [];
+        foreach ($db->query('SELECT job_code, person_type FROM position_type_map')->fetchAll() as $r) {
+            $positions[(string) $r['job_code']] = (string) $r['person_type'];
+        }
+        return new self($alias, $eth, $names, $positions);
     }
 
     /**
@@ -183,6 +210,16 @@ final class Normalizer
             }
         }
 
+        // Person type. An explicit feed column wins; otherwise classify by the
+        // position map (NextGen JOB CODE -> faculty/staff/...); otherwise the
+        // source default (PersonWriter falls back to 'staff' on create). Unmapped
+        // job codes are not row warnings — the map is allowed to be partial —
+        // they're surfaced on the Reference page (Positions tab) instead.
+        $jobCode = $get('job_code');
+        $personType = self::normType($get('person_type'))
+            ?? $this->resolvePositionType($jobCode)
+            ?? $defaultType;
+
         $primaryRaw = $get('is_primary');
         $isPrimary = $primaryRaw === null
             ? true
@@ -205,9 +242,9 @@ final class Normalizer
             ethnicitySource: $ethSource,
             ethnicityCode: $ethCode,
             alsdeId: $get('alsde_id'),
-            personType: self::normType($get('person_type')) ?? $defaultType,
+            personType: $personType,
             title: $get('title'),
-            jobCode: $get('job_code'),
+            jobCode: $jobCode,
             fte: $get('fte'),
             hireDate: self::parseDate($get('hire_date')),
             positionStartDate: self::parseDate($get('position_start_date')),

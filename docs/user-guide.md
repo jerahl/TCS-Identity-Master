@@ -63,7 +63,7 @@ The **left sidebar** is your main menu. What you see depends on your role:
 | **Review queue** | Incoming records that might match an existing person |
 | **People** | The full directory of records; search, filter, drill in |
 | **Add person** | Manually create a record (editors and admins only) |
-| **Reference data** | The maps that translate school codes and ethnicity values |
+| **Reference data** | The maps that translate school codes, ethnicity values, and job codes |
 | **Import / feeds** | History of data pulled from NextGen and PowerSchool |
 | **VPN status** | Live health of the PowerSchool VPN tunnel |
 | **Users** | Manage who can sign in and their role (admins only) |
@@ -255,7 +255,7 @@ Every edit and disable is recorded in the record's timeline and in the audit log
 
 **Reference data** holds the lookup tables that translate incoming codes into
 values the district uses. Unmapped values block clean account provisioning, so
-this page surfaces them for you to fix. It has three tabs:
+this page surfaces them for you to fix. It has four tabs:
 
 - **Schools map** — each school with its NextGen code, PowerSchool code, and the
   AD/Google locations (OUs) accounts land in. Rows missing a mapping are
@@ -265,6 +265,11 @@ this page surfaces them for you to fix. It has three tabs:
 - **Ethnicity map** — how each source ethnicity value maps to the official ALSDE
   code. **Unmapped values** are flagged so no one is sent downstream without a
   code.
+- **Positions map** — how each NextGen job code classifies an employee as
+  **Faculty** or **Staff**. Codes not in the map import as Staff, so it's enough
+  to list the faculty codes; job codes seen on assignments with no mapping are
+  listed below the table so you can spot faculty positions still coming in as
+  Staff.
 - **Field mapping** — a reference crosswalk showing how each NextGen field lines
   up with PowerSchool and where it ends up on the golden record. (Read-only
   reference; useful for understanding the person detail page.)

@@ -58,6 +58,35 @@ final class ReferenceService
         )->fetchAll();
     }
 
+    /** Job code -> person type map (classifies imported employees as faculty/staff). */
+    public function positionMap(): array
+    {
+        return $this->db->query(
+            "SELECT job_code, person_type, description
+             FROM position_type_map
+             ORDER BY FIELD(person_type, 'faculty','staff','contractor','sub','intern','other'), job_code"
+        )->fetchAll();
+    }
+
+    /**
+     * Distinct job codes on assignments with no position mapping. Informational,
+     * not necessarily wrong — the map may be partial by design (list the faculty
+     * codes; unmapped codes default to 'staff' on import).
+     */
+    public function unmappedJobCodes(): array
+    {
+        return $this->db->query(
+            "SELECT a.job_code AS code, MAX(a.title) AS title, COUNT(DISTINCT a.person_id) AS n
+             FROM assignment a
+             WHERE a.job_code IS NOT NULL AND a.job_code <> ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM position_type_map m
+                   WHERE LOWER(TRIM(m.job_code)) = LOWER(TRIM(a.job_code))
+               )
+             GROUP BY a.job_code ORDER BY n DESC, a.job_code"
+        )->fetchAll();
+    }
+
     /** Distinct school codes seen in staged feeds with no alias mapping. */
     public function unmappedSchoolCodes(): array
     {

@@ -1,0 +1,11 @@
+job_code,person_type,description
+TCH,faculty,Teacher
+CNS,faculty,Counselor
+LIB,faculty,Library Media Specialist
+SLP,faculty,Speech Language Pathologist
+PRIN,faculty,Principal
+APRN,faculty,Assistant Principal
+CUST,staff,Custodian
+CNW,staff,Child Nutrition Worker
+BUS,staff,Bus Driver
+SEC,staff,Secretary / Bookkeeper
