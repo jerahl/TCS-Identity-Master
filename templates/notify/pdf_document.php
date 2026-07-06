@@ -24,7 +24,7 @@
     .mono { font-family: "DejaVu Sans Mono", monospace; }
     h2.section { font-size: 13px; margin: 18px 0 8px; padding-bottom: 5px; border-bottom: 2px solid #D8E0E5; }
     ul.steps { margin: 0; padding: 0; list-style: none; }
-    ul.steps li { padding: 6px 0; border-bottom: 1px solid #EEF2F4; font-size: 12px; }
+    ul.steps li { padding: 6px 0; font-size: 12px; }
     a { color: #0B6075; text-decoration: none; }
   </style>
 </head>
