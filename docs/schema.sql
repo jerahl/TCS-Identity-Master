@@ -52,6 +52,18 @@ CREATE TABLE ethnicity_map (
   PRIMARY KEY (source_value)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- NextGen JOB CODE -> person_type, so imports classify employees as faculty vs
+-- staff (the HR feed has no type column; without a mapping everyone lands as
+-- 'staff'). May be partial: list the faculty codes, unmapped codes default to
+-- 'staff'. Matched case-insensitively; unmapped codes are surfaced on the
+-- Reference page. (Migration 0015.)
+CREATE TABLE position_type_map (
+  job_code     VARCHAR(40)  NOT NULL,
+  person_type  ENUM('faculty','staff','contractor','sub','intern','other') NOT NULL,
+  description  VARCHAR(120) NULL,
+  PRIMARY KEY (job_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ----------------------------------------------------------------------------
 -- Golden record
 -- ----------------------------------------------------------------------------

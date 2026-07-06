@@ -8,8 +8,9 @@ use App\Import\FieldMap;
 use App\Service\ReferenceService;
 
 /**
- * Reference-data admin: school + ethnicity maps, the NextGen↔PowerSchool field
- * crosswalk, with unmapped values surfaced. Read-only in M6 (editing + RBAC in M7).
+ * Reference-data admin: school, ethnicity and position (job code → person type)
+ * maps, the NextGen↔PowerSchool field crosswalk, with unmapped values surfaced.
+ * Read-only in M6 (editing + RBAC in M7).
  */
 final class ReferenceController extends Controller
 {
@@ -21,7 +22,7 @@ final class ReferenceController extends Controller
         $this->ref = $ref ?? new ReferenceService();
     }
 
-    private const TABS = ['schools', 'ethnicity', 'mapping'];
+    private const TABS = ['schools', 'ethnicity', 'positions', 'mapping'];
 
     public function index(): string
     {
@@ -31,8 +32,10 @@ final class ReferenceController extends Controller
             'tab'            => $tab,
             'schools'        => $this->ref->schools(),
             'ethnicity'      => $this->ref->ethnicityMap(),
+            'positions'      => $this->ref->positionMap(),
             'unmappedEth'    => $this->ref->unmappedEthnicity(),
             'unmappedSchool' => $this->ref->unmappedSchoolCodes(),
+            'unmappedJobs'   => $this->ref->unmappedJobCodes(),
             'fieldMap'       => FieldMap::fields(),
             'fieldGroups'    => FieldMap::GROUPS,
         ], 'ref', 'Configuration  /  Reference data', 'Reference data — TCS Identity Master');
