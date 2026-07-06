@@ -43,6 +43,7 @@ Base path: `https://<host>/api/onesync`
 | `GET`  | `/ping`        | Health check (still requires the token).           |
 | `POST` | `/username`    | Record the username/email OneSync minted.          |
 | `POST` | `/sync-status` | Record a per-destination provisioning result.      |
+| `POST` | `/password`    | Record the initial password OneSync set for a new account. |
 
 `Content-Type: application/json` is expected on the `POST` bodies.
 
@@ -113,6 +114,37 @@ Active Directory/Azure/Entra→`ActiveDirectory`, Raptor/PowerSchool/CSV→`CSV`
 golden record matched `uniqueId`), `skipped` (missing `uniqueId`/`destination`),
 `error`.
 
+### `POST /api/onesync/password`
+
+Records the **initial (temporary) password** OneSync set when it created the
+account, so the orientation workflow can hand it to the new hire.
+
+| Field      | Required | Notes                               |
+|------------|----------|-------------------------------------|
+| `uniqueId` | yes      | person UUID (`v_onesync_source.ID`) |
+| `password` | yes      | the initial password OneSync set    |
+
+```json
+{ "uniqueId": "8f3c…", "password": "Falcon-Maple-42" }
+```
+
+**Outcomes:** `applied` (stored; re-sending **replaces** the stored value —
+newest wins), `no_person` (no person matches `uniqueId`), `skipped` (blank
+`uniqueId`/`password`), `error`.
+
+**How it's protected:**
+
+- Requires `CREDENTIAL_ENC_KEY` in the app env (64 hex chars,
+  `openssl rand -hex 32`). If it's unset the endpoint returns **503** — like
+  the API key, it fails closed.
+- The password is encrypted with libsodium (authenticated secretbox) **before**
+  the database write; the DB only ever stores ciphertext.
+- The value is never echoed in the response, never written to `audit_log` /
+  `lifecycle_event` (they record only that a password arrived), and the debug
+  log **redacts** it (see Debugging below).
+- Send it in the JSON body only — never in the URL/query string, which proxies
+  and access logs record.
+
 ---
 
 ## Single event or batch
@@ -170,6 +202,11 @@ curl -X POST https://idm.example.org/api/onesync/sync-status \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"uniqueId":"8f3c…","destination":"Active Directory","action":"Add","status":"Success"}'
 
+# Initial password for a newly created account
+curl -X POST https://idm.example.org/api/onesync/password \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"uniqueId":"8f3c…","password":"Falcon-Maple-42"}'
+
 # Batch
 curl -X POST https://idm.example.org/api/onesync/sync-status \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
@@ -186,13 +223,16 @@ the token + a masked preview, the body, and the response status/outcome) to
 `ONESYNC_API_LOG` (default `/var/idm/onesync/api_debug.log`), one JSON line per
 request. Run `php bin/api_log_check.php` (as the web user) to verify it's enabled
 and the log path is writable. Turn it off once OneSync is working — the body
-contains usernames/emails.
+contains usernames/emails. On the `/password` endpoint the logged body has every
+`password` value replaced with `[redacted]` (an unparseable body is withheld
+entirely), so the debug log never holds a password.
 
 Common failures the log makes obvious:
 
 | log `status` / `reason`                        | cause                                  |
 |------------------------------------------------|----------------------------------------|
 | `503` · `ONESYNC_API_KEY not set`              | key not configured on the server       |
+| `503` · `CREDENTIAL_ENC_KEY not set`           | `/password` only — encryption key not configured |
 | `401` · `token missing or mismatch`            | wrong/missing token (compare `token_preview`, `auth_scheme`) |
 | `400` · `not valid JSON …`                     | body isn't a JSON object with named keys |
 | `422` + `outcome: no_person`                   | `uniqueId` matches no person           |
@@ -202,8 +242,11 @@ Common failures the log makes obvious:
 
 ## Security & operations
 
-- Runs as the limited **write-back DB role** (can set username/email and write
-  sync status + audit, nothing else).
+- Runs as the limited **write-back DB role** (can set username/email and the
+  encrypted initial password, and write sync status + audit, nothing else).
+- Initial passwords are stored **encrypted at rest** (libsodium secretbox under
+  `CREDENTIAL_ENC_KEY`); a DB dump without the app env can't read them. Rotating
+  the key orphans previously stored values — OneSync re-sends on the next run.
 - Endpoints bypass the session/SAML gate but require the token; no other route is
   reachable without it.
 - Enforce HTTPS (the app redirects HTTP→HTTPS in production).

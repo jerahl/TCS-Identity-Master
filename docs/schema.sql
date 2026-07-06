@@ -101,6 +101,8 @@ CREATE TABLE person (
   upn              VARCHAR(160) NULL,
   username_assigned_at DATETIME NULL,
   username_locked  TINYINT(1)   NOT NULL DEFAULT 0,  -- 1 = never re-mint/rename
+  initial_password_enc    VARBINARY(512) NULL,       -- OneSync's temp password, libsodium-encrypted (0016; never plaintext)
+  initial_password_set_at DATETIME       NULL,       -- when OneSync last delivered it (0016)
 
   source_of_record ENUM('nextgen','manual','powerschool') NOT NULL DEFAULT 'nextgen',
   notes            VARCHAR(500) NULL,
@@ -161,7 +163,7 @@ CREATE TABLE assignment (
 CREATE TABLE lifecycle_event (
   id          BIGINT      NOT NULL AUTO_INCREMENT,
   person_id   BIGINT      NOT NULL,
-  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned','notify') NOT NULL,
+  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned','notify','password_received') NOT NULL,
   detail      JSON        NULL,
   occurred_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   actor       VARCHAR(60) NULL,                      -- user or 'system:<job>'
