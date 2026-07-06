@@ -80,6 +80,8 @@ CREATE TABLE person (
   primary_school_id INT         NULL,
   hire_date        DATE         NULL,
   end_date         DATE         NULL,
+  board_approval_date DATE      NULL,                -- board-approved hire/transfer date (0013; Logins export)
+  board_approval_note VARCHAR(120) NULL,             -- optional agenda item / status (0013)
 
   -- assigned identity: minted by OneSync, written back here. Immutable once set.
   username         VARCHAR(64)  NULL,
@@ -147,7 +149,7 @@ CREATE TABLE assignment (
 CREATE TABLE lifecycle_event (
   id          BIGINT      NOT NULL AUTO_INCREMENT,
   person_id   BIGINT      NOT NULL,
-  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned') NOT NULL,
+  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned','notify') NOT NULL,
   detail      JSON        NULL,
   occurred_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   actor       VARCHAR(60) NULL,                      -- user or 'system:<job>'
@@ -158,15 +160,27 @@ CREATE TABLE lifecycle_event (
 
 CREATE TABLE audit_log (
   id         BIGINT      NOT NULL AUTO_INCREMENT,
-  entity     ENUM('person','assignment','source_id','match','school','config') NOT NULL,
+  entity     ENUM('person','assignment','source_id','match','school','config','user') NOT NULL,
   entity_id  BIGINT      NULL,
-  action     ENUM('insert','update','delete','merge') NOT NULL,
+  action     ENUM('insert','update','delete','merge','login','logout','notify') NOT NULL,
   before_json JSON       NULL,
   after_json  JSON       NULL,
   actor      VARCHAR(60) NULL,
   at         DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_audit_entity (entity, entity_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Editable content for the orientation-checklist variants (0014). One row per
+-- doc; absent rows fall back to built-in defaults in NotifyTemplateService.
+CREATE TABLE notify_template (
+  doc         VARCHAR(40)  NOT NULL,                 -- 'new_teacher' | 'non_instructional'
+  heading     VARCHAR(160) NOT NULL,
+  intro       TEXT         NULL,
+  body        MEDIUMTEXT   NULL,                     -- safe mini-markup (## / - / [label](url))
+  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  updated_by  VARCHAR(60)  NULL,
+  PRIMARY KEY (doc)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ----------------------------------------------------------------------------

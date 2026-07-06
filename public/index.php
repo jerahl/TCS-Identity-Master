@@ -101,6 +101,10 @@ try {
     $router->get('/import', $guard('view', static fn() => $import->index()));
     $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
 
+    $logins = new \App\Controller\LoginsController();
+    $router->get('/logins', $guard('view', static fn() => $logins->index()));
+    $router->get('/logins.csv', $guard('view', static fn() => $logins->csv()));
+
     // Self-service API keys (any authenticated user manages their own keys).
     $apiKeys = new \App\Controller\ApiKeyController();
     $router->get('/settings/api-keys', $guard('view', static fn() => $apiKeys->index()));
@@ -112,6 +116,14 @@ try {
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
     $router->get('/add', $guard('edit', static fn() => $person->addForm()));
     $router->post('/add', $guard('edit', static fn() => $person->create()));
+    // Orientation checklists. Literal routes are registered before /notify/{id}
+    // so "templates"/"bulk" aren't captured as an id.
+    $notify = new \App\Controller\NotifyController();
+    $router->get('/notify/templates', $guard('edit', static fn() => $notify->templates()));
+    $router->post('/notify/templates/save', $guard('edit', static fn() => $notify->saveTemplate()));
+    $router->post('/notify/bulk', $guard('edit', static fn() => $notify->bulk()));
+    $router->get('/notify/{id}', $guard('edit', static fn(array $p) => $notify->show($p)));
+    $router->get('/notify/{id}/pdf', $guard('edit', static fn(array $p) => $notify->pdf($p)));
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));

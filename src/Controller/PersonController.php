@@ -248,6 +248,7 @@ final class PersonController extends Controller
             'dob' => $person['dob'], 'gender' => $person['gender'],
             'ethnicity_source' => $person['ethnicity_source'], 'alsde_id' => $person['alsde_id'],
             'employee_id' => $person['employee_id'], 'primary_school_id' => $person['primary_school_id'],
+            'board_approval_date' => $person['board_approval_date'], 'board_approval_note' => $person['board_approval_note'],
             'notes' => $person['notes'],
         ];
 
@@ -290,6 +291,10 @@ final class PersonController extends Controller
         if ($dob !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob)) {
             return $this->editForm(['id' => $id], $_POST, 'Date of birth must be YYYY-MM-DD.');
         }
+        $boardApproval = trim((string) ($_POST['board_approval_date'] ?? ''));
+        if ($boardApproval !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $boardApproval)) {
+            return $this->editForm(['id' => $id], $_POST, 'Board approval date must be YYYY-MM-DD.');
+        }
 
         $ethSource = trim((string) ($_POST['ethnicity_source'] ?? ''));
         $fields = [
@@ -306,6 +311,8 @@ final class PersonController extends Controller
             'alsde_id'         => trim((string) ($_POST['alsde_id'] ?? '')),
             'employee_id'      => trim((string) ($_POST['employee_id'] ?? '')),
             'primary_school_id' => ($_POST['primary_school_id'] ?? '') !== '' ? (int) $_POST['primary_school_id'] : '',
+            'board_approval_date' => $boardApproval,
+            'board_approval_note' => trim((string) ($_POST['board_approval_note'] ?? '')),
             'notes'            => trim((string) ($_POST['notes'] ?? '')),
         ];
 

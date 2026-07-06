@@ -1,0 +1,100 @@
+<?php
+/** @var array $rows @var array $columns @var array $filters @var array $schoolOptions */
+
+// Current filters as a query base (drop empties/defaults) for the CSV link.
+$base = array_filter([
+    'status' => $filters['status'] !== 'all' ? $filters['status'] : null,
+    'school' => $filters['school'] !== 'all' ? $filters['school'] : null,
+    'from'   => $filters['from'] !== '' ? $filters['from'] : null,
+    'to'     => $filters['to'] !== '' ? $filters['to'] : null,
+    'q'      => $filters['q'] !== '' ? $filters['q'] : null,
+], static fn($v) => $v !== null && $v !== '');
+
+$statusOpts = ['all' => 'All statuses', 'pending' => 'Pending', 'active' => 'Active', 'disabled' => 'Disabled', 'terminated' => 'Terminated'];
+
+// Cells we highlight when blank: the two that still need a human touch.
+$flagBlank = ['board_approval' => true, 'alsde_id' => true];
+$dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
+$readyCount = count(array_filter($rows, static fn($r) => !empty($r['checklist_ready'])));
+?>
+<div class="page-head">
+  <div>
+    <h1>Logins export</h1>
+    <p><?= e(count($rows)) ?> record<?= count($rows) === 1 ? '' : 's' ?> — the golden record in the Logins spreadsheet layout</p>
+  </div>
+  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+    <?php if (!empty($canEdit)): ?>
+    <a class="btn btn--ghost" href="<?= e(url('/notify/templates')) ?>">Edit checklist content</a>
+    <?php if ($readyCount > 0): ?>
+    <form method="post" action="<?= e(url('/notify/bulk')) ?>" style="margin:0;">
+      <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+      <?php foreach ($base as $k => $v): ?><input type="hidden" name="<?= e($k) ?>" value="<?= e($v) ?>"><?php endforeach; ?>
+      <button class="btn btn--ghost" type="submit" title="Generate a PDF checklist for every person with a minted username in this view">
+        Generate all checklists (<?= e($readyCount) ?>)
+      </button>
+    </form>
+    <?php endif; ?>
+    <?php endif; ?>
+    <a class="btn btn--primary" href="<?= e(url('/logins.csv', $base)) ?>">
+      <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v9M5.5 7.5L9 11l3.5-3.5"/><path d="M2.5 13v2a1 1 0 001 1h11a1 1 0 001-1v-2"/></svg>
+      Download CSV
+    </a>
+  </div>
+</div>
+
+<form class="filters" method="get" action="<?= e(url('/logins')) ?>">
+  <select class="select" name="status" onchange="this.form.submit()">
+    <?php foreach ($statusOpts as $val => $label): ?>
+      <option value="<?= e($val) ?>"<?= $filters['status'] === $val ? ' selected' : '' ?>><?= e($label) ?></option>
+    <?php endforeach; ?>
+  </select>
+  <select class="select" name="school" onchange="this.form.submit()" style="max-width:220px;">
+    <option value="all"<?= $filters['school'] === 'all' ? ' selected' : '' ?>>All schools</option>
+    <?php foreach ($schoolOptions as $s): ?>
+      <option value="<?= e($s['school_id']) ?>"<?= (string) $filters['school'] === (string) $s['school_id'] ? ' selected' : '' ?>><?= e($s['name']) ?></option>
+    <?php endforeach; ?>
+  </select>
+  <label class="field-label" style="align-self:center; margin:0 0 0 6px;">Effective</label>
+  <input class="field mono" type="date" name="from" value="<?= e($filters['from']) ?>" style="max-width:160px;" title="Effective date from">
+  <span style="align-self:center; color:#7B8E9B;">→</span>
+  <input class="field mono" type="date" name="to" value="<?= e($filters['to']) ?>" style="max-width:160px;" title="Effective date to">
+  <?php if ($filters['q'] !== ''): ?><input type="hidden" name="q" value="<?= e($filters['q']) ?>"><?php endif; ?>
+  <button class="btn btn--ghost" type="submit" style="height:36px;">Apply</button>
+</form>
+
+<div class="card table-wrap">
+  <table class="table">
+    <thead>
+      <tr><?php foreach ($columns as $label): ?><th><?= e($label) ?></th><?php endforeach; ?><?php if (!empty($canEdit)): ?><th>Checklist</th><?php endif; ?></tr>
+    </thead>
+    <tbody>
+      <?php foreach ($rows as $row):
+          $href = url('/people/' . $row['person_id']);
+      ?>
+      <tr class="is-clickable" data-href="<?= e($href) ?>">
+        <?php foreach (array_keys($columns) as $key):
+            $val = (string) ($row[$key] ?? '');
+            $blank = trim($val) === '';
+        ?>
+        <td<?= in_array($key, ['effective_date','end_date','dob','employee_id','alsde_id'], true) ? ' class="mono"' : '' ?>>
+          <?php if ($blank && !empty($flagBlank[$key])): ?><span class="value-missing">— <?= e(strtolower($columns[$key])) ?> —</span>
+          <?php else: ?><?= e($dash($val)) ?><?php endif; ?>
+        </td>
+        <?php endforeach; ?>
+        <?php if (!empty($canEdit)): ?>
+        <td>
+          <?php if (!empty($row['checklist_ready'])): ?>
+            <a href="<?= e(url('/notify/' . $row['person_id'])) ?>" target="_blank" rel="noopener">Open</a>
+          <?php else: ?>
+            <span class="muted" title="No username minted yet">—</span>
+          <?php endif; ?>
+        </td>
+        <?php endif; ?>
+      </tr>
+      <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php if ($rows === []): ?>
+    <div class="empty">No people match these filters.</div>
+  <?php endif; ?>
+</div>
