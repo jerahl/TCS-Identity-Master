@@ -145,6 +145,20 @@ final class PhpseclibSftpClient implements SftpClient
         return is_file($localPath) ? (int) filesize($localPath) : 0;
     }
 
+    public function upload(string $localPath, string $remotePath): int
+    {
+        if (!is_file($localPath) || !is_readable($localPath)) {
+            throw new RuntimeException("Local file not found or unreadable: {$localPath}");
+        }
+        $sftp = $this->client();
+        if (!$sftp->put($remotePath, $localPath, SFTP::SOURCE_LOCAL_FILE)) {
+            $hint = trim((string) $sftp->getLastSFTPError());
+            throw new RuntimeException("SFTP upload failed: {$remotePath}"
+                . ($hint !== '' ? " ({$hint})" : ''));
+        }
+        return (int) filesize($localPath);
+    }
+
     private function client(): SFTP
     {
         if ($this->sftp === null) {

@@ -45,6 +45,24 @@ final class InMemorySftpClient implements SftpClient
         return $out;
     }
 
+    public function upload(string $localPath, string $remotePath): int
+    {
+        $contents = @file_get_contents($localPath);
+        if ($contents === false) {
+            throw new RuntimeException("Cannot read local file: {$localPath}");
+        }
+        $dir = rtrim(dirname($remotePath), '/');
+        $this->tree[$dir][basename($remotePath)] = $contents;
+        return strlen($contents);
+    }
+
+    /** Contents of an uploaded file, for test assertions (null if absent). */
+    public function uploaded(string $remotePath): ?string
+    {
+        $dir = rtrim(dirname($remotePath), '/');
+        return $this->tree[$dir][basename($remotePath)] ?? null;
+    }
+
     public function download(string $remotePath, string $localPath): int
     {
         $dir = rtrim(dirname($remotePath), '/');
