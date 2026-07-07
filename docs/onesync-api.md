@@ -159,7 +159,11 @@ php bin/backfill_passwords.php --file=/path/to/passwords.csv --unlink    # impor
 
 Header row required; each row needs `password` plus `uniqueId` (preferred) or
 `username` (headers are case-insensitive; `uuid`/`id`, `user`, and
-`temp_password` aliases are accepted). Same encryption, same guardrails, same
+`temp_password` aliases are accepted). `AD Login` / `AD Password` are also
+recognized, so the HR personnel-action (board approval) spreadsheet works
+unmodified — every other column in it is ignored, and rows without both an AD
+login and a password (transfers, separations, …) are skipped and reported.
+Same encryption, same guardrails, same
 audit trail as the API; the script never prints or logs a password. There is
 deliberately no scheduled/file-drop variant — the CSV holds plaintext
 passwords, so keep it out of feed/backup/synced directories and delete it as
