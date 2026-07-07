@@ -115,6 +115,32 @@ final class InitialPasswordImportTest extends TestCase
         self::assertStringContainsString('password_received', $life);
     }
 
+    public function testRunProcessesPersonnelActionCsvAsIs(): void
+    {
+        // The HR board-approval export, unmodified: AD Login/AD Password are the
+        // only columns that matter; everything else is ignored. Rows without a
+        // login+password pair (e.g. a transfer) are skipped, not errors.
+        $header = 'Change Type,Board Approval,Last,First Name MI,To Position,To,Effective Date,'
+            . 'Empl #,DOB,G,R,AD Login,AD Password,PS Access,Email Address,ALSDE ID';
+        $csv = tempnam(sys_get_temp_dir(), 'idm_test_pw_');
+        self::assertNotFalse($csv);
+        file_put_contents($csv, $header . "\n"
+            . "New Hire,06/17/2026,Doe,Jane A,Teacher,Central HS,08/01/2026,1001,01/02/1990,F,W,jdoe,Falcon-42,Y,jdoe@example.org,123456789\n"
+            . "Transfer,06/17/2026,Roe,Rick,Custodian,East ES,08/01/2026,1002,03/04/1985,M,B,,,N,rroe@example.org,987654321\n");
+        try {
+            $result = (new InitialPasswordImporter($this->db))->run($csv, false);
+        } finally {
+            @unlink($csv);
+        }
+        self::assertSame(2, $result['counts']['total']);
+        self::assertSame(1, $result['counts']['applied']);
+        self::assertSame(1, $result['counts']['skipped']);
+        self::assertSame(0, $result['counts']['errors']);
+        $enc = $this->db->query('SELECT initial_password_enc FROM person WHERE person_id = 1')->fetchColumn();
+        self::assertSame('Falcon-42', Crypto::decrypt((string) $enc));
+        self::assertStringNotContainsString('Falcon-42', json_encode($result['outcomes']) ?: '');
+    }
+
     public function testRunProcessesCsv(): void
     {
         $csv = tempnam(sys_get_temp_dir(), 'idm_test_pw_');

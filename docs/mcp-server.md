@@ -97,6 +97,60 @@ Add a custom connector pointing at `https://<host>/mcp` and configure the
 *"search TCS Identity for people missing a username"* or *"show the review
 queue."*
 
+### Claude Desktop (config file / `mcp-remote`)
+
+If your Claude Desktop build doesn't offer a custom-header field for
+connectors, bridge the connection with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote)
+instead (requires Node.js). Edit `claude_desktop_config.json`:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "tcs-identity": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "mcp-remote",
+        "https://<host>/mcp",
+        "--header",
+        "Authorization:${AUTH_HEADER}"
+      ],
+      "env": {
+        "AUTH_HEADER": "Bearer <your-key>"
+      }
+    }
+  }
+}
+```
+
+On macOS/Linux, drop the `cmd`/`/c` wrapper and use `"command": "npx"` with
+the remaining args.
+
+Two Windows-specific gotchas this config works around (both are known Claude
+Desktop bugs, documented in the mcp-remote README):
+
+- **Unquoted `npx` path.** Claude Desktop resolves `npx` to
+  `C:\Program Files\nodejs\npx.cmd` and runs it through `cmd /C` without
+  quotes, so the launch dies with `'C:\Program' is not recognized …` and the
+  log shows *"Server transport closed unexpectedly"*. Making the command
+  `cmd` itself and passing `npx` as an argument lets cmd resolve it via
+  `PATH`, so no space-containing path is ever built.
+- **Args split on spaces.** Argument values containing spaces get split too,
+  which mangles a header like `Authorization: Bearer …`. Keeping the header
+  argument space-free (`Authorization:${AUTH_HEADER}`) and putting
+  `Bearer <your-key>` in the env var avoids it — mcp-remote substitutes
+  `${VAR}` from its environment.
+
+After editing the file, **fully quit** Claude Desktop (File ▸ Exit or
+tray-icon ▸ Quit — closing the window isn't enough) and relaunch. To verify
+end-to-end, ask Claude to run the `whoami` tool. If the MCP log then shows a
+`401`, the transport is fine and the server rejected the key — re-check that
+it was pasted whole and hasn't been revoked.
+
 ---
 
 ## Protocol notes

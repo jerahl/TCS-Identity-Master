@@ -11,7 +11,10 @@ declare(strict_types=1);
  *
  * CSV: header row required. Each row needs `password` plus `uniqueId` (person
  * UUID — preferred) or `username`. Header names are case-insensitive; common
- * aliases (uuid/id, user, temp_password) are accepted.
+ * aliases (uuid/id, user, temp_password) are accepted — including `AD Login` /
+ * `AD Password`, so the HR personnel-action (board approval) spreadsheet can be
+ * fed in as-is; its other columns are ignored, and rows without both values
+ * (e.g. transfers with no new account) are skipped.
  *
  * Passwords are encrypted (libsodium, CREDENTIAL_ENC_KEY) before the DB write
  * and are never printed or logged by this script. THE CSV ITSELF IS THE RISK:

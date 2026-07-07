@@ -42,6 +42,10 @@ final class InitialPasswordImporter
      * Map a raw CSV row onto an event, matching header names case-insensitively
      * and accepting the aliases different exports use. Pure, for the backfill.
      *
+     * The `AD Login`/`AD Password` pair lets the HR personnel-action (board
+     * approval) spreadsheet be imported as-is — its other columns (Change Type,
+     * Board Approval, name, position, DOB, ALSDE ID, …) are simply ignored.
+     *
      * @param array<string,string> $row
      * @return array{uniqueId:string,username:string,password:string}
      */
@@ -49,8 +53,9 @@ final class InitialPasswordImporter
     {
         $aliases = [
             'uniqueId' => ['uniqueid', 'uuid', 'id'],
-            'username' => ['username', 'user'],
-            'password' => ['password', 'temp_password', 'temppassword', 'initial_password', 'initialpassword'],
+            'username' => ['username', 'user', 'ad login', 'ad_login', 'adlogin'],
+            'password' => ['password', 'temp_password', 'temppassword', 'initial_password', 'initialpassword',
+                'ad password', 'ad_password', 'adpassword'],
         ];
         $lower = [];
         foreach ($row as $k => $v) {
