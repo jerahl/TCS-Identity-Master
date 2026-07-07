@@ -4,12 +4,15 @@
  * @var array $person @var string $tempPassword @var string $tempPasswordFallback
  */
 $dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
+$username = trim((string) ($person['username'] ?? ''));
+$googleEmail = $username !== '' ? $username . '@tuscaloosacityschools.com' : '';
 ?>
 <div class="acct">
   <h2>Your account</h2>
   <dl class="kv">
-    <dt>Username</dt><dd class="mono"><?= e($dash($person['username'] ?? '')) ?></dd>
-    <dt>Email</dt><dd class="mono"><?= e($dash($person['email'] ?? '')) ?></dd>
+    <dt>Username</dt><dd class="mono"><?= e($dash($username)) ?></dd>
+    <dt>Outlook Email</dt><dd class="mono"><?= e($dash($person['email'] ?? '')) ?></dd>
+    <dt>Google Email</dt><dd class="mono"><?= e($dash($googleEmail)) ?></dd>
     <dt>Temporary password</dt>
     <?php if (($tempPassword ?? '') !== ''): ?>
     <dd class="mono"><?= e($tempPassword) ?></dd>
