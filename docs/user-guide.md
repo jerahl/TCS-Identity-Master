@@ -403,7 +403,11 @@ already feed in. No more copying from NextGen by hand.
 Once OneSync has minted a person's username, you can generate their **Technology
 Orientation Checklist** — the New Teacher version for faculty, the
 Non-Instructional version for everyone else — pre-filled with their name, school,
-position, and their new **username, email, and sign-in**.
+position, and their new **username, email, and sign-in**. When OneSync has also
+delivered the account's **temporary password** (via the write-back API), it
+appears in the "Your account" box; until then the box says *provided by your
+school* / *provided by your supervisor* as before. Treat a checklist that carries
+a password like the credential it contains — hand it to the new hire directly.
 
 - On a **person's record**, click **Orientation checklist** (editors/admins; it
   appears once a username exists). It opens a preview with a **Download PDF**
@@ -427,7 +431,9 @@ the heading, intro, and steps for each variant. Content uses a simple format:
 - Add links as `[label](https://example.com)` — only `http`/`https` links become
   clickable.
 - The placeholders `{name}`, `{username}`, `{email}`, `{employeeid}`, `{school}`,
-  `{position}`, and `{start_date}` are filled in per person.
+  `{position}`, `{start_date}`, and `{temp_password}` are filled in per person
+  (`{temp_password}` is blank until OneSync delivers one; the "Your account" box
+  shows it automatically either way).
 
 Account details are always inserted live regardless of the template. **Reset to
 default** restores the built-in content for a variant.

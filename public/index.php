@@ -75,6 +75,7 @@ try {
     $router->get('/api/onesync/ping', static fn() => $api->ping());
     $router->post('/api/onesync/username', static fn() => $api->username());
     $router->post('/api/onesync/sync-status', static fn() => $api->syncStatus());
+    $router->post('/api/onesync/password', static fn() => $api->password());
 
     // ---- MCP server for Claude (per-user API key auth; role gates the tools) ----
     $mcp = new \App\Controller\McpController();

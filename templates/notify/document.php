@@ -27,7 +27,7 @@
     .mono { font-family: "Consolas", "SF Mono", monospace; }
     h2.section { font-size: 15px; margin: 24px 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
     ol.steps, ul.steps { margin: 0; padding-left: 0; list-style: none; }
-    ol.steps li, ul.steps li { padding: 9px 0; border-bottom: 1px solid #EEF2F4; font-size: 14px; }
+    ol.steps li, ul.steps li { padding: 9px 0; font-size: 14px; }
     a { color: var(--accent); }
     .note { font-size: 12px; color: var(--muted); margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--line); }
     .placeholder { background: #FFF7E6; border-radius: 3px; padding: 0 3px; }

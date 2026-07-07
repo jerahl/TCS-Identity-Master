@@ -14,6 +14,7 @@ $eventTitle = [
     'enable' => 'Account enabled', 'terminate' => 'Record terminated', 'convert' => 'Record converted',
     'merge' => 'Records merged', 'username_assigned' => 'Username assigned by OneSync',
     'notify' => 'Orientation checklist generated',
+    'password_received' => 'Initial password received from OneSync',
 ];
 ?>
 <div class="detail">

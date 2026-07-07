@@ -8,6 +8,7 @@ use App\Db;
 use App\Service\AuditService;
 use App\Service\LoginsReportService;
 use App\Service\NotifyTemplateService;
+use App\Support\Crypto;
 use App\Support\Csrf;
 use App\View\View;
 use Dompdf\Dompdf;
@@ -62,6 +63,26 @@ final class NotifyController extends Controller
     {
         return (int) ($person['username_locked'] ?? 0) === 1
             && trim((string) ($person['username'] ?? '')) !== '';
+    }
+
+    /**
+     * The initial password OneSync delivered for this person, decrypted — or ''
+     * when none is stored, the key isn't configured, or the blob doesn't
+     * authenticate (e.g. after a key rotation). The checklist degrades to the
+     * "provided by your school/supervisor" wording in that case.
+     *
+     * @param array<string,mixed> $person
+     */
+    public static function initialPasswordFor(array $person): string
+    {
+        $enc = $person['initial_password_enc'] ?? null;
+        if ($enc === null || $enc === '') {
+            return '';
+        }
+        if (is_resource($enc)) { // PDO may return BLOBs as streams
+            $enc = (string) stream_get_contents($enc);
+        }
+        return Crypto::decrypt((string) $enc) ?? '';
     }
 
     // ---- single-person: HTML preview + PDF ---------------------------------
@@ -268,6 +289,10 @@ final class NotifyController extends Controller
         $fullName = trim($person['first_name'] . ' ' . $person['last_name']);
         $school = trim((string) ($person['primary_school_name'] ?? ''));
         $startDate = trim((string) ($person['position_start_date'] ?? '')) ?: trim((string) ($person['hire_date'] ?? ''));
+        // OneSync-delivered initial password; when absent the account box falls
+        // back to the who-to-ask wording the checklist used before.
+        $tempPassword = self::initialPasswordFor($person);
+        $tempPasswordFallback = $doc === 'new_teacher' ? 'provided by your school' : 'provided by your supervisor';
 
         return [
             'person'  => $person,
@@ -278,6 +303,7 @@ final class NotifyController extends Controller
             'data'    => [
                 'person' => $person, 'fullName' => $fullName, 'school' => $school,
                 'position' => $position, 'startDate' => $startDate,
+                'tempPassword' => $tempPassword, 'tempPasswordFallback' => $tempPasswordFallback,
             ],
             'vars' => [
                 'name'       => $displayName,
@@ -287,6 +313,7 @@ final class NotifyController extends Controller
                 'school'     => $school,
                 'position'   => $position,
                 'start_date' => $startDate,
+                'temp_password' => $tempPassword,
             ],
             'title' => $tmpl['heading'] . ' — ' . $fullName,
         ];

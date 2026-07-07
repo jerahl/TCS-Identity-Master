@@ -14,7 +14,7 @@ use PDO;
  *   ## Section heading          -> starts a new section
  *   - A checklist item          -> an item under the current section
  *   [label](https://example)    -> a link inside intro or an item
- *   {name} {username} {email} {school} {position} {start_date}  -> placeholders
+ *   {name} {username} {email} {school} {position} {start_date} {temp_password}  -> placeholders
  *
  * Content is stored in `notify_template` (migration 0014); when a row is absent
  * the built-in defaults() apply, so the feature works before anything is saved.
@@ -226,7 +226,7 @@ final class NotifyTemplateService
                 'intro'   => 'Welcome to Tuscaloosa City Schools, {name}. Complete the steps below to activate and secure your accounts. Check each item off as you go.',
                 'body'    => <<<'MD'
                 ## First sign-in
-                - Sign in to your district account at [portal.office.com](https://portal.office.com) using the username and email above and the temporary password provided by your school.
+                - Sign in to your district account at [portal.office.com](https://portal.office.com) using the username, email, and temporary password shown above.
                 - Set a permanent password and register for self-service password reset at [aka.ms/sspr](https://aka.ms/sspr).
                 - Turn on multi-factor authentication when prompted.
                 ## Instructional systems
@@ -243,7 +243,7 @@ final class NotifyTemplateService
                 'intro'   => 'Welcome to Tuscaloosa City Schools, {name}. Complete the steps below to activate and secure your accounts. Check each item off as you go.',
                 'body'    => <<<'MD'
                 ## First sign-in
-                - Sign in to your district account at [portal.office.com](https://portal.office.com) using the username and email above and the temporary password provided by your supervisor.
+                - Sign in to your district account at [portal.office.com](https://portal.office.com) using the username, email, and temporary password shown above.
                 - Set a permanent password and register for self-service password reset at [aka.ms/sspr](https://aka.ms/sspr).
                 - Turn on multi-factor authentication when prompted.
                 ## District systems
