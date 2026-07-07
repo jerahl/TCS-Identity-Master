@@ -10,15 +10,21 @@ use PDO;
 use RuntimeException;
 
 /**
- * Exports NEW staff (people not yet in PowerSchool) as a CSV ready for the
- * PowerSchool SIS staff import, and uploads it to the district SFTP server.
+ * Exports staff changes as CSVs ready for the PowerSchool SIS staff import,
+ * and uploads them to the district SFTP server. Two files:
  *
- * "New" means: an active/pending person with an ALSDE ID on the golden record
+ * NEW STAFF — an active/pending person with an ALSDE ID on the golden record
  * but NO active person_source_id row with system='powerschool' — i.e. HR has
  * hired them and the ALSDE ID has been entered, but PowerSchool has never
  * reported them back through the nightly import. People without an ALSDE ID
  * are deliberately excluded (PowerSchool demographics require it); the CLI
  * surfaces them so the operator knows who is being held back.
+ *
+ * NAME UPDATES — people already in PowerSchool whose golden-record first/last
+ * name no longer matches the latest PowerSchool import snapshot (the newest
+ * matched staging_record row), e.g. a marriage-related last-name change made
+ * in NextGen/IDM. Rows are keyed by Users.TeacherNumber (= Employee ID, the
+ * district's staff match key) and carry the full current name.
  *
  * Column headers use the exact table.field names from the district's
  * PowerSchool data dictionary (/ws/schema/table metadata), so the file maps
@@ -57,6 +63,14 @@ final class PowerSchoolStaffExporter
         'SchoolStaff.Status',
         'SchoolStaff.StaffStatus',
         'TeacherRace.RaceCd',
+    ];
+
+    /** Name-update CSV headers: match key first, then the current name. */
+    public const UPDATE_HEADERS = [
+        'Users.TeacherNumber',
+        'Users.First_Name',
+        'Users.Middle_Name',
+        'Users.Last_Name',
     ];
 
     private PDO $db;
@@ -114,6 +128,54 @@ final class PowerSchoolStaffExporter
     }
 
     /**
+     * People already in PowerSchool whose golden-record name differs from the
+     * latest PowerSchool import snapshot — the rows for the name-update CSV.
+     * Comparison is on first + last name (case-insensitive); middle name isn't
+     * in the snapshot, but the exported row always carries the full current
+     * name. People with no snapshot yet are skipped (nothing to compare), and
+     * people without an employee id land in `held` (no match key to update by).
+     *
+     * @return array{updates:array<int,array<string,mixed>>,held:array<int,array<string,mixed>>}
+     */
+    public function nameUpdates(): array
+    {
+        $sql = "SELECT p.person_id, p.first_name, p.middle_name, p.last_name, p.employee_id,
+                       (SELECT sr.n_first FROM staging_record sr
+                         WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
+                         ORDER BY sr.id DESC LIMIT 1) AS ps_first,
+                       (SELECT sr.n_last FROM staging_record sr
+                         WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
+                         ORDER BY sr.id DESC LIMIT 1) AS ps_last
+                  FROM person p
+                 WHERE p.status IN ('active','pending')
+                   AND EXISTS (SELECT 1 FROM person_source_id psi
+                                WHERE psi.person_id = p.person_id
+                                  AND psi.system = 'powerschool'
+                                  AND psi.is_active = 1)
+                 ORDER BY p.last_name, p.first_name, p.person_id";
+
+        $updates = [];
+        $held = [];
+        foreach ($this->db->query($sql)->fetchAll() as $p) {
+            $psFirst = trim((string) ($p['ps_first'] ?? ''));
+            $psLast = trim((string) ($p['ps_last'] ?? ''));
+            if ($psFirst === '' && $psLast === '') {
+                continue; // never snapshotted — nothing to compare against
+            }
+            if (self::sameName((string) $p['first_name'], $psFirst)
+                && self::sameName((string) $p['last_name'], $psLast)) {
+                continue;
+            }
+            if (trim((string) ($p['employee_id'] ?? '')) === '') {
+                $held[] = $p;
+                continue;
+            }
+            $updates[] = $p;
+        }
+        return ['updates' => $updates, 'held' => $held];
+    }
+
+    /**
      * Project one candidate onto the CSV columns (keyed by HEADERS).
      *
      * @param array<string,mixed> $p
@@ -144,34 +206,54 @@ final class PowerSchoolStaffExporter
     }
 
     /**
-     * Render the export CSV (header + one line per candidate). CRLF line ends
-     * and RFC-4180 quoting, matching what PowerSchool's importer accepts.
+     * Project one name-update row onto the update CSV columns (UPDATE_HEADERS).
+     *
+     * @param array<string,mixed> $p
+     * @return array<string,string>
+     */
+    public static function updateRow(array $p): array
+    {
+        return [
+            'Users.TeacherNumber' => trim((string) ($p['employee_id'] ?? '')),
+            'Users.First_Name'    => trim((string) ($p['first_name'] ?? '')),
+            'Users.Middle_Name'   => trim((string) ($p['middle_name'] ?? '')),
+            'Users.Last_Name'     => trim((string) ($p['last_name'] ?? '')),
+        ];
+    }
+
+    /**
+     * Render the new-staff CSV (header + one line per candidate).
      *
      * @param array<int,array<string,mixed>> $candidates raw candidates() rows
      */
     public static function csv(array $candidates): string
     {
-        $lines = [self::csvLine(self::HEADERS)];
-        foreach ($candidates as $p) {
-            $lines[] = self::csvLine(array_values(self::row($p)));
-        }
-        return implode("\r\n", $lines) . "\r\n";
+        return self::render(self::HEADERS, array_map(self::row(...), $candidates));
     }
 
     /**
-     * Write the CSV into $dir with a timestamped name.
+     * Render the name-update CSV (header + one line per changed person).
      *
-     * @param array<int,array<string,mixed>> $candidates
+     * @param array<int,array<string,mixed>> $updates nameUpdates()['updates'] rows
+     */
+    public static function updatesCsv(array $updates): string
+    {
+        return self::render(self::UPDATE_HEADERS, array_map(self::updateRow(...), $updates));
+    }
+
+    /**
+     * Write a rendered CSV into $dir. CRLF line ends and RFC-4180 quoting,
+     * matching what PowerSchool's importer accepts.
+     *
      * @return array{path:string,bytes:int}
      */
-    public static function writeFile(array $candidates, string $dir, ?string $fileName = null): array
+    public static function writeFile(string $csv, string $dir, string $fileName): array
     {
         if (!is_dir($dir) && !mkdir($dir, 0750, true) && !is_dir($dir)) {
             throw new RuntimeException("Cannot create export directory: {$dir}");
         }
-        $fileName ??= 'ps_new_staff_' . date('Ymd_His') . '.csv';
         $path = rtrim($dir, '/') . '/' . $fileName;
-        $bytes = file_put_contents($path, self::csv($candidates));
+        $bytes = file_put_contents($path, $csv);
         if ($bytes === false) {
             throw new RuntimeException("Cannot write export file: {$path}");
         }
@@ -202,6 +284,25 @@ final class PowerSchoolStaffExporter
             return "{$m[2]}/{$m[3]}/{$m[1]}";
         }
         return $date;
+    }
+
+    /** Case-insensitive name equality (mirrors FieldMap::valuesEqual's default). */
+    private static function sameName(string $a, string $b): bool
+    {
+        return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+    }
+
+    /**
+     * @param array<int,string> $headers
+     * @param array<int,array<string,string>> $rows keyed by $headers
+     */
+    private static function render(array $headers, array $rows): string
+    {
+        $lines = [self::csvLine($headers)];
+        foreach ($rows as $row) {
+            $lines[] = self::csvLine(array_values($row));
+        }
+        return implode("\r\n", $lines) . "\r\n";
     }
 
     /** @param array<int,string> $values */

@@ -11,10 +11,12 @@ use PDO;
 use PHPUnit\Framework\TestCase;
 
 /**
- * PowerSchoolStaffExporter — the CSV that creates NEW staff in PowerSchool
- * (bin/export_powerschool.php). Candidate = active/pending person with an
- * ALSDE ID and no active powerschool source id; columns are the data-dictionary
- * table.field names with S_USR_X.State_StaffNumber carrying the ALSDE ID.
+ * PowerSchoolStaffExporter — the CSVs behind bin/export_powerschool.php.
+ * New staff: active/pending person with an ALSDE ID and no active powerschool
+ * source id; columns are the data-dictionary table.field names with
+ * S_USR_X.State_StaffNumber carrying the ALSDE ID. Name updates: person IS in
+ * PowerSchool but the golden name differs from the latest import snapshot;
+ * keyed by Users.TeacherNumber.
  */
 final class PowerSchoolStaffExporterTest extends TestCase
 {
@@ -34,6 +36,8 @@ final class PowerSchoolStaffExporterTest extends TestCase
             id INTEGER PRIMARY KEY, person_id INTEGER, title TEXT, is_primary INTEGER DEFAULT 0)');
         $db->exec('CREATE TABLE person_source_id (
             id INTEGER PRIMARY KEY, person_id INTEGER, system TEXT, source_key TEXT, is_active INTEGER DEFAULT 1)');
+        $db->exec('CREATE TABLE staging_record (
+            id INTEGER PRIMARY KEY, system TEXT, matched_person_id INTEGER, n_first TEXT, n_last TEXT)');
 
         $db->exec("INSERT INTO school (school_id, name, ps_school_id) VALUES (1, 'Central High', '310')");
 
@@ -43,11 +47,13 @@ final class PowerSchoolStaffExporterTest extends TestCase
             'abaker@example.org', 'abaker')");
         $db->exec("INSERT INTO assignment (person_id, title, is_primary) VALUES (1, 'Teacher', 1)");
 
-        // 2: already in PowerSchool -> excluded.
+        // 2: already in PowerSchool, snapshot name matches -> excluded everywhere.
         $db->exec("INSERT INTO person VALUES (2, 'faculty', 'active', 'Casey', NULL, 'Adams',
             '1985-01-02', 'Male', 'C', 'AL-100002', 'E1002', 1, '2020-08-01',
             'cadams@example.org', 'cadams')");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (2, 'powerschool', '5555')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
+                   VALUES ('powerschool', 2, 'casey', 'ADAMS')");
 
         // 3: no ALSDE ID -> held back (missingAlsdeId), never exported.
         $db->exec("INSERT INTO person VALUES (3, 'staff', 'pending', 'Drew', NULL, 'Cole',
@@ -61,6 +67,28 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec("INSERT INTO person VALUES (5, 'staff', 'active', 'Blair', NULL, 'Ellis',
             NULL, 'M', NULL, 'AL-100005', 'E1005', NULL, NULL, NULL, NULL)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (5, 'powerschool', '6666', 0)");
+
+        // 6: in PowerSchool, married name in IDM differs from the PS snapshot
+        //    (two snapshots — only the NEWEST counts) -> name update.
+        $db->exec("INSERT INTO person VALUES (6, 'faculty', 'active', 'Morgan', 'L', 'Foster-Hill',
+            NULL, 'F', NULL, 'AL-100006', 'E1006', 1, NULL, 'mfoster@example.org', 'mfoster')");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (6, 'powerschool', '7777')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
+                   VALUES ('powerschool', 6, 'Morgan', 'Foster-Hill')"); // older, already renamed once
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
+                   VALUES ('powerschool', 6, 'Morgan', 'Foster')");      // newest snapshot: old name
+
+        // 7: name changed but no employee id -> held back from the update file.
+        $db->exec("INSERT INTO person VALUES (7, 'staff', 'active', 'Riley', NULL, 'Grant',
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (7, 'powerschool', '8888')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
+                   VALUES ('powerschool', 7, 'Riley', 'Gray')");
+
+        // 8: in PowerSchool, no snapshot ever matched -> skipped (nothing to compare).
+        $db->exec("INSERT INTO person VALUES (8, 'staff', 'active', 'Sam', NULL, 'Hale',
+            NULL, NULL, NULL, NULL, 'E1008', NULL, NULL, NULL, NULL)");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (8, 'powerschool', '9999')");
 
         return $db;
     }
@@ -138,12 +166,44 @@ final class PowerSchoolStaffExporterTest extends TestCase
         self::assertSame(count(PowerSchoolStaffExporter::HEADERS), substr_count($header, ',') + 1);
     }
 
+    public function testNameUpdatesComparesGoldenNameToLatestSnapshot(): void
+    {
+        $res = (new PowerSchoolStaffExporter($this->db()))->nameUpdates();
+
+        self::assertSame([6], array_map(static fn($r) => (int) $r['person_id'], $res['updates']),
+            'only the person whose golden name differs from the NEWEST snapshot; '
+            . 'case-insensitive match excludes person 2, no-snapshot person 8 skipped');
+        self::assertSame('Foster', $res['updates'][0]['ps_last'], 'old PS name carried for reporting');
+        self::assertSame([7], array_map(static fn($r) => (int) $r['person_id'], $res['held']),
+            'changed name without an employee id is held back, not dropped');
+    }
+
+    public function testUpdateRowAndCsvKeyedByTeacherNumber(): void
+    {
+        $exporter = new PowerSchoolStaffExporter($this->db());
+        $updates = $exporter->nameUpdates()['updates'];
+
+        $row = PowerSchoolStaffExporter::updateRow($updates[0]);
+        self::assertSame(PowerSchoolStaffExporter::UPDATE_HEADERS, array_keys($row));
+        self::assertSame('E1006', $row['Users.TeacherNumber'], 'match key = employee id');
+        self::assertSame('Foster-Hill', $row['Users.Last_Name']);
+        self::assertSame('L', $row['Users.Middle_Name'], 'full current name exported');
+
+        $tmp = tempnam(sys_get_temp_dir(), 'psu');
+        file_put_contents($tmp, PowerSchoolStaffExporter::updatesCsv($updates));
+        $rows = Csv::read($tmp);
+        unlink($tmp);
+        self::assertCount(1, $rows);
+        self::assertSame('Foster-Hill', $rows[0]['Users.Last_Name']);
+    }
+
     public function testWriteFileAndUpload(): void
     {
         $exporter = new PowerSchoolStaffExporter($this->db());
         $dir = sys_get_temp_dir() . '/psx_export_' . uniqid();
 
-        $file = PowerSchoolStaffExporter::writeFile($exporter->candidates(), $dir, 'ps_new_staff_test.csv');
+        $file = PowerSchoolStaffExporter::writeFile(
+            PowerSchoolStaffExporter::csv($exporter->candidates()), $dir, 'ps_new_staff_test.csv');
         self::assertFileExists($file['path']);
         self::assertGreaterThan(0, $file['bytes']);
 
