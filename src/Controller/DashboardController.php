@@ -37,14 +37,16 @@ final class DashboardController extends Controller
         ], 'home', 'Dashboard', 'Dashboard — TCS Identity Master');
     }
 
-    /** Staleness banners: OneSync not run / write-back stale, and stale feeds. */
+    /** Staleness banners: OneSync DB sync not run / stale / failed, and stale feeds. */
     private function buildAlerts(array $syncHealth, array $feeds, array $studentSync): array
     {
         $alerts = [];
         if ($syncHealth['state'] === 'never') {
-            $alerts[] = 'OneSync has not written any provisioning status yet.';
+            $alerts[] = 'The OneSync DB sync has not run yet — no provisioning results pulled. Run bin/import_onesync_db.php.';
+        } elseif (($syncHealth['status'] ?? null) === 'failed') {
+            $alerts[] = "The last OneSync DB sync failed ({$syncHealth['label']}) — provisioning results may be stale. Check bin/import_onesync_db.php.";
         } elseif ($syncHealth['state'] === 'stale') {
-            $alerts[] = "OneSync write-back looks stale — last status {$syncHealth['label']} (expected within {$syncHealth['staleHours']}h). Has the sync run?";
+            $alerts[] = "OneSync DB sync looks stale — last run {$syncHealth['label']} (expected within {$syncHealth['staleHours']}h). Has cron run bin/import_onesync_db.php?";
         }
         if (($studentSync['status'] ?? null) === 'failed') {
             $alerts[] = 'The last students sync failed — students may be stale in OneSync. Check bin/import_students.php.';

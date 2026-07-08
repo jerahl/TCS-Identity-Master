@@ -106,31 +106,33 @@ final class DashboardService
     }
 
     /**
-     * OneSync write-back freshness: when did OneSync last report any status, and
-     * how many accounts are stale? Drives the "OneSync hasn't run" indicator.
+     * OneSync DB sync freshness: when the pull of provisioning results from
+     * OneSync's database (bin/import_onesync_db.php, service_run job
+     * 'onesync_db') last ran and how it went. The pull is the authoritative
+     * provisioning-status signal — OneSync itself only writes back usernames
+     * and initial passwords, never its export log.
      *
-     * @return array{state:string,label:string,at:?string,staleAccounts:int,staleHours:int}
+     * @return array{state:string,label:string,at:?string,status:?string,counts:?array,staleHours:int}
      */
     public function syncHealth(): array
     {
         $staleHours = max(1, (int) Config::get('SYNC_STALE_HOURS', '26'));
-        $lastAt = $this->db->query('SELECT MAX(last_sync_at) FROM account_sync_status')->fetchColumn();
-        $lastAt = $lastAt === false ? null : $lastAt;
+        $last = (new ServiceRunLog($this->db))->last('onesync_db');
+        $at = $last === null ? null : (string) ($last['finished_at'] ?? $last['started_at']);
 
-        $stmt = $this->db->prepare(
-            'SELECT COUNT(*) FROM account_sync_status
-             WHERE last_sync_at IS NULL OR last_sync_at < (NOW() - INTERVAL :h HOUR)'
-        );
-        $stmt->bindValue(':h', $staleHours, PDO::PARAM_INT);
-        $stmt->execute();
-        $staleAccounts = (int) $stmt->fetchColumn();
+        $counts = null;
+        if ($last !== null && !empty($last['counts_json'])) {
+            $decoded = json_decode((string) $last['counts_json'], true);
+            $counts = is_array($decoded) ? $decoded : null;
+        }
 
-        $fresh = Freshness::classify($lastAt, $staleHours, time());
+        $fresh = Freshness::classify($at, $staleHours, time());
         return [
             'state' => $fresh['state'],
             'label' => $fresh['label'],
             'at' => $fresh['at'],
-            'staleAccounts' => $staleAccounts,
+            'status' => $last === null ? null : (string) $last['status'],
+            'counts' => $counts,
             'staleHours' => $staleHours,
         ];
     }

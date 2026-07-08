@@ -253,13 +253,15 @@ run:
      real-time), a usernames CSV, or a direct INSERT into the
      `onesync_writeback` landing table. IDM applies it, **locks** it, and
      activates the person.
-   - **Provisioning status write-back** — one result per (person,
-     destination): action (Add/Edit/Disable/…), status (Success/Fail/…),
-     and the failure message. Delivered via `POST /api/onesync/sync-status`,
-     an export-log CSV, or direct upsert into `account_sync_status`.
-   - Alternatively/additionally, IDM **pulls results from OneSync's own
+   - **Initial-password write-back** — the temporary password OneSync set
+     for a newly created account, delivered via `POST /api/onesync/password`
+     and stored encrypted.
+   - **Provisioning status** — one result per (person, destination): action
+     (Add/Edit/Disable/…), status (Success/Fail/…), and the failure message.
+     OneSync does **not** push these; IDM **pulls them from OneSync's own
      database** (`bin/import_onesync_db.php` reads its `os_users` /
-     `os_export_log` tables read-only) and upserts the same status rows.
+     `os_export_log` tables read-only) and upserts them into
+     `account_sync_status`.
 
 So the full loop for a new hire is:
 
@@ -267,14 +269,14 @@ So the full loop for a new hire is:
 NextGen feed → IDM stages/matches → new pending person (username NULL)
   → OneSync reads view, sees blank username → mints "jdoe"
   → OneSync creates AD + Google + Raptor + PowerSchool accounts
-  → OneSync writes back username → IDM locks it, person becomes active
-  → OneSync writes back per-destination results → IDM Provisioning panel / dashboard
+  → OneSync writes back username (+ initial password) → IDM locks it, person becomes active
+  → IDM pulls per-destination results from OneSync's DB → Provisioning panel / dashboard
 ```
 
 And for a leaver: NextGen drops the row → IDM flags the drop-out → a human
 approves **Disable** on `/review` → the view shows `StatusActive = 0` →
-OneSync disables (never deletes) the account everywhere → results written
-back.
+OneSync disables (never deletes) the account everywhere → IDM's nightly DB
+pull picks up the per-destination results.
 
 ---
 
@@ -299,9 +301,10 @@ back.
    PowerSchool.
 
 **Two return arrows** from OneSync back into lane 3 (drawn as a loop):
-*username write-back* (→ set + lock + activate) and *sync-status write-back*
-(→ Provisioning panel + failed-sync dashboard), each annotated with its three
-delivery options (API / CSV / direct DB) plus IDM's pull from OneSync's DB.
+*username/password write-back* (→ set + lock + activate; annotated with its
+delivery options — API / CSV / direct DB) and *IDM's provisioning-results pull
+from OneSync's DB* (→ Provisioning panel + failed-sync dashboard; drawn as a
+read-only pull, not a push).
 
 **Styling cues:** mark read-only edges (OneSync→views, IDM→Adaxes,
 IDM→OneSync DB) differently from write edges; put the human-approval steps

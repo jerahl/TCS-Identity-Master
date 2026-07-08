@@ -490,17 +490,21 @@ php bin/onesync_preview.php --limit=20
 php bin/import_writeback.php --file=db/seeds/feeds/onesync_usernames_sample.csv --dry-run
 php bin/import_writeback.php --file=db/seeds/feeds/onesync_usernames_sample.csv
 
-# Account-status write-back: per-destination provisioning state (AD/Google/…).
-php bin/import_sync_status.php --file=db/seeds/feeds/onesync_export_log_sample.csv
+# Provisioning results: pulled straight from OneSync's own database (read-only).
+php bin/import_onesync_db.php --dry-run
 ```
 
-With no `--file`, the write-back importers use `ONESYNC_WRITEBACK_FILE` /
-`ONESYNC_EXPORT_LOG`. Both run as the limited write-back role and are idempotent.
+With no `--file`, the username importer uses `ONESYNC_WRITEBACK_FILE`. Both run
+as the limited write-back role and are idempotent. Per-destination provisioning
+state (AD/Google/…) is **pulled** from OneSync's DB by `bin/import_onesync_db.php`
+(nightly cron) — OneSync does not push its export log back.
 
-**Write-back API (events).** Instead of CSVs, OneSync can execute an API call on
-each event. Token-authenticated (no session/CSRF), JSON in/out, reusing the same
-importers and guardrails. Set `ONESYNC_API_KEY` to enable (blank = disabled, 503).
-OneSync sends it as `Authorization: Bearer <key>` (or `X-API-Key: <key>`).
+**Write-back API (events).** Instead of CSVs, OneSync can execute an API call
+for the two things only it knows about a new user: the username it minted and
+the initial password it set. Token-authenticated (no session/CSRF), JSON in/out,
+reusing the same importers and guardrails. Set `ONESYNC_API_KEY` to enable
+(blank = disabled, 503). OneSync sends it as `Authorization: Bearer <key>`
+(or `X-API-Key: <key>`).
 
 ```sh
 # Health check (still requires the token)
@@ -511,10 +515,10 @@ curl -X POST https://idm.example.org/api/onesync/username \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"uniqueId":"<person_uuid>","username":"jdoe","email":"jdoe@tcs.k12.al.us"}'
 
-# Per-destination provisioning result
-curl -X POST https://idm.example.org/api/onesync/sync-status \
+# Initial password for a newly created account (stored encrypted)
+curl -X POST https://idm.example.org/api/onesync/password \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"uniqueId":"<person_uuid>","destination":"Active Directory","action":"Add","status":"Success"}'
+  -d '{"uniqueId":"<person_uuid>","password":"Falcon-Maple-42"}'
 ```
 
 Both write endpoints accept a single event **or** a JSON array (batch); a batch
@@ -655,12 +659,11 @@ correctly (`McDonald`, `O'Brien`, `Smith-Jones`, generational suffix `III`). Eac
 change is audited and added to the person timeline. Idempotent — safe to re-run.
 
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
-back **straight to the DB** (no files): insert usernames into `onesync_writeback`
-and upsert per-user success/failure into `account_sync_status`. The exact table +
-column map (and the `onesync_writer` GRANT) is in
-[`docs/onesync-mapping.md`](docs/onesync-mapping.md). Migration `0004` adds a
-trigger that resolves `person_id` from the `uniqueId` OneSync writes, and the app
-applies directly-written usernames with:
+usernames back **straight to the DB** (no files): insert into the
+`onesync_writeback` landing table. The exact table + column map (and the
+`onesync_writer` GRANT) is in [`docs/onesync-mapping.md`](docs/onesync-mapping.md).
+Migration `0004` adds a trigger that resolves `person_id` from the `uniqueId`
+OneSync writes, and the app applies directly-written usernames with:
 
 ```sh
 php bin/import_writeback.php --pending     # apply onesync_writeback rows (applied=0)
@@ -669,19 +672,21 @@ php bin/import_writeback.php --pending     # apply onesync_writeback rows (appli
 - **Username immutability:** once `username_locked`, the importer never
   overwrites with a different value (logged as `conflict`); re-runs are `noop`.
   The app never mints usernames — this only records OneSync's decision.
-- **Account status:** upserts one current row per `(person, destination)` into
-  `account_sync_status` (shown on the person's Provisioning panel) and appends to
-  the capped `account_sync_event` history (`ACCOUNT_SYNC_EVENT_CAP`). Failed
-  syncs surface per-person now and on the health dashboard in M6.
+- **Account status:** comes from the OneSync DB pull below — one current row per
+  `(person, destination)` in `account_sync_status` (shown on the person's
+  Provisioning panel) plus the capped `account_sync_event` history
+  (`ACCOUNT_SYNC_EVENT_CAP`). Failed syncs surface per-person and on the health
+  dashboard.
 
-> The file formats above are **assumptions** (documented in `ColumnMap`/importer
-> defaults) — confirm OneSync's real usernames-file and export-log columns and
-> adjust the maps. The sample files are keyed to the demo people's UUIDs.
+> The usernames-file format above is an **assumption** (documented in
+> `ColumnMap`/importer defaults) — confirm OneSync's real columns and adjust the
+> map. The sample file is keyed to the demo people's UUIDs.
 
-**Pull results from OneSync's own database.** Instead of CSVs, the API, or having
-OneSync write into our tables, the app can read provisioning results **straight
-from OneSync's MariaDB** (its `os_users` / `os_export_log` tables) and upsert them
-into `account_sync_status` (per-destination state + failure messages). It connects
+**Pull results from OneSync's own database.** This is **the** provisioning-status
+path: the app reads provisioning results **straight from OneSync's MariaDB** (its
+`os_users` / `os_export_log` tables) and upserts them into `account_sync_status`
+(per-destination state + failure messages) — OneSync never has to push its export
+log back. It connects
 read-only via `ONESYNC_DB_*` and writes as the limited write-back role, joining
 `os_users.userId` to our `person_uuid` across both IDM feeds
 (`ONESYNC_DB_SOURCE_ID_STUDENTS` / `ONESYNC_DB_SOURCE_ID_FACULTY`; the legacy
@@ -833,8 +838,9 @@ The **Services** page (`/admin`, admin-only) is one place to see the health of
 every moving part and to run the background jobs on demand:
 
 - **Service status** — live cards for the application database, the OneSync
-  source DB (read), OneSync write-back freshness, the SFTP feed config, the
-  PowerSchool Oracle ODBC connection, and the VPN monitor. The OneSync source-DB
+  source DB (read), the OneSync DB sync freshness, the username/password
+  write-back API, the SFTP feed config, the PowerSchool Oracle ODBC connection,
+  and the VPN monitor. The OneSync source-DB
   card is a live probe bounded by a short connect timeout (`SERVICE_PING_TIMEOUT`,
   default 3s) so an unreachable host fails fast instead of hanging the page; the
   app-DB card reuses the app's existing connection, and everything else reports

@@ -3,8 +3,19 @@
 use App\View\Present;
 
 $k = $kpis;
-$sh = $syncHealth ?? ['state' => 'never', 'label' => 'never', 'staleAccounts' => 0];
-$syncTone = ['fresh' => 'ok', 'stale' => 'warn', 'never' => 'alert'][$sh['state']] ?? 'alert';
+$sh = $syncHealth ?? ['state' => 'never', 'label' => 'never', 'status' => null, 'counts' => null];
+$syncTone = ($sh['status'] ?? null) === 'failed'
+    ? 'alert'
+    : (['fresh' => 'ok', 'stale' => 'warn', 'never' => 'alert'][$sh['state']] ?? 'alert');
+$syncCounts = is_array($sh['counts'] ?? null) ? $sh['counts'] : null;
+$syncSub = 'never run';
+if ($sh['state'] !== 'never') {
+    $syncSub = ($sh['status'] ?? '') === 'failed'
+        ? 'last run failed'
+        : ($syncCounts !== null
+            ? ((int) ($syncCounts['upserted'] ?? 0)) . ' updated · ' . ((int) ($syncCounts['failed'] ?? 0)) . ' failed'
+            : 'results pulled from OneSync');
+}
 
 $ss = $studentSync ?? ['state' => 'never', 'label' => 'never', 'status' => null, 'active' => 0];
 $studentTone = ($ss['status'] ?? null) === 'failed'
@@ -20,7 +31,7 @@ $cards = [
     ['label' => 'Unmapped values', 'value' => $k['unmapped'], 'sub' => 'school + ethnicity', 'tone' => $k['unmapped'] > 0 ? 'warn' : 'ok', 'href' => url('/reference')],
     ['label' => 'Failed syncs', 'value' => $k['failedSync'], 'sub' => 'last sync failed', 'tone' => $k['failedSync'] > 0 ? 'alert' : 'ok', 'href' => url('/dashboard') . '#failed'],
     ['label' => 'To disable', 'value' => $k['disableFlagged'], 'sub' => 'left, still enabled', 'tone' => $k['disableFlagged'] > 0 ? 'warn' : 'ok', 'href' => url('/review') . '#disable'],
-    ['label' => 'OneSync write-back', 'value' => $sh['label'], 'sub' => $sh['state'] === 'never' ? 'never run' : ($sh['staleAccounts'] . ' stale account' . ($sh['staleAccounts'] === 1 ? '' : 's')), 'tone' => $syncTone, 'href' => url('/dashboard') . '#failed'],
+    ['label' => 'OneSync DB sync', 'value' => $sh['label'], 'sub' => $syncSub, 'tone' => $syncTone, 'href' => url('/admin')],
     ['label' => 'Students → OneSync', 'value' => $ss['active'], 'sub' => $studentSub, 'tone' => $studentTone, 'href' => url('/dashboard') . '#students'],
     ['label' => 'Last feed run', 'value' => $k['lastFeed'] ? ucfirst($k['lastFeed']['system']) : '—', 'sub' => $k['lastFeed'] ? ($k['lastFeed']['status'] . ' · ' . $k['lastFeed']['started_at']) : 'no imports yet', 'tone' => 'ok', 'href' => url('/import')],
 ];
