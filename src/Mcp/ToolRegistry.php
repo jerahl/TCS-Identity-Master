@@ -189,7 +189,7 @@ final class ToolRegistry
             'dashboard_summary' => [
                 'capability'  => 'view',
                 'description' => 'Operational KPIs (pending review/activation, missing usernames, unmapped '
-                    . 'reference data, failed syncs) plus OneSync write-back freshness.',
+                    . 'reference data, failed syncs) plus OneSync DB sync freshness.',
                 'inputSchema' => ['type' => 'object', 'properties' => (object) [], 'additionalProperties' => false],
                 'handler' => static fn(array $a): array => [
                     'kpis'        => $dashboard->kpis(),

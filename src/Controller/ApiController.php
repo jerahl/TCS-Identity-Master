@@ -6,18 +6,17 @@ namespace App\Controller;
 
 use App\Config;
 use App\Import\InitialPasswordImporter;
-use App\Import\SyncStatusImporter;
 use App\Import\WritebackImporter;
 use App\Support\ApiLog;
 use App\Support\Crypto;
 
 /**
- * Machine-to-machine write-back API for OneSync. OneSync executes an API call on
- * each event (username minted, account provisioned to a destination) instead of
- * dropping CSVs. Token-authenticated (no session/CSRF); JSON in, JSON out.
+ * Machine-to-machine write-back API for OneSync — usernames and initial
+ * passwords only. Provisioning results are NOT pushed here; IDM pulls them
+ * straight from OneSync's database (bin/import_onesync_db.php).
+ * Token-authenticated (no session/CSRF); JSON in, JSON out.
  *
  *   POST /api/onesync/username     {uniqueId, username, email?, upn?}
- *   POST /api/onesync/sync-status  {uniqueId, destination, action, status, message?, timestamp?}
  *   POST /api/onesync/password     {uniqueId, password} — initial password for a new account
  *   GET  /api/onesync/ping         health check (still requires the token)
  *
@@ -26,8 +25,7 @@ use App\Support\Crypto;
  * The key is ONESYNC_API_KEY; if unset, the API is disabled (503).
  *
  * Reuses the write-back importers, so the same guardrails apply — usernames are
- * immutable once locked, status upserts one row per (person, destination), and it
- * runs as the limited write-back DB role.
+ * immutable once locked, and it runs as the limited write-back DB role.
  */
 final class ApiController
 {
@@ -237,41 +235,6 @@ final class ApiController
             }
         }
         return $this->respond('password', $results, $anyError);
-    }
-
-    public function syncStatus(): string
-    {
-        if (($err = $this->authError('sync-status')) !== null) {
-            return $err;
-        }
-        $events = $this->readEvents();
-        if ($events === null) {
-            $this->logRequest('sync-status', 400, ['reason' => $this->parseError]);
-            return $this->json(400, ['ok' => false, 'error' => $this->parseError]);
-        }
-
-        $importer = new SyncStatusImporter();
-        $results = [];
-        $anyError = false;
-        foreach ($events as $e) {
-            $uuid = trim((string) ($e['uniqueId'] ?? ''));
-            $dest = trim((string) ($e['destination'] ?? ''));
-            if ($uuid === '' || $dest === '') {
-                $results[] = ['ok' => false, 'error' => 'uniqueId and destination are required'];
-                $anyError = true;
-                continue;
-            }
-            try {
-                $r = $importer->applyEvent($e);
-                $results[] = ['ok' => $r['outcome'] !== 'error', 'uniqueId' => $uuid, 'destination' => $dest, 'outcome' => $r['outcome']];
-                $anyError = $anyError || $r['outcome'] === 'error';
-            } catch (\Throwable $ex) {
-                error_log('[idm] api sync-status: ' . $ex->getMessage());
-                $results[] = ['ok' => false, 'error' => 'apply failed'];
-                $anyError = true;
-            }
-        }
-        return $this->respond('sync-status', $results, $anyError);
     }
 
     /**

@@ -70,11 +70,10 @@ try {
 
     $router = new Router();
 
-    // ---- OneSync write-back API (machine-to-machine, token auth — not session) ----
+    // ---- OneSync write-back API (usernames + initial passwords; token auth — not session) ----
     $api = new \App\Controller\ApiController();
     $router->get('/api/onesync/ping', static fn() => $api->ping());
     $router->post('/api/onesync/username', static fn() => $api->username());
-    $router->post('/api/onesync/sync-status', static fn() => $api->syncStatus());
     $router->post('/api/onesync/password', static fn() => $api->password());
 
     // ---- MCP server for Claude (per-user API key auth; role gates the tools) ----

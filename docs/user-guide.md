@@ -115,7 +115,7 @@ green is fine, amber/yellow needs a look, red needs action.
 | **Unmapped values** | School codes or ethnicity values the system doesn't recognize |
 | **Failed syncs** | Accounts whose last push to AD/Google failed |
 | **To disable** | People who've left but whose account is still enabled |
-| **OneSync write-back** | When OneSync last reported account results back |
+| **OneSync DB sync** | When provisioning results were last pulled from OneSync's database |
 | **Students → OneSync** | Status of the student passthrough sync |
 | **Last feed run** | The most recent data import and whether it succeeded |
 

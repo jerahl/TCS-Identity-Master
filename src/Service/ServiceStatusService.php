@@ -7,14 +7,15 @@ namespace App\Service;
 use App\Config;
 use App\Db;
 use App\Import\OneSyncResultImporter;
+use App\Support\Crypto;
 use App\Sync\FeedSync;
 use PDO;
 
 /**
  * Read-only health snapshot of the moving parts behind Identity Master, for the
  * admin "Services" page: the app database, OneSync's source DB (read), the
- * OneSync write-back freshness, the SFTP feed config, the PowerSchool ODBC
- * connection, and the VPN monitor.
+ * OneSync DB sync freshness, the username/password write-back API, the SFTP
+ * feed config, the PowerSchool ODBC connection, and the VPN monitor.
  *
  * Each entry is a small envelope — key, label, state, one-line detail, and a few
  * key/value facts — so the template renders them uniformly. The app-DB card
@@ -44,7 +45,8 @@ final class ServiceStatusService
         return [
             $this->appDb(),
             $this->onesyncSource(),
-            $this->onesyncWriteback(),
+            $this->onesyncDbSync(),
+            $this->onesyncApi(),
             $this->sftpFeeds(),
             $this->powerSchoolOdbc(),
             $this->vpnMonitor(),
@@ -102,31 +104,57 @@ final class ServiceStatusService
             'Cannot reach OneSync DB: ' . $ping['error'], $facts);
     }
 
-    private function onesyncWriteback(): array
+    private function onesyncDbSync(): array
     {
         try {
             $h = $this->dash->syncHealth();
         } catch (\Throwable $e) {
-            return $this->entry('onesync_writeback', 'OneSync write-back', 'warn',
+            return $this->entry('onesync_db_sync', 'OneSync DB sync', 'warn',
                 'Could not read sync status: ' . $e->getMessage(), []);
         }
-        $state = match ($h['state']) {
-            'fresh' => 'ok',
-            'stale' => 'warn',
-            'never' => 'warn',
-            default => 'warn',
-        };
-        $detail = match ($h['state']) {
-            'fresh' => "Last status {$h['label']}.",
-            'stale' => "Stale — last status {$h['label']} (expected within {$h['staleHours']}h).",
-            'never' => 'OneSync has not written any provisioning status yet.',
-            default => (string) $h['label'],
+        $failed = ($h['status'] ?? null) === 'failed';
+        $state = $failed ? 'down' : ($h['state'] === 'fresh' ? 'ok' : 'warn');
+        $detail = match (true) {
+            $h['state'] === 'never' => 'Never run — provisioning results have not been pulled from OneSync yet (bin/import_onesync_db.php).',
+            $failed                 => "Last run failed {$h['label']} (bin/import_onesync_db.php).",
+            $h['state'] === 'stale' => "Stale — last run {$h['label']} (expected within {$h['staleHours']}h).",
+            default                 => "Last run {$h['label']}.",
         };
         $facts = [
-            ['Last status at', $h['at'] === null ? '—' : (string) str_replace('T', ' ', (string) $h['at'])],
-            ['Stale accounts', (string) $h['staleAccounts']],
+            ['Last run at', $h['at'] === null ? '—' : (string) str_replace('T', ' ', (string) $h['at'])],
         ];
-        return $this->entry('onesync_writeback', 'OneSync write-back', $state, $detail, $facts);
+        if (is_array($h['counts'] ?? null)) {
+            $facts[] = ['Accounts updated', (string) (int) ($h['counts']['upserted'] ?? 0)];
+            $facts[] = ['Failed exports', (string) (int) ($h['counts']['failed'] ?? 0)];
+        }
+        return $this->entry('onesync_db_sync', 'OneSync DB sync', $state, $detail, $facts);
+    }
+
+    /**
+     * The reduced write-back API: OneSync only posts usernames and initial
+     * passwords for new accounts — provisioning results come from the DB sync
+     * above. Reports configuration presence (key + password encryption), not a
+     * round-trip.
+     */
+    private function onesyncApi(): array
+    {
+        $keySet = trim((string) Config::get('ONESYNC_API_KEY', '')) !== '';
+        $pwReady = Crypto::configured();
+        $facts = [
+            ['Endpoints', '/api/onesync/username · /api/onesync/password'],
+            ['API key', $keySet ? 'set' : '(not set)'],
+            ['Password encryption', $pwReady ? 'configured' : Crypto::KEY_ENV . ' not set'],
+        ];
+        if (!$keySet) {
+            return $this->entry('onesync_api', 'OneSync write-back API', 'disabled',
+                'Disabled — set ONESYNC_API_KEY so OneSync can post usernames + initial passwords.', $facts);
+        }
+        if (!$pwReady) {
+            return $this->entry('onesync_api', 'OneSync write-back API', 'warn',
+                'Usernames only — ' . Crypto::KEY_ENV . ' is not set, so /password returns 503.', $facts);
+        }
+        return $this->entry('onesync_api', 'OneSync write-back API', 'ok',
+            'Enabled — OneSync posts usernames + initial passwords for new accounts.', $facts);
     }
 
     private function sftpFeeds(): array
