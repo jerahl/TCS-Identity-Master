@@ -156,18 +156,20 @@ final class PersonController extends Controller
     }
 
     /**
-     * Adopt a pending person's live Active Directory identity as the golden
-     * record: write the AD sAMAccountName (username, locked), userPrincipalName
-     * (UPN) and mail (email) — filling only the values the golden record still
-     * lacks — and link the objectGUID crosswalk. Setting the username activates
-     * the pending person. Editor+; CSRF-checked; a POST form (no inline JS,
-     * CSP-safe). This is a deliberate operator action, not a view side effect —
-     * the same contract as the source-reconciliation "Use this" writes.
+     * Adopt a person's live Active Directory identity as the golden record: write
+     * the AD sAMAccountName (username, locked), userPrincipalName (UPN) and mail
+     * (email) — filling a blank golden value AND overwriting a differing one so
+     * the record matches AD — and link the objectGUID crosswalk. Setting the
+     * username activates a pending person. Editor+; CSRF-checked; a POST form (no
+     * inline JS, CSP-safe). This is a deliberate operator action, not a view side
+     * effect — the same contract as the source-reconciliation "Use this" writes.
      *
-     * Restricted to pending people: an active record's username/email/UPN are
-     * owned by OneSync and must not be reshaped from a page action. The AD values
-     * are re-fetched live here (never trusted from the client) so what lands on
-     * the record is exactly what AD holds now. Always redirects back to the person.
+     * Allowed on pending and active people: an admin may reshape an active
+     * record's username/email/UPN to match AD. Lifecycle end-states
+     * (disabled/terminated) are excluded — their identity is not adopted from a
+     * page action. The AD values are re-fetched live here (never trusted from the
+     * client) so what lands on the record is exactly what AD holds now. Always
+     * redirects back to the person.
      */
     public function acceptAdaxes(array $params): string
     {
@@ -183,8 +185,8 @@ final class PersonController extends Controller
             $this->flash('That person no longer exists.');
             return $this->redirect($back);
         }
-        if ((string) $person['status'] !== 'pending') {
-            $this->flash("Only a pending person can adopt AD identity here — this record is {$person['status']}.");
+        if (!in_array((string) $person['status'], ['pending', 'active'], true)) {
+            $this->flash("Only a pending or active person can adopt AD identity here — this record is {$person['status']}.");
             return $this->redirect($back);
         }
 
