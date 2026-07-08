@@ -1,0 +1,13 @@
+[Unit]
+Description=TCS Identity — reconcile the golden record to Google Workspace (direct, bypassing OneSync)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/idm
+ExecStart=/usr/bin/php /var/www/idm/bin/sync_google.php
+TimeoutStartSec=1800
+Nice=10

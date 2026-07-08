@@ -10,8 +10,9 @@ use PDO;
 /**
  * Reference-data admin: the school and ethnicity maps that resolve incoming
  * source codes, plus the "unmapped values" surfaces (values seen in feeds/records
- * with no mapping) that block clean provisioning. Read-only in M6; editing +
- * RBAC arrive in M7.
+ * with no mapping) that block clean provisioning. The school OU mapping (AD OU +
+ * Google OU) is editable from the web UI (admin only); the rest is still seeded
+ * from db/seeds/*.csv.
  */
 final class ReferenceService
 {
@@ -37,6 +38,51 @@ final class ReferenceService
             $r['mapped'] = ($r['ad_ou'] ?? '') !== '' && ($r['google_ou'] ?? '') !== '';
         }
         return $rows;
+    }
+
+    /** One school row (for the edit round-trip + audit before-image). @return array<string,mixed>|null */
+    public function findSchool(int $schoolId): ?array
+    {
+        $stmt = $this->db->prepare('SELECT school_id, name, ps_school_id, ad_ou, google_ou, status FROM school WHERE school_id = :id');
+        $stmt->execute([':id' => $schoolId]);
+        $row = $stmt->fetch();
+        return $row === false ? null : $row;
+    }
+
+    /**
+     * Update a school's provisioning OU mapping (the two columns the destination
+     * writers read: ad_ou for AD, google_ou for Google Workspace). Values are
+     * normalized (Google OU to leading-slash form); blank clears the mapping —
+     * which puts new Google creates in the root OU, so the UI flags it.
+     */
+    public function updateSchoolMapping(int $schoolId, ?string $adOu, ?string $googleOu): void
+    {
+        $stmt = $this->db->prepare('UPDATE school SET ad_ou = :ad_ou, google_ou = :google_ou WHERE school_id = :id');
+        $stmt->execute([
+            ':ad_ou'     => self::cleanOu($adOu),
+            ':google_ou' => self::normalizeGoogleOu($googleOu),
+            ':id'        => $schoolId,
+        ]);
+    }
+
+    /** Trim an OU value; NULL when blank (blank = unmapped, never an empty string). */
+    public static function cleanOu(?string $ou): ?string
+    {
+        $ou = trim((string) $ou);
+        return $ou === '' ? null : $ou;
+    }
+
+    /**
+     * Normalize a Google OU path to Google's leading-slash form — the district
+     * convention is /tcs/faculty/{school OU}. NULL when blank (unmapped).
+     */
+    public static function normalizeGoogleOu(?string $ou): ?string
+    {
+        $ou = self::cleanOu($ou);
+        if ($ou === null || $ou === '/') {
+            return $ou;
+        }
+        return '/' . trim($ou, '/');
     }
 
     /** Ethnicity source→ALSDE map. */

@@ -465,8 +465,10 @@ truncated feed — and logs it instead of deactivating.
 - **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
   ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
   **unmapped values surfaced** — ethnicity values seen on records and school codes
-  seen in feeds that have no mapping (they block clean provisioning). Read-only in
-  M6; editing + RBAC in M7.
+  seen in feeds that have no mapping (they block clean provisioning). The school
+  **OU mapping is editable inline** on the Schools tab (admin only, CSRF-checked,
+  audited with a before/after image); Google OUs follow the district convention
+  `/tcs/faculty/{school}` and are normalized to leading-slash form on save.
 - **Import / feeds** (`/import`): batch history with a drill-in to each batch's
   staged rows and how each one matched (auto / new / review / skipped). Editors
   can **upload a CSV** here (pick the source system, optional dry-run) to run the
@@ -779,6 +781,99 @@ isn't writable). All REST endpoints live under `{base}/api`; the object lookup i
 is a query parameter, not a path segment). Paths/param are overridable
 (`ADAXES_OBJECTS_PATH` / `ADAXES_OBJECT_PARAM` / `ADAXES_SEARCH_PATH`).
 
+## Direct Google Workspace provisioning (bypassing OneSync)
+
+Where the Adaxes panel only *reads* AD, the **Google Workspace (live · direct)**
+panel both correlates **and writes** — it lets IDM provision Google accounts
+straight from the golden record via the [Admin SDK Directory API](https://developers.google.com/admin-sdk/directory),
+**bypassing OneSync** entirely, and (with the batch job) **replace** OneSync's
+Google destination. The golden record is the source of truth that *drives* Google
+state.
+
+Two surfaces, one engine (`App\Sync\GoogleProvisioner`, so both behave identically):
+
+- **Per person** (person detail page, editor+): **Link** an existing account,
+  **Create**, **Push** golden-record changes, **Suspend**, **Restore**. Each is a
+  CSRF-checked POST that redirects back with a flash.
+- **Batch reconcile** (`bin/sync_google.php` / a nightly systemd timer, or the
+  **Sync to Google** button on the Import page): create missing accounts, push
+  name drift, suspend disabled/terminated people.
+
+**Correlation (OneSync-style).** Before creating anything, the person is matched
+to an existing Google account, strongest key first — (1) the Google id in the
+crosswalk (`person_source_id` where `system='google'`), (2) `primaryEmail` =
+golden email (then UPN), (3) `externalId` = `employee_id`, (4) name. Tiers 1–3
+auto-link; a **name-only** match is a review suggestion that is **never**
+auto-linked (mirrors the import Matcher's rule) — an admin must confirm it.
+
+**Semantics.** "Disable" is a **suspend** (reversible via Restore), never a
+delete. Creating requires a golden `email` already on file — the app never
+invents an address (so email-less `pending` people are reported "not eligible";
+minting new addresses is out of scope and still belongs to OneSync). The batch
+**never auto-restores** a suspended account, so a manual suspend is never
+silently undone. Every write is reflected into `account_sync_status` (the same
+table OneSync writes, so the dashboard/person page show it), the crosswalk, and
+`audit_log` + `lifecycle_event`.
+
+**Transport backends (`GOOGLE_BACKEND`).** The correlation tiers, write
+semantics, guardrails, and UI are identical either way — only the low-level
+directory calls swap:
+
+- **`api`** (default) — the built-in Admin SDK client. A service account with
+  **domain-wide delegation**: a short-lived RS256 JWT is signed locally with the
+  SA key (native `openssl_sign`, no vendored dependency) and exchanged at
+  Google's OAuth2 endpoint for an access token that impersonates
+  `GOOGLE_ADMIN_SUBJECT`. In the Google Admin console, authorize the SA client
+  ID for the `admin.directory.user` scope.
+- **`gam`** — shell out to [GAM](https://github.com/GAM-team/GAM) (GAM7), the
+  CLI most Workspace admins already run (`App\Service\GamClient`). Auth lives
+  entirely in GAM's own project/config, so **the app holds no Google key at
+  all** — no `GOOGLE_SA_*`, no delegation wiring in this app; you reuse (or set
+  up once with `gam create project` + `gam oauth create`) the same GAM the
+  district already trusts, and GAM's own logging/quota handling applies.
+  Commands are executed argv-style (no shell, so person data can't inject), the
+  initial password never appears on a command line (GAM's `password random`),
+  and results are parsed from `formatjson` output. Point `GAM_PATH` at the
+  binary and (optionally) `GAM_CONFIG_DIR` at a shared config dir (exported as
+  `GAMCFGDIR`); the config must be authorized for the user the app/timer runs
+  as. Prefer `api` when you don't want a GAM install on the web host; prefer
+  `gam` when you'd rather not hand this app a service-account key.
+
+Off until configured; both backends degrade gracefully (never an error page) and
+are unit-tested with an injected HTTP client / process runner
+(`App\Service\GoogleWorkspaceService`, `App\Service\GamClient`).
+
+```sh
+GOOGLE_DIRECT_ENABLED=true
+GOOGLE_DOMAIN=tuscaloosacityschools.com
+GOOGLE_SYNC_MAX_RATIO=0.2                            # block a run that would mass-suspend
+
+# backend 'api' (default):
+GOOGLE_SA_KEY_FILE=/var/idm/google-sa.json          # downloaded SA key (client_email + private_key)
+GOOGLE_ADMIN_SUBJECT=idm-admin@tuscaloosacityschools.com
+
+# or backend 'gam' (no SA key handled by the app):
+#GOOGLE_BACKEND=gam
+#GAM_PATH=/usr/local/bin/gam
+#GAM_CONFIG_DIR=/var/idm/gam                         # exported as GAMCFGDIR
+```
+
+**Safety.** The batch supports `--dry-run` (plan only) and a **threshold
+guardrail**: if a run would suspend more than `GOOGLE_SYNC_MAX_RATIO` of a linked
+population of at least `GOOGLE_SYNC_GUARD_MIN`, the whole run is **blocked** and
+nothing is written — a bad feed can't mass-suspend accounts. Per-school Google OU
+placement comes from `school.google_ou` — district convention
+`/tcs/faculty/{school}`, editable on `/reference` (Schools tab, admin only); a
+school with no mapping places new accounts in the root OU, so the reference page
+flags unmapped rows in amber. Full `GOOGLE_*` reference in
+`.env.example`. The batch runs as the `idm_writeback` role (see the added
+`person_source_id` / `school` grants below).
+
+```sh
+php bin/sync_google.php --dry-run   # plan; then drop --dry-run to apply
+# schedule: deploy/idm-google-sync.{service,timer} (nightly, after the feed imports)
+```
+
 ## Least-privilege DB users
 
 One database, four roles — never shared or reused. Replace passwords and host
@@ -820,6 +915,9 @@ GRANT INSERT, UPDATE, SELECT ON tcs_identity.account_sync_status         TO 'idm
 GRANT INSERT, SELECT, DELETE ON tcs_identity.account_sync_event          TO 'idm_writeback'@'%'; -- append + prune
 -- Apply usernames to the golden record (set + lock):
 GRANT SELECT, UPDATE ON tcs_identity.person TO 'idm_writeback'@'%';
+-- Direct Google sync (bin/sync_google.php) links the google crosswalk id + reads schools:
+GRANT SELECT, INSERT, UPDATE ON tcs_identity.person_source_id TO 'idm_writeback'@'%';
+GRANT SELECT ON tcs_identity.school TO 'idm_writeback'@'%';
 -- Audit its own writes:
 GRANT INSERT ON tcs_identity.audit_log       TO 'idm_writeback'@'%';
 GRANT INSERT ON tcs_identity.lifecycle_event TO 'idm_writeback'@'%';

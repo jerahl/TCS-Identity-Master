@@ -11,6 +11,7 @@ use App\Import\Normalizer;
 use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AuditService;
+use App\Service\GoogleWorkspaceService;
 use App\Service\PersonService;
 use App\Support\Csrf;
 use App\Config;
@@ -23,11 +24,13 @@ use App\Sync\Freshness;
 final class PersonController extends Controller
 {
     private AdaxesService $adaxes;
+    private GoogleWorkspaceService $google;
 
-    public function __construct(?PersonService $people = null, ?AdaxesService $adaxes = null)
+    public function __construct(?PersonService $people = null, ?AdaxesService $adaxes = null, ?GoogleWorkspaceService $google = null)
     {
         parent::__construct($people);
         $this->adaxes = $adaxes ?? new AdaxesService();
+        $this->google = $google ?? new GoogleWorkspaceService();
     }
 
     public function index(): string
@@ -88,6 +91,13 @@ final class PersonController extends Controller
         $adaxesConfigured = $this->adaxes->configured();
         $adaxes = $adaxesConfigured ? null : $this->adaxes->verify($person, $sourceIds);
 
+        // Live Google Workspace correlation (direct provisioning, bypassing
+        // OneSync). Read-only here — it finds the person's Google account (or
+        // reports none) and compares it to the golden record; the write actions
+        // (link/create/push/suspend/restore) are separate POST routes. Off unless
+        // GOOGLE_DIRECT_ENABLED + the GOOGLE_SA_* credentials are configured.
+        $google = $this->google->correlate($person, $sourceIds);
+
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
         $src = $this->people->latestSourceValues($id);
@@ -103,6 +113,7 @@ final class PersonController extends Controller
             'adaxes'     => $adaxes,
             'adaxesConfigured' => $adaxesConfigured,
             'adaxesUrl'  => url('/people/' . $id . '/adaxes'),
+            'google'     => $google,
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),

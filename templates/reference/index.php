@@ -1,5 +1,5 @@
 <?php
-/** @var string $tab @var array $schools @var array $ethnicity @var array $positions @var array $unmappedEth @var array $unmappedSchool @var array $unmappedJobs @var array $fieldMap @var array $fieldGroups */
+/** @var string $tab @var array $schools @var array $ethnicity @var array $positions @var array $unmappedEth @var array $unmappedSchool @var array $unmappedJobs @var array $fieldMap @var array $fieldGroups @var string $csrf @var bool $canAdmin */
 ?>
 <div class="page-head">
   <div>
@@ -49,18 +49,42 @@
   </div>
 
 <?php elseif ($tab === 'schools'): ?>
+  <?php if (!empty($canAdmin)): ?>
+  <div class="panel" style="margin-bottom:16px;">
+    <h2 class="panel__title" style="margin-bottom:4px;">OU mapping</h2>
+    <p class="panel__note" style="margin:0;">These paths tell the destination writers where to place accounts — the Google OU follows the district convention
+      <span class="mono">/tcs/faculty/{school}</span> (e.g. <span class="mono">/tcs/faculty/NHS</span>). Blank = unmapped: the row turns amber and new Google
+      accounts for that school land in the root OU. Changes apply to <em>future</em> creates/pushes and are audited.</p>
+  </div>
+  <?php endif; ?>
   <div class="card table-wrap">
     <table class="table">
-      <thead><tr><th>School</th><th>NextGen</th><th>PowerSchool</th><th>AD OU</th><th>Google OU</th><th>Status</th></tr></thead>
+      <thead><tr><th>School</th><th>NextGen</th><th>PowerSchool</th><th>AD OU</th><th>Google OU</th><th>Status</th><?php if (!empty($canAdmin)): ?><th></th><?php endif; ?></tr></thead>
       <tbody>
-        <?php foreach ($schools as $s): $bad = !$s['mapped']; ?>
+        <?php foreach ($schools as $s): $bad = !$s['mapped']; $fid = 'sch-' . (int) $s['school_id']; ?>
         <tr<?= $bad ? ' class="row--warn"' : '' ?>>
           <td class="cell-name"><?= e($s['name']) ?></td>
           <td class="mono"><?= e($s['nextgen_code'] ?? '—') ?></td>
           <td class="mono"><?= e($s['powerschool_code'] ?? $s['ps_school_id'] ?? '—') ?></td>
+          <?php if (!empty($canAdmin)): ?>
+          <?php /* Inputs live in their own cells and bind to the row's form via form="…" (a <form> can't span <td>s). */ ?>
+          <td><input class="field mono" style="min-width:150px;" type="text" name="ad_ou" form="<?= e($fid) ?>"
+                     value="<?= e($s['ad_ou'] ?? '') ?>" placeholder="OU=NHS"></td>
+          <td><input class="field mono" style="min-width:190px;" type="text" name="google_ou" form="<?= e($fid) ?>"
+                     value="<?= e($s['google_ou'] ?? '') ?>" placeholder="/tcs/faculty/NHS"></td>
+          <?php else: ?>
           <td class="mono"<?= ($s['ad_ou'] ?? '') === '' ? ' style="color:#B45309;"' : '' ?>><?= e(($s['ad_ou'] ?? '') === '' ? '(unmapped)' : $s['ad_ou']) ?></td>
           <td class="mono"<?= ($s['google_ou'] ?? '') === '' ? ' style="color:#B45309;"' : '' ?>><?= e(($s['google_ou'] ?? '') === '' ? '(unmapped)' : $s['google_ou']) ?></td>
+          <?php endif; ?>
           <td><span class="badge badge--<?= $s['status'] === 'active' ? 'active' : 'disabled' ?>"><?= e(ucfirst($s['status'])) ?></span></td>
+          <?php if (!empty($canAdmin)): ?>
+          <td>
+            <form id="<?= e($fid) ?>" method="post" action="<?= e(url('/reference/school/' . (int) $s['school_id'])) ?>" style="margin:0;">
+              <input type="hidden" name="_csrf" value="<?= e($csrf) ?>">
+              <button class="btn btn--ghost" type="submit" style="height:32px; padding:0 12px;">Save</button>
+            </form>
+          </td>
+          <?php endif; ?>
         </tr>
         <?php endforeach; ?>
       </tbody>

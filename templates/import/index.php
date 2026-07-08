@@ -32,6 +32,22 @@ $badge = static fn(string $mod): string => match ($mod) {
   </div>
   <?php endif; ?>
 
+  <?php if (!empty($canEdit) && !empty($googleReady)): ?>
+  <div class="card card--pad" style="margin-bottom:18px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:240px;">
+      <div style="font-weight:600; font-size:13.5px;">Sync to Google Workspace <span class="muted" style="font-weight:500;">(direct · bypasses OneSync)</span></div>
+      <div class="muted" style="font-size:12px;">Reconcile Google to the golden record: create missing accounts (active people with an email), push name drift, and suspend disabled/terminated people. Never auto-restores. Guarded against mass-suspend.</div>
+    </div>
+    <form method="post" action="<?= e(url('/import/google-sync')) ?>" style="display:flex; align-items:center; gap:12px;">
+      <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+      <label style="display:flex; align-items:center; gap:7px; font-size:13px; color:#3D5462;">
+        <input type="checkbox" name="dry_run" value="1" checked> Dry run
+      </label>
+      <button class="btn btn--ghost" type="submit" style="height:38px;">Sync to Google</button>
+    </form>
+  </div>
+  <?php endif; ?>
+
   <?php if (!empty($canEdit)): ?>
   <div class="card card--pad" style="margin-bottom:18px;">
     <div class="form-section" style="margin-top:0;">Upload &amp; import a feed</div>
