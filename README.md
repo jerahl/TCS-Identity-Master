@@ -465,8 +465,10 @@ truncated feed — and logs it instead of deactivating.
 - **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
   ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
   **unmapped values surfaced** — ethnicity values seen on records and school codes
-  seen in feeds that have no mapping (they block clean provisioning). Read-only in
-  M6; editing + RBAC in M7.
+  seen in feeds that have no mapping (they block clean provisioning). The school
+  **OU mapping is editable inline** on the Schools tab (admin only, CSRF-checked,
+  audited with a before/after image); Google OUs follow the district convention
+  `/tcs/faculty/{school}` and are normalized to leading-slash form on save.
 - **Import / feeds** (`/import`): batch history with a drill-in to each batch's
   staged rows and how each one matched (auto / new / review / skipped). Editors
   can **upload a CSV** here (pick the source system, optional dry-run) to run the
@@ -855,7 +857,10 @@ GOOGLE_ADMIN_SUBJECT=idm-admin@tuscaloosacityschools.com
 guardrail**: if a run would suspend more than `GOOGLE_SYNC_MAX_RATIO` of a linked
 population of at least `GOOGLE_SYNC_GUARD_MIN`, the whole run is **blocked** and
 nothing is written — a bad feed can't mass-suspend accounts. Per-school Google OU
-placement comes from `school.google_ou`. Full `GOOGLE_*` reference in
+placement comes from `school.google_ou` — district convention
+`/tcs/faculty/{school}`, editable on `/reference` (Schools tab, admin only); a
+school with no mapping places new accounts in the root OU, so the reference page
+flags unmapped rows in amber. Full `GOOGLE_*` reference in
 `.env.example`. The batch runs as the `idm_writeback` role (see the added
 `person_source_id` / `school` grants below).
 

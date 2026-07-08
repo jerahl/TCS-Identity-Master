@@ -140,6 +140,9 @@ try {
     $router->post('/vpn/restart', $guard('edit', static fn() => (new \App\Controller\VpnController())->restart()));
 
     // ---- Admin only ----
+    // School OU mapping (where AD/Google creates place accounts) — admin, not
+    // editor: it's provisioning configuration, not day-to-day record editing.
+    $router->post('/reference/school/{id}', $guard('admin', static fn(array $p) => $reference->saveSchool($p)));
     $router->get('/users', $guard('admin', static fn() => $users->index()));
     $router->post('/users/role', $guard('admin', static fn() => $users->updateRole()));
     $router->post('/users/add', $guard('admin', static fn() => $users->addUser()));
