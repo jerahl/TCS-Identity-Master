@@ -700,20 +700,47 @@ silently undone. Every write is reflected into `account_sync_status` (the same
 table OneSync writes, so the dashboard/person page show it), the crosswalk, and
 `audit_log` + `lifecycle_event`.
 
-**Auth.** A service account with **domain-wide delegation**: a short-lived RS256
-JWT is signed locally with the SA key (native `openssl_sign`, no vendored
-dependency) and exchanged at Google's OAuth2 endpoint for an access token that
-impersonates `GOOGLE_ADMIN_SUBJECT`. In the Google Admin console, authorize the
-SA client ID for the `admin.directory.user` scope. Off until configured; the
-client degrades gracefully (never an error page) and is unit-tested with an
-injected HTTP client (`App\Service\GoogleWorkspaceService`).
+**Transport backends (`GOOGLE_BACKEND`).** The correlation tiers, write
+semantics, guardrails, and UI are identical either way — only the low-level
+directory calls swap:
+
+- **`api`** (default) — the built-in Admin SDK client. A service account with
+  **domain-wide delegation**: a short-lived RS256 JWT is signed locally with the
+  SA key (native `openssl_sign`, no vendored dependency) and exchanged at
+  Google's OAuth2 endpoint for an access token that impersonates
+  `GOOGLE_ADMIN_SUBJECT`. In the Google Admin console, authorize the SA client
+  ID for the `admin.directory.user` scope.
+- **`gam`** — shell out to [GAM](https://github.com/GAM-team/GAM) (GAM7), the
+  CLI most Workspace admins already run (`App\Service\GamClient`). Auth lives
+  entirely in GAM's own project/config, so **the app holds no Google key at
+  all** — no `GOOGLE_SA_*`, no delegation wiring in this app; you reuse (or set
+  up once with `gam create project` + `gam oauth create`) the same GAM the
+  district already trusts, and GAM's own logging/quota handling applies.
+  Commands are executed argv-style (no shell, so person data can't inject), the
+  initial password never appears on a command line (GAM's `password random`),
+  and results are parsed from `formatjson` output. Point `GAM_PATH` at the
+  binary and (optionally) `GAM_CONFIG_DIR` at a shared config dir (exported as
+  `GAMCFGDIR`); the config must be authorized for the user the app/timer runs
+  as. Prefer `api` when you don't want a GAM install on the web host; prefer
+  `gam` when you'd rather not hand this app a service-account key.
+
+Off until configured; both backends degrade gracefully (never an error page) and
+are unit-tested with an injected HTTP client / process runner
+(`App\Service\GoogleWorkspaceService`, `App\Service\GamClient`).
 
 ```sh
 GOOGLE_DIRECT_ENABLED=true
-GOOGLE_SA_KEY_FILE=/var/idm/google-sa.json          # downloaded SA key (client_email + private_key)
-GOOGLE_ADMIN_SUBJECT=idm-admin@tuscaloosacityschools.com
 GOOGLE_DOMAIN=tuscaloosacityschools.com
 GOOGLE_SYNC_MAX_RATIO=0.2                            # block a run that would mass-suspend
+
+# backend 'api' (default):
+GOOGLE_SA_KEY_FILE=/var/idm/google-sa.json          # downloaded SA key (client_email + private_key)
+GOOGLE_ADMIN_SUBJECT=idm-admin@tuscaloosacityschools.com
+
+# or backend 'gam' (no SA key handled by the app):
+#GOOGLE_BACKEND=gam
+#GAM_PATH=/usr/local/bin/gam
+#GAM_CONFIG_DIR=/var/idm/gam                         # exported as GAMCFGDIR
 ```
 
 **Safety.** The batch supports `--dry-run` (plan only) and a **threshold

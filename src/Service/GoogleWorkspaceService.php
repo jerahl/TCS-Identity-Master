@@ -27,6 +27,12 @@ use App\Config;
  * (ext-openssl) so this service — like AdaxesService — needs no vendored
  * dependency and works on a bare checkout.
  *
+ * TRANSPORT BACKENDS (GOOGLE_BACKEND): the correlation tiers, comparison, and
+ * write semantics above are fixed; only the low-level directory calls swap.
+ *   - api (default): the built-in Admin SDK HTTP client described above.
+ *   - gam: shell out to GAM (https://github.com/GAM-team/GAM) via GamClient —
+ *     auth lives entirely in GAM's own config, so the app holds no Google key.
+ *
  * @phpstan-type Envelope array{ok:bool, error:?string, configured:bool, found:bool, auto:bool, by:?string, identifier:?string, attributes:array<string,string>, comparison:array<int,array{field:string,label:string,golden:string,google:string,state:string}>, googleId:?string, primaryEmail:?string, suspended:?bool}
  * @phpstan-type WriteResult array{ok:bool, error:?string, action:string, googleId:?string, primaryEmail:?string, suspended:?bool, attributes:array<string,string>}
  * @phpstan-type HttpResponse array{status:int, body:string}
@@ -39,6 +45,9 @@ final class GoogleWorkspaceService
     private const DEFAULT_SCOPES = 'https://www.googleapis.com/auth/admin.directory.user';
 
     private bool $enabled;
+    /** 'api' (built-in Admin SDK client) or 'gam' (shell out via GamClient). */
+    private string $backend;
+    private ?GamClient $gam;
     private string $apiBase;
     private string $tokenUri;
     private string $scopes;
@@ -78,8 +87,16 @@ final class GoogleWorkspaceService
         ?string $apiBase = null,
         ?string $tokenUri = null,
         ?string $scopes = null,
+        ?GamClient $gam = null,
+        ?string $backend = null,
     ) {
         $this->enabled = $enabled ?? Config::bool('GOOGLE_DIRECT_ENABLED', false);
+
+        // An explicitly injected GamClient forces the gam backend (tests);
+        // otherwise GOOGLE_BACKEND picks the transport, defaulting to the API.
+        $resolved = strtolower(trim($backend ?? (string) Config::get('GOOGLE_BACKEND', 'api')));
+        $this->backend = $gam !== null || $resolved === 'gam' ? 'gam' : 'api';
+        $this->gam = $gam ?? ($this->backend === 'gam' ? new GamClient() : null);
 
         // Service-account credentials: an explicit client email + PEM key win;
         // otherwise load them from the SA JSON key file / inline JSON.
@@ -113,10 +130,18 @@ final class GoogleWorkspaceService
         if (!$this->enabled) {
             return false;
         }
+        if ($this->gam !== null) {
+            return $this->gam->configured();
+        }
         if ($this->accessToken !== null) {
             return true;
         }
         return $this->clientEmail !== '' && $this->privateKey !== '' && $this->adminSubject !== '';
+    }
+
+    public function backend(): string
+    {
+        return $this->backend;
     }
 
     public function enabled(): bool
@@ -151,8 +176,7 @@ final class GoogleWorkspaceService
     public function correlate(array $person, array $sourceIds): array
     {
         if (!$this->configured()) {
-            return self::envelope(ok: false, configured: false,
-                error: 'Direct Google provisioning is off (set GOOGLE_DIRECT_ENABLED=true plus the GOOGLE_SA_* service-account credentials and GOOGLE_ADMIN_SUBJECT).');
+            return self::envelope(ok: false, configured: false, error: $this->offMessage());
         }
 
         // Tier 1 — the stable crosswalk id.
@@ -220,6 +244,11 @@ final class GoogleWorkspaceService
      */
     public function getUser(string $userKey): array
     {
+        if ($this->gam !== null) {
+            $res = $this->gam->getUser($userKey);
+            return ['ok' => $res['ok'], 'error' => $res['error'], 'found' => $res['found'],
+                'attributes' => $res['found'] ? self::normalizeUser($res['data']) : []];
+        }
         $url = $this->apiBase . '/users/' . rawurlencode($userKey) . '?projection=full';
         $res = $this->request('GET', $url);
         if (!$res['ok']) {
@@ -239,6 +268,11 @@ final class GoogleWorkspaceService
      */
     public function searchUsers(string $query): array
     {
+        if ($this->gam !== null) {
+            $res = $this->gam->searchUsers($query);
+            return ['ok' => $res['ok'], 'error' => $res['error'], 'found' => $res['found'],
+                'attributes' => $res['found'] ? self::normalizeUser($res['data']) : []];
+        }
         $url = $this->apiBase . '/users'
              . '?customer=' . rawurlencode($this->customer)
              . '&maxResults=2&projection=full'
@@ -276,6 +310,15 @@ final class GoogleWorkspaceService
         }
 
         $body = self::buildCreateBody($person, $email, $orgUnitPath);
+        if ($this->gam !== null) {
+            // GamClient ignores the body's password and uses GAM's `password
+            // random` so the initial secret never appears on a command line.
+            $res = $this->gam->createUser($body);
+            if (!$res['ok']) {
+                return self::writeFail('create', $res['error']);
+            }
+            return self::writeOk('create', self::normalizeUser($res['data']));
+        }
         $res = $this->request('POST', $this->apiBase . '/users', (string) json_encode($body));
         if (!$res['ok']) {
             return self::writeFail('create', $res['error']);
@@ -298,6 +341,13 @@ final class GoogleWorkspaceService
         $body = self::buildUpdateBody($person, $orgUnitPath);
         if ($body === []) {
             return self::writeFail('edit', 'Nothing to update.');
+        }
+        if ($this->gam !== null) {
+            $res = $this->gam->updateUser($userKey, $body);
+            if (!$res['ok']) {
+                return self::writeFail('edit', $res['error']);
+            }
+            return self::writeOk('edit', self::normalizeUser($res['data']));
         }
         $res = $this->request('PATCH', $this->apiBase . '/users/' . rawurlencode($userKey), (string) json_encode($body));
         if (!$res['ok']) {
@@ -322,6 +372,13 @@ final class GoogleWorkspaceService
     {
         if (!$this->configured()) {
             return self::writeFail($action, 'Direct Google provisioning is off.');
+        }
+        if ($this->gam !== null) {
+            $res = $this->gam->updateUser($userKey, ['suspended' => $suspended]);
+            if (!$res['ok']) {
+                return self::writeFail($action, $res['error']);
+            }
+            return self::writeOk($action, self::normalizeUser($res['data']));
         }
         $res = $this->request('PATCH', $this->apiBase . '/users/' . rawurlencode($userKey), (string) json_encode(['suspended' => $suspended]));
         if (!$res['ok']) {
@@ -433,6 +490,15 @@ final class GoogleWorkspaceService
     }
 
     // ---- internals ----------------------------------------------------------
+
+    /** What to configure, phrased for the active backend. */
+    private function offMessage(): string
+    {
+        if ($this->backend === 'gam') {
+            return 'Direct Google provisioning is off (set GOOGLE_DIRECT_ENABLED=true and, for the GAM backend, GAM_PATH to the gam binary).';
+        }
+        return 'Direct Google provisioning is off (set GOOGLE_DIRECT_ENABLED=true plus the GOOGLE_SA_* service-account credentials and GOOGLE_ADMIN_SUBJECT).';
+    }
 
     /** @param array<int,array<string,mixed>> $sourceIds */
     private static function googleSourceKey(array $sourceIds): ?string
