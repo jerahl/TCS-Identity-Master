@@ -48,6 +48,12 @@ try {
     if ($c['skipped'] > 0) {
         fwrite(STDERR, "\n{$c['skipped']} row(s) skipped — missing DCID (no stable key to stage).\n");
     }
+    if (($c['dropout_blocked'] ?? 0) > 0) {
+        fwrite(STDERR, "\nWARNING: drop-out step BLOCKED — too many active students would deactivate "
+            . "(likely a truncated PowerSchool pull). Nothing was deactivated. Investigate the feed, "
+            . "then re-run. See STUDENT_DROPOUT_MAX_RATIO.\n");
+        exit(3);
+    }
     exit(0);
 } catch (\Throwable $e) {
     fwrite(STDERR, 'Students import failed: ' . $e->getMessage() . "\n");

@@ -6,6 +6,7 @@ namespace App\Tests\Unit;
 
 use App\Import\ColumnMap;
 use App\Import\Normalizer;
+use App\Import\UnmatchedSchoolException;
 use PHPUnit\Framework\TestCase;
 
 final class NormalizerTest extends TestCase
@@ -129,6 +130,148 @@ final class NormalizerTest extends TestCase
         self::assertSame('106', Normalizer::normalizeSchoolCode('0106'));
         self::assertSame('0', Normalizer::normalizeSchoolCode('0'), 'all-zero stays "0" (Central Office)');
         self::assertSame('0', Normalizer::normalizeSchoolCode('000'));
+    }
+
+    public function testResolvesSchoolByName(): void
+    {
+        // Feed carries a "School Name" column; it matches a known school and wins
+        // over any code lookup. schoolId resolves; the name is carried on the row.
+        $norm = new Normalizer([], [], ['Central High School' => 42]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '90', 'FirstName' => 'Maya', 'LastName' => 'Patel', 'School Name' => 'Central High School'];
+
+        $row = $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+
+        self::assertSame(42, $row->schoolId);
+        self::assertSame('Central High School', $row->schoolName);
+        self::assertSame([], $row->warnings);
+    }
+
+    public function testUnmatchedSchoolNameIsAHardError(): void
+    {
+        $norm = new Normalizer([], [], ['Central High School' => 42]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '91', 'FirstName' => 'Devon', 'LastName' => 'Mills', 'School Name' => 'Nonexistent Academy'];
+
+        $this->expectException(UnmatchedSchoolException::class);
+        $this->expectExceptionMessage('Nonexistent Academy');
+        $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+    }
+
+    public function testSchoolNameMatchIgnoresCaseAndPunctuation(): void
+    {
+        $norm = new Normalizer([], [], ['Martin Luther King Jr Elementary School' => 7]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '1', 'FirstName' => 'A', 'LastName' => 'B', 'School Name' => "  martin luther king, jr. elementary school "];
+
+        $row = $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+        self::assertSame(7, $row->schoolId);
+    }
+
+    public function testFallsBackToSchoolCodeWhenNoNameColumn(): void
+    {
+        // No "School Name" column present -> resolve the SchoolID code as before.
+        $norm = new Normalizer(['powerschool' => ['2100' => 5]], [], ['Central High School' => 42]);
+        $map = ColumnMap::for('intern');
+        $raw = ['InternID' => '90', 'FirstName' => 'Maya', 'LastName' => 'Patel', 'SchoolID' => '2100'];
+
+        $row = $norm->normalize($raw, 'intern', $map, 'intern_csv', 'powerschool', 'intern');
+        self::assertSame(5, $row->schoolId);
+        self::assertNull($row->schoolName);
+        self::assertSame([], $row->warnings);
+    }
+
+    public function testNormalizeSchoolNameFoldsCaseAndPunctuation(): void
+    {
+        self::assertSame(
+            Normalizer::normalizeSchoolName('Martin Luther King Jr Elementary School'),
+            Normalizer::normalizeSchoolName('  Martin Luther King, Jr. Elementary School ')
+        );
+        self::assertSame('central high school', Normalizer::normalizeSchoolName('Central High School'));
+    }
+
+    public function testJobCodeClassifiesPersonTypeViaPositionMap(): void
+    {
+        // NextGen has no person-type column; the position map classifies by
+        // JOB CODE so teachers come in as faculty instead of the staff default.
+        $norm = new Normalizer([], [], [], ['TCH' => 'faculty', 'CUST' => 'staff']);
+        $map = ColumnMap::for('nextgen');
+
+        $row = $norm->normalize(
+            ['Employee Number' => '1', 'First Name' => 'A', 'Last Name' => 'B', 'JOB CODE' => 'TCH'],
+            'nextgen',
+            $map
+        );
+        self::assertSame('faculty', $row->personType);
+        self::assertSame([], $row->warnings, 'a mapped job code produces no warnings');
+
+        $row2 = $norm->normalize(
+            ['Employee Number' => '2', 'First Name' => 'C', 'Last Name' => 'D', 'JOB CODE' => 'CUST'],
+            'nextgen',
+            $map
+        );
+        self::assertSame('staff', $row2->personType);
+    }
+
+    public function testJobCodeMatchIgnoresCaseAndWhitespace(): void
+    {
+        $norm = new Normalizer([], [], [], ['tch' => 'faculty']);
+        $map = ColumnMap::for('nextgen');
+
+        $row = $norm->normalize(
+            ['Employee Number' => '1', 'First Name' => 'A', 'Last Name' => 'B', 'JOB CODE' => ' TCH '],
+            'nextgen',
+            $map
+        );
+        self::assertSame('faculty', $row->personType);
+    }
+
+    public function testUnmappedJobCodeFallsThroughWithoutWarning(): void
+    {
+        // The position map may be partial by design (list only faculty codes):
+        // an unmapped code is NOT a row warning; personType stays null so
+        // PersonWriter's 'staff' default applies on create.
+        $norm = new Normalizer([], [], [], ['TCH' => 'faculty']);
+        $map = ColumnMap::for('nextgen');
+
+        $row = $norm->normalize(
+            ['Employee Number' => '1', 'First Name' => 'A', 'Last Name' => 'B', 'JOB CODE' => 'CNW'],
+            'nextgen',
+            $map
+        );
+        self::assertNull($row->personType);
+        self::assertSame([], $row->warnings);
+    }
+
+    public function testExplicitFeedPersonTypeWinsOverPositionMap(): void
+    {
+        // A feed that carries its own type column overrides the job-code map.
+        $norm = new Normalizer([], [], [], ['TCH' => 'faculty']);
+        $map = ['source_key' => 'ID', 'first' => 'First', 'last' => 'Last', 'person_type' => 'Type', 'job_code' => 'Job'];
+
+        $row = $norm->normalize(
+            ['ID' => '1', 'First' => 'A', 'Last' => 'B', 'Type' => 'Contract', 'Job' => 'TCH'],
+            'other',
+            $map
+        );
+        self::assertSame('contractor', $row->personType);
+    }
+
+    public function testPositionMapBeatsSourceDefaultType(): void
+    {
+        // The job-code classification outranks the source's default type.
+        $norm = new Normalizer([], [], [], ['TCH' => 'faculty']);
+        $map = ColumnMap::for('nextgen');
+
+        $row = $norm->normalize(
+            ['Employee Number' => '1', 'First Name' => 'A', 'Last Name' => 'B', 'JOB CODE' => 'TCH'],
+            'nextgen',
+            $map,
+            null,
+            null,
+            'staff'
+        );
+        self::assertSame('faculty', $row->personType);
     }
 
     public function testDateParsingVariants(): void

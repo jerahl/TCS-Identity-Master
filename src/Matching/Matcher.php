@@ -13,11 +13,21 @@ use App\Import\NormalizedRow;
  *
  * Tiers, strongest key first (first hit wins):
  *   1. existing person_source_id (system, source_key)  -> AUTO  (exact, score 100)
- *   2. employee_id                                      -> AUTO  (score 100)
+ *   2. employee_id, name-corroborated                  -> AUTO if exactly one holder
+ *                                                          AND the name agrees; a
+ *                                                          collision (id maps to
+ *                                                          >1 person, or the name
+ *                                                          differs) -> REVIEW
  *   3. full name + DOB                                  -> score; AUTO if >= threshold
  *                                                          AND unambiguous, else REVIEW
  *   4. full name only (no corroborating DOB)            -> REVIEW, NEVER auto
  *   - no candidate at all                               -> NEW
+ *
+ * employee_id is NOT a globally unique keyspace: nextgen/powerschool share the
+ * real HR number, but the sub/contractor feeds overload the column with their own
+ * SubID/ContractorID, so an id can collide across two different humans. Tier 2
+ * therefore corroborates by name before auto-linking — a bare id match is not
+ * enough to overwrite a golden record.
  *
  * A candidate requires BOTH first and last name to match exactly — a shared last
  * name or first-initial alone is never a candidate (kills the Smith/Jones flood).
@@ -55,18 +65,42 @@ final class Matcher
                 "Exact match on existing {$row->sourceSystem()} source id {$row->sourceKey}.");
         }
 
-        // Tier 2 — employee id.
-        if ($row->employeeId !== null && trim($row->employeeId) !== '') {
-            $pid = $lookup->findPersonIdByEmployeeId(trim($row->employeeId));
-            if ($pid !== null) {
-                return new MatchDecision(MatchDecision::AUTO, $pid, 100.0, 'employee_id',
-                    "Match on employee id {$row->employeeId}.");
-            }
-        }
-
         // Tiers 3 + 4 — name (+ DOB) scoring.
         $rowFirst = self::norm($row->firstName);
         $rowLast = self::norm($row->lastName);
+
+        // Tier 2 — employee id, WITH name corroboration. employee_id is not a
+        // globally unique keyspace: nextgen/powerschool share the real HR number
+        // (same person across HR systems), but the sub/contractor feeds overload
+        // the column with their own SubID/ContractorID. So a raw id match can be a
+        // collision (a sub's SubID numerically equal to a teacher's employee
+        // number) or a typo pointing at someone else — and auto-linking would
+        // rename a real person's golden record. Auto-link ONLY when exactly one
+        // person carries the id AND their name agrees; otherwise route to review.
+        if ($row->employeeId !== null && trim($row->employeeId) !== '') {
+            $empMatches = $lookup->findPersonsByEmployeeId(trim($row->employeeId));
+            if (count($empMatches) === 1
+                && self::norm($empMatches[0]['first_name']) === $rowFirst
+                && self::norm($empMatches[0]['last_name']) === $rowLast
+                && $rowFirst !== '' && $rowLast !== ''
+            ) {
+                return new MatchDecision(MatchDecision::AUTO, (int) $empMatches[0]['person_id'], 100.0, 'employee_id',
+                    "Match on employee id {$row->employeeId} (name corroborated).");
+            }
+            if ($empMatches !== []) {
+                // Id matched but the name disagrees, or the id maps to more than
+                // one person — a likely collision/typo. Surface for human review
+                // instead of silently merging two different people.
+                $candidates = array_map(
+                    static fn(array $m) => ['person_id' => (int) $m['person_id'], 'score' => 60.0, 'basis' => 'employee_id_conflict'],
+                    $empMatches
+                );
+                $reason = count($empMatches) > 1
+                    ? sprintf('employee id %s maps to %d people — ambiguous, needs review.', $row->employeeId, count($empMatches))
+                    : sprintf('employee id %s matched but the name differs — possible id collision, needs review.', $row->employeeId);
+                return new MatchDecision(MatchDecision::REVIEW, null, 60.0, 'employee_id_conflict', $reason, $candidates);
+            }
+        }
 
         $scored = [];
         foreach ($lookup->findByLastName($row->lastName) as $cand) {

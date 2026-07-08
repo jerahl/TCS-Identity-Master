@@ -7,6 +7,7 @@ namespace App\Controller;
 use App\Db;
 use App\Import\FieldMap;
 use App\Import\NormalizedRow;
+use App\Import\Normalizer;
 use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AuditService;
@@ -81,7 +82,14 @@ final class PersonController extends Controller
         // change data. Linking the AD account + activating a provisioned person
         // is the batch AdUsernameImporter's job (and OneSync write-back), not the
         // detail page's.
-        $adaxes = $this->adaxes->verify($person, $sourceIds);
+        //
+        // The lookup is a live REST round trip that can be slow, so we don't run
+        // it here — the page renders immediately with a loading indicator and the
+        // panel is fetched over AJAX from adaxes() below. Only when Adaxes isn't
+        // configured (nothing to look up, no HTTP) do we resolve the off-state
+        // envelope inline so the template can render it without a round trip.
+        $adaxesConfigured = $this->adaxes->configured();
+        $adaxes = $adaxesConfigured ? null : $this->adaxes->verify($person, $sourceIds);
 
         // Live Google Workspace correlation (direct provisioning, bypassing
         // OneSync). Read-only here — it finds the person's Google account (or
@@ -103,8 +111,9 @@ final class PersonController extends Controller
             'p'          => $person,
             'sourceIds'  => $sourceIds,
             'adaxes'     => $adaxes,
+            'adaxesConfigured' => $adaxesConfigured,
+            'adaxesUrl'  => url('/people/' . $id . '/adaxes'),
             'google'     => $google,
-            'csrf'       => Csrf::token(),
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
@@ -114,7 +123,104 @@ final class PersonController extends Controller
             'hasPowerSchool' => $hasPowerSchool,
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
+            'csrf'           => Csrf::token(),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
+    }
+
+    /**
+     * AJAX fragment: the live Active Directory verification panel for a person,
+     * fetched by public/assets/js/person-adaxes.js after the detail page renders
+     * so the (potentially slow) Adaxes REST call never blocks the page load.
+     *
+     * Returns just the panel's inner HTML (no layout) for insertion into the
+     * #adaxes-live placeholder. Same read-only, config-gated, never-mutating
+     * contract as show(); 404s a missing person so the client shows an error.
+     */
+    public function adaxes(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            http_response_code(404);
+            return '';
+        }
+
+        $adaxes = $this->adaxes->verify($person, $this->people->sourceIds($id));
+
+        return \App\View\View::partial('people/_adaxes', [
+            'adaxes'  => $adaxes,
+            'p'       => $person,
+            'canEdit' => $this->auth()->can('edit'),
+            'csrf'    => Csrf::token(),
+        ]);
+    }
+
+    /**
+     * Adopt a pending person's live Active Directory identity as the golden
+     * record: write the AD sAMAccountName (username, locked), userPrincipalName
+     * (UPN) and mail (email) — filling only the values the golden record still
+     * lacks — and link the objectGUID crosswalk. Setting the username activates
+     * the pending person. Editor+; CSRF-checked; a POST form (no inline JS,
+     * CSP-safe). This is a deliberate operator action, not a view side effect —
+     * the same contract as the source-reconciliation "Use this" writes.
+     *
+     * Restricted to pending people: an active record's username/email/UPN are
+     * owned by OneSync and must not be reshaped from a page action. The AD values
+     * are re-fetched live here (never trusted from the client) so what lands on
+     * the record is exactly what AD holds now. Always redirects back to the person.
+     */
+    public function acceptAdaxes(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect($back);
+        }
+        if ((string) $person['status'] !== 'pending') {
+            $this->flash("Only a pending person can adopt AD identity here — this record is {$person['status']}.");
+            return $this->redirect($back);
+        }
+
+        // Re-fetch AD live rather than trusting anything from the client.
+        $adaxes = $this->adaxes->verify($person, $this->people->sourceIds($id));
+        if (empty($adaxes['configured'])) {
+            $this->flash('Live AD verification is off — nothing to adopt.');
+            return $this->redirect($back);
+        }
+        if (empty($adaxes['ok'])) {
+            $this->flash('Could not reach Active Directory — nothing written.');
+            return $this->redirect($back);
+        }
+        if (empty($adaxes['found'])) {
+            $this->flash('No matching Active Directory account — nothing to adopt.');
+            return $this->redirect($back);
+        }
+
+        $ad = AdaxesService::goldenCandidate($adaxes);
+        if ($ad['username'] === '' && $ad['upn'] === '' && $ad['email'] === '') {
+            $this->flash('The AD account has no username, UPN or email to adopt.');
+            return $this->redirect($back);
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $writer = new PersonWriter($db, new AuditService($db));
+            $notes = $writer->linkAdAccount($id, $ad, $this->currentUser()['name']);
+            $this->flash($notes === []
+                ? 'The golden record already matched Active Directory — no change.'
+                : 'Adopted the Active Directory identity: ' . implode('; ', $notes) . '.');
+        } catch (\Throwable $e) {
+            error_log('[idm] adaxes accept: ' . $e->getMessage());
+            $this->flash('Could not adopt the Active Directory identity.');
+        }
+        return $this->redirect($back);
     }
 
     private const PERSON_TYPES = ['faculty', 'staff', 'contractor', 'sub', 'intern', 'other'];
@@ -153,6 +259,7 @@ final class PersonController extends Controller
             'dob' => $person['dob'], 'gender' => $person['gender'],
             'ethnicity_source' => $person['ethnicity_source'], 'alsde_id' => $person['alsde_id'],
             'employee_id' => $person['employee_id'], 'primary_school_id' => $person['primary_school_id'],
+            'board_approval_date' => $person['board_approval_date'], 'board_approval_note' => $person['board_approval_note'],
             'notes' => $person['notes'],
         ];
 
@@ -195,6 +302,10 @@ final class PersonController extends Controller
         if ($dob !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob)) {
             return $this->editForm(['id' => $id], $_POST, 'Date of birth must be YYYY-MM-DD.');
         }
+        $boardApproval = trim((string) ($_POST['board_approval_date'] ?? ''));
+        if ($boardApproval !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $boardApproval)) {
+            return $this->editForm(['id' => $id], $_POST, 'Board approval date must be YYYY-MM-DD.');
+        }
 
         $ethSource = trim((string) ($_POST['ethnicity_source'] ?? ''));
         $fields = [
@@ -211,6 +322,8 @@ final class PersonController extends Controller
             'alsde_id'         => trim((string) ($_POST['alsde_id'] ?? '')),
             'employee_id'      => trim((string) ($_POST['employee_id'] ?? '')),
             'primary_school_id' => ($_POST['primary_school_id'] ?? '') !== '' ? (int) $_POST['primary_school_id'] : '',
+            'board_approval_date' => $boardApproval,
+            'board_approval_note' => trim((string) ($_POST['board_approval_note'] ?? '')),
             'notes'            => trim((string) ($_POST['notes'] ?? '')),
         ];
 
@@ -261,6 +374,112 @@ final class PersonController extends Controller
         } catch (\Throwable $e) {
             error_log('[idm] person disable: ' . $e->getMessage());
             $this->flash('Could not disable the record.');
+        }
+        return $this->redirect($back);
+    }
+
+    /**
+     * Apply an operator's source pick from the "Source field reconciliation"
+     * panel: write one chosen value (NextGen or PowerSchool) to the golden
+     * record — or to the primary assignment, for the fields that live there
+     * (title). Editor+; CSRF-checked; a POST form (no inline JS, CSP-safe).
+     *
+     * The value written is read from the SAME reconcile rows the panel rendered
+     * (rebuilt here from the staged feeds), so what lands on the record is
+     * exactly what the operator saw beside the button — never a stale re-derived
+     * value. Only fields the panel marks overridable are accepted; the writers
+     * whitelist columns and skip no-op writes, so a redundant pick is quiet.
+     * Always redirects back to the person page.
+     */
+    public function reconcile(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect($back);
+        }
+
+        $fieldKey = (string) ($_POST['field'] ?? '');
+        $source   = (string) ($_POST['source'] ?? '');
+        if (!in_array($source, ['nextgen', 'powerschool'], true)) {
+            $this->flash('Unknown source — nothing written.');
+            return $this->redirect($back);
+        }
+
+        // Rebuild the reconcile rows exactly as show() does, so the value we
+        // write matches what was displayed beside the "Use this" button.
+        $assignments = $this->people->assignments($id);
+        $primary = $assignments[0] ?? null;
+        $src = $this->people->latestSourceValues($id);
+        $hasNextGen = $src['nextgen'] !== null;
+        $hasPowerSchool = $src['powerschool'] !== null;
+        $psStale = !empty($src['powerschool_stale']) && !$hasPowerSchool;
+        $idmOnly = !$hasNextGen && !$hasPowerSchool && !$psStale;
+        $rows = FieldMap::reconcileRows($person, $primary, $src['nextgen'], $src['powerschool'], $idmOnly);
+
+        $row = null;
+        foreach ($rows as $r) {
+            if ($r['key'] === $fieldKey) {
+                $row = $r;
+                break;
+            }
+        }
+        if ($row === null || empty($row['overridable'])) {
+            $this->flash('That field can’t be reconciled here.');
+            return $this->redirect($back);
+        }
+
+        $value = $source === 'nextgen' ? (string) $row['ngValue'] : (string) $row['psValue'];
+        if ($value === '') {
+            $this->flash('That source has no value for this field — nothing written.');
+            return $this->redirect($back);
+        }
+        if (FieldMap::isDateField($fieldKey)) {
+            $value = Normalizer::parseDate($value) ?? $value;
+        }
+
+        $sourceLabel = $source === 'powerschool' ? 'PowerSchool' : ($idmOnly ? 'IDM (current)' : 'NextGen');
+        $summary = "Reconciled {$row['label']} to the {$sourceLabel} value";
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $writer = new PersonWriter($db, new AuditService($db));
+            $actor = $this->currentUser()['name'];
+
+            $goldenCol = FieldMap::goldenColumn($fieldKey);
+            $assignmentCol = FieldMap::assignmentColumn($fieldKey);
+
+            if ($goldenCol !== null) {
+                $values = [$goldenCol => $value];
+                // Ethnicity carries a derived ALSDE code — keep the two in step.
+                if ($goldenCol === 'ethnicity_source') {
+                    $values['ethnicity_code'] = $this->people->ethnicityCodeFor($value);
+                }
+                $changed = $writer->setGoldenFields($id, $values, $actor, $summary);
+            } elseif ($assignmentCol !== null) {
+                if ($primary === null) {
+                    $this->flash('No primary assignment to update.');
+                    return $this->redirect($back);
+                }
+                $changed = $writer->setAssignmentField($id, (int) $primary['id'], $assignmentCol, $value, $actor, $summary);
+            } else {
+                $this->flash('That field isn’t writable.');
+                return $this->redirect($back);
+            }
+
+            $this->flash($changed
+                ? "{$row['label']} set to the {$sourceLabel} value — written to the golden record."
+                : "{$row['label']} already matched the {$sourceLabel} value — no change.");
+        } catch (\Throwable $e) {
+            error_log('[idm] person reconcile: ' . $e->getMessage());
+            $this->flash('Could not apply the reconciliation.');
         }
         return $this->redirect($back);
     }

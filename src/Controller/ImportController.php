@@ -88,11 +88,23 @@ final class ImportController extends Controller
         }
 
         $c = $result['counts'];
-        $summary = sprintf('%s: %d rows · auto %d · new %d · review %d · skipped %d · errors %d',
-            $dryRun ? 'Dry run' : 'Imported', $c['total'], $c['auto_match'], $c['new'], $c['needs_review'], $c['skipped'], $c['errors']);
+
+        // Dry run: render the per-row preview of what an import WOULD change
+        // (nothing was written) instead of redirecting to a non-existent batch.
+        if ($dryRun) {
+            return $this->render('import/dryrun', [
+                'source'   => ImportSource::for($system),
+                'fileName' => $original,
+                'counts'   => $c,
+                'outcomes' => $result['outcomes'],
+            ], 'import', 'Configuration  /  Import & feeds', 'Dry run — TCS Identity Master');
+        }
+
+        $summary = sprintf('Imported: %d rows · auto %d · new %d · review %d · skipped %d · errors %d',
+            $c['total'], $c['auto_match'], $c['new'], $c['needs_review'], $c['skipped'], $c['errors']);
         $this->flash($summary);
 
-        if (!$dryRun && $result['batch_id']) {
+        if ($result['batch_id']) {
             return $this->redirect(url('/import', ['batch' => $result['batch_id']]));
         }
         return $this->redirect(url('/import'));

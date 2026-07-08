@@ -168,6 +168,8 @@ final class Importer
                     'action' => $action,
                     'reason' => $reason,
                     'warnings' => $row->warnings,
+                    // Dry run only: what applying this row would change (no writes).
+                    'preview' => $dryRun ? $this->previewChanges($row, $decision) : null,
                 ];
             } catch (\Throwable $e) {
                 $counts['errors']++;
@@ -227,6 +229,118 @@ final class Importer
         }
 
         return ['batch_id' => $batchId, 'dry_run' => $dryRun, 'counts' => $counts, 'outcomes' => $outcomes];
+    }
+
+    /**
+     * Read-only preview of what applyRow() would change for this row, used by the
+     * dry run so the operator sees the effect before committing. No writes.
+     *
+     *   - AUTO   → matched person + the HR field diffs, a new-link note, and any
+     *              assignment create/update.
+     *   - NEW    → a "create new person" note with the salient incoming fields.
+     *   - REVIEW → a note listing the candidate people it would be queued against.
+     *   - SKIPPED→ no changes (the reason is already on the outcome).
+     *
+     * @return array{person:?array,field_changes:list<array{label:string,from:?string,to:?string}>,notes:list<string>}
+     */
+    private function previewChanges(NormalizedRow $row, MatchDecision $decision): array
+    {
+        $preview = ['person' => null, 'field_changes' => [], 'notes' => []];
+
+        switch ($decision->action) {
+            case MatchDecision::AUTO:
+                $pid = (int) $decision->personId;
+                $preview['person'] = $this->writer->personLabel($pid);
+                $preview['field_changes'] = $this->labelFieldChanges($this->writer->previewHrChanges($pid, $row));
+                if (!$this->writer->hasSourceId($row->sourceSystem(), $row->sourceKey)) {
+                    $preview['notes'][] = 'Link ' . $row->sourceSystem() . ' id ' . $row->sourceKey;
+                }
+                $asg = $this->writer->previewAssignment($pid, $row);
+                if ($asg !== null && $asg['action'] !== 'unchanged') {
+                    $preview['notes'][] = self::assignmentNote($asg);
+                }
+                break;
+
+            case MatchDecision::NEW:
+                $bits = [];
+                if ($row->schoolId !== null) {
+                    $bits[] = 'school ' . ($this->writer->schoolName($row->schoolId) ?? ('#' . $row->schoolId));
+                }
+                if ($row->employeeId !== null) {
+                    $bits[] = 'employee ' . $row->employeeId;
+                }
+                if ($row->title !== null && $row->title !== '') {
+                    $bits[] = 'title ' . $row->title;
+                }
+                $type = ucfirst($row->personType ?? 'staff');
+                $name = trim($row->firstName . ' ' . $row->lastName);
+                $preview['notes'][] = 'Create new ' . $type . ' person “' . $name . '”'
+                    . ($bits !== [] ? ' · ' . implode(' · ', $bits) : '');
+                break;
+
+            case MatchDecision::REVIEW:
+                $cands = [];
+                foreach ($decision->candidates as $c) {
+                    $lbl = $this->writer->personLabel((int) $c['person_id']);
+                    $cands[] = ($lbl['name'] ?? ('#' . $c['person_id'])) . ' (' . (int) round((float) $c['score']) . ')';
+                }
+                $preview['notes'][] = 'Queue for review — ' . count($decision->candidates) . ' candidate(s)'
+                    . ($cands !== [] ? ': ' . implode(', ', $cands) : '');
+                break;
+
+            case MatchDecision::SKIPPED:
+            default:
+                break;
+        }
+
+        return $preview;
+    }
+
+    /**
+     * Humanize raw HR field diffs for display, resolving primary_school_id
+     * from/to values to school names.
+     *
+     * @param list<array{field:string,from:?string,to:?string}> $changes
+     * @return list<array{label:string,from:?string,to:?string}>
+     */
+    private function labelFieldChanges(array $changes): array
+    {
+        $out = [];
+        foreach ($changes as $c) {
+            $from = $c['from'];
+            $to = $c['to'];
+            if ($c['field'] === 'primary_school_id') {
+                $from = $from !== null ? ($this->writer->schoolName((int) $from) ?? ('#' . $from)) : null;
+                $to = $to !== null ? ($this->writer->schoolName((int) $to) ?? ('#' . $to)) : null;
+            }
+            $out[] = ['label' => self::humanizeField($c['field']), 'from' => $from, 'to' => $to];
+        }
+        return $out;
+    }
+
+    private static function humanizeField(string $col): string
+    {
+        return match ($col) {
+            'primary_school_id' => 'Primary school',
+            'hr_email'          => 'HR email',
+            'alsde_id'          => 'ALSID',
+            'dob'               => 'Date of birth',
+            'cctr_description'  => 'CCTR description',
+            'fte'               => 'FTE',
+            default             => ucfirst(str_replace('_', ' ', $col)),
+        };
+    }
+
+    /** @param array{action:string,school_id:int,school_name:?string,title:?string,changes:array<string,?string>} $asg */
+    private static function assignmentNote(array $asg): string
+    {
+        $school = $asg['school_name'] ?? ('#' . $asg['school_id']);
+        $title = $asg['title'] !== null && $asg['title'] !== '' ? ' — ' . $asg['title'] : '';
+        return match ($asg['action']) {
+            'create' => 'New assignment at ' . $school . $title,
+            'update' => 'Update assignment at ' . $school . ' (' . implode(', ', array_keys($asg['changes'])) . ')',
+            default  => 'Assignment at ' . $school . ' unchanged',
+        };
     }
 
     /**

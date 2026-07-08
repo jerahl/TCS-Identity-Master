@@ -62,7 +62,7 @@ final class AuditService
     /**
      * Append a lifecycle event for a person (drives the detail-page timeline).
      *
-     * @param 'create'|'update'|'disable'|'enable'|'terminate'|'convert'|'merge'|'username_assigned' $eventType
+     * @param 'create'|'update'|'disable'|'enable'|'terminate'|'convert'|'merge'|'username_assigned'|'notify'|'password_received' $eventType
      */
     public function lifecycle(int $personId, string $eventType, ?array $detail, string $actor): void
     {

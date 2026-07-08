@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Import;
 
+use App\Config;
 use App\Db;
 use App\Support\Uuid;
 use PDO;
@@ -56,7 +57,7 @@ final class StudentImporter
     {
         $existing = $this->existingByDcid();
 
-        $counts = ['total' => count($rows), 'inserted' => 0, 'updated' => 0, 'deactivated' => 0, 'skipped' => 0];
+        $counts = ['total' => count($rows), 'inserted' => 0, 'updated' => 0, 'deactivated' => 0, 'skipped' => 0, 'dropout_blocked' => 0];
 
         $batchId = null;
         if (!$dryRun) {
@@ -99,10 +100,32 @@ final class StudentImporter
             // Drop-outs: students active before this pull but absent from it. We
             // disable (is_active = 0) rather than delete, so OneSync disables the
             // account instead of orphaning it.
+            //
+            // Safety valve: a truncated/empty ODBC pull (PowerSchool maintenance,
+            // a year-rollover status flip, a wrong PS_ODBC_SCHEMA) would otherwise
+            // deactivate the whole district's students, unattended, at 01:30. When
+            // the active population is sizeable and the share that would deactivate
+            // exceeds STUDENT_DROPOUT_MAX_RATIO, the step is BLOCKED (nothing
+            // deactivated) and logged so an operator can investigate. Mirrors the
+            // staff valve in PersonWriter::deactivateMissingSourceIds.
             $dropouts = $this->dropoutIds($existing, $seen);
-            $counts['deactivated'] = count($dropouts);
-            if (!$dryRun && $dropouts !== []) {
-                $this->deactivate($dropouts);
+            $activeBefore = $this->activeCount($existing);
+            $maxRatio = (float) Config::get('STUDENT_DROPOUT_MAX_RATIO', '0.2');
+
+            if ($this->dropoutBlocked($dropouts, $activeBefore, $maxRatio)) {
+                $counts['dropout_blocked'] = 1;
+                error_log(sprintf(
+                    '[idm] student import: drop-out BLOCKED — %d of %d active students (%.0f%%) '
+                    . 'would deactivate, over STUDENT_DROPOUT_MAX_RATIO=%.2f. PowerSchool feed '
+                    . 'truncated? Nothing deactivated.',
+                    count($dropouts), $activeBefore,
+                    100 * count($dropouts) / max(1, $activeBefore), $maxRatio
+                ));
+            } else {
+                $counts['deactivated'] = count($dropouts);
+                if (!$dryRun && $dropouts !== []) {
+                    $this->deactivate($dropouts);
+                }
             }
 
             if (!$dryRun) {
@@ -233,6 +256,37 @@ final class StudentImporter
     }
 
     /**
+     * Count of students currently active (before this pull).
+     *
+     * @param array<string,array{student_id:int,is_active:int}> $existing
+     */
+    private function activeCount(array $existing): int
+    {
+        $n = 0;
+        foreach ($existing as $row) {
+            if ($row['is_active'] === 1) {
+                $n++;
+            }
+        }
+        return $n;
+    }
+
+    /**
+     * Whether the drop-out step should be blocked as a likely truncated feed.
+     * Only guards a sizeable population (>= $guardMinActive active) so small
+     * cohorts still roll over normally; below that a 100% drop is plausible.
+     *
+     * @param int[] $dropouts
+     */
+    private function dropoutBlocked(array $dropouts, int $activeBefore, float $maxRatio, int $guardMinActive = 20): bool
+    {
+        if ($dropouts === [] || $activeBefore < $guardMinActive) {
+            return false;
+        }
+        return (count($dropouts) / $activeBefore) > $maxRatio;
+    }
+
+    /**
      * Flag the given students inactive, in chunks so the IN list stays bounded.
      *
      * @param int[] $ids
@@ -268,9 +322,13 @@ final class StudentImporter
     /** @param array<string,int> $counts */
     private function summaryMessage(array $counts): string
     {
-        return sprintf(
+        $msg = sprintf(
             'rows %d · inserted %d · updated %d · deactivated %d · skipped %d',
             $counts['total'], $counts['inserted'], $counts['updated'], $counts['deactivated'], $counts['skipped']
         );
+        if (($counts['dropout_blocked'] ?? 0) > 0) {
+            $msg .= ' · DROP-OUT BLOCKED (feed truncated? nothing deactivated — check logs)';
+        }
+        return $msg;
     }
 }

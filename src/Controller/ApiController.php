@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Config;
+use App\Import\InitialPasswordImporter;
 use App\Import\SyncStatusImporter;
 use App\Import\WritebackImporter;
 use App\Support\ApiLog;
+use App\Support\Crypto;
 
 /**
  * Machine-to-machine write-back API for OneSync. OneSync executes an API call on
@@ -16,6 +18,7 @@ use App\Support\ApiLog;
  *
  *   POST /api/onesync/username     {uniqueId, username, email?, upn?}
  *   POST /api/onesync/sync-status  {uniqueId, destination, action, status, message?, timestamp?}
+ *   POST /api/onesync/password     {uniqueId, password} — initial password for a new account
  *   GET  /api/onesync/ping         health check (still requires the token)
  *
  * Both write endpoints accept a single event OR a JSON array of events (batch).
@@ -56,7 +59,7 @@ final class ApiController
         $tok = $this->presentedToken();
         $scheme = stripos((string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''), 'Bearer ') === 0
             ? 'bearer' : (isset($_SERVER['HTTP_X_API_KEY']) ? 'x-api-key' : 'none');
-        $body = $this->rawBody();
+        $body = $this->loggableBody($endpoint);
         ApiLog::write([
             'endpoint'       => $endpoint,
             'status'         => $status,
@@ -69,8 +72,40 @@ final class ApiController
             'token_preview'  => self::mask($tok),
             'key_configured' => trim((string) Config::get('ONESYNC_API_KEY', '')) !== '',
             'body'           => mb_substr($body, 0, 2000),
-            'body_len'       => strlen($body),
+            'body_len'       => strlen($this->rawBody()),
         ] + $ctx);
+    }
+
+    /** Body as it may appear in the debug log — secret values never reach it. */
+    private function loggableBody(string $endpoint): string
+    {
+        return $endpoint === 'password' ? self::redactSecrets($this->rawBody()) : $this->rawBody();
+    }
+
+    /**
+     * Replace password values in a JSON body (single event or batch) with a
+     * mask so the debug log stays safe to keep. Unparseable input is withheld
+     * entirely — better to lose a diagnostic than leak a password.
+     */
+    public static function redactSecrets(string $json): string
+    {
+        $data = json_decode($json, true);
+        if (!is_array($data)) {
+            return '[body withheld — endpoint carries secrets and the JSON did not parse]';
+        }
+        $isList = array_is_list($data);
+        $events = $isList ? $data : [$data];
+        foreach ($events as $i => $e) {
+            if (!is_array($e)) {
+                continue;
+            }
+            foreach ($e as $k => $v) {
+                if (is_string($k) && stripos($k, 'password') !== false) {
+                    $events[$i][$k] = '[redacted]';
+                }
+            }
+        }
+        return (string) json_encode($isList ? $events : $events[0], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     /** Mask a secret for the log: first/last 3 chars only. */
@@ -159,6 +194,49 @@ final class ApiController
             }
         }
         return $this->respond('username', $results, $anyError);
+    }
+
+    /**
+     * Initial password OneSync set for a newly created account. Stored encrypted
+     * (libsodium, CREDENTIAL_ENC_KEY); fails closed when the key isn't
+     * configured. The value is never echoed back and never written to the
+     * debug log (see redactSecrets()).
+     */
+    public function password(): string
+    {
+        if (($err = $this->authError('password')) !== null) {
+            return $err;
+        }
+        if (!Crypto::configured()) {
+            $this->logRequest('password', 503, ['reason' => Crypto::KEY_ENV . ' not set']);
+            return $this->json(503, ['ok' => false, 'error' => 'Password write-back disabled (' . Crypto::KEY_ENV . ' not set).']);
+        }
+        $events = $this->readEvents();
+        if ($events === null) {
+            $this->logRequest('password', 400, ['reason' => $this->parseError]);
+            return $this->json(400, ['ok' => false, 'error' => $this->parseError]);
+        }
+
+        $importer = new InitialPasswordImporter();
+        $results = [];
+        $anyError = false;
+        foreach ($events as $e) {
+            if (trim((string) ($e['uniqueId'] ?? '')) === '' || trim((string) ($e['password'] ?? '')) === '') {
+                $results[] = ['ok' => false, 'error' => 'uniqueId and password are required'];
+                $anyError = true;
+                continue;
+            }
+            try {
+                $r = $importer->applyEvent($e);
+                $results[] = ['ok' => $r['outcome'] === 'applied', 'uniqueId' => $r['uuid'], 'outcome' => $r['outcome'], 'detail' => $r['detail']];
+                $anyError = $anyError || $r['outcome'] !== 'applied';
+            } catch (\Throwable $ex) {
+                error_log('[idm] api password: ' . $ex->getMessage());
+                $results[] = ['ok' => false, 'error' => 'apply failed'];
+                $anyError = true;
+            }
+        }
+        return $this->respond('password', $results, $anyError);
     }
 
     public function syncStatus(): string

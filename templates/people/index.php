@@ -86,7 +86,7 @@ $typeOpts = ['all' => 'All types', 'faculty' => 'Faculty', 'staff' => 'Staff', '
           $full = trim($p['first_name'] . ($p['middle_name'] ? ' ' . substr($p['middle_name'], 0, 1) . '.' : '') . ' ' . $p['last_name']);
           $href = url('/people/' . $p['person_id']);
       ?>
-      <tr class="is-clickable" onclick="window.location='<?= e($href) ?>'">
+      <tr class="is-clickable" data-href="<?= e($href) ?>">
         <td>
           <div class="cell-name"><a href="<?= e($href) ?>"><?= e($full) ?></a></div>
           <div class="cell-sub"><?= e(substr($p['person_uuid'], 0, 8)) ?></div>

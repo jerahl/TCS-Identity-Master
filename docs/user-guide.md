@@ -30,7 +30,8 @@ in your browser.
 12. [Users (admins)](#12-users-admins)
 13. [Audit log (admins)](#13-audit-log-admins)
 14. [Everyday tasks — quick recipes](#14-everyday-tasks--quick-recipes)
-15. [Terms you'll see](#15-terms-youll-see)
+15. [Logins export & orientation checklists](#15-logins-export--orientation-checklists)
+16. [Terms you'll see](#16-terms-youll-see)
 
 ---
 
@@ -62,7 +63,7 @@ The **left sidebar** is your main menu. What you see depends on your role:
 | **Review queue** | Incoming records that might match an existing person |
 | **People** | The full directory of records; search, filter, drill in |
 | **Add person** | Manually create a record (editors and admins only) |
-| **Reference data** | The maps that translate school codes and ethnicity values |
+| **Reference data** | The maps that translate school codes, ethnicity values, and job codes |
 | **Import / feeds** | History of data pulled from NextGen and PowerSchool |
 | **VPN status** | Live health of the PowerSchool VPN tunnel |
 | **Users** | Manage who can sign in and their role (admins only) |
@@ -254,7 +255,7 @@ Every edit and disable is recorded in the record's timeline and in the audit log
 
 **Reference data** holds the lookup tables that translate incoming codes into
 values the district uses. Unmapped values block clean account provisioning, so
-this page surfaces them for you to fix. It has three tabs:
+this page surfaces them for you to fix. It has four tabs:
 
 - **Schools map** — each school with its NextGen code, PowerSchool code, and the
   AD/Google locations (OUs) accounts land in. Rows missing a mapping are
@@ -264,6 +265,11 @@ this page surfaces them for you to fix. It has three tabs:
 - **Ethnicity map** — how each source ethnicity value maps to the official ALSDE
   code. **Unmapped values** are flagged so no one is sent downstream without a
   code.
+- **Positions map** — how each NextGen job code classifies an employee as
+  **Faculty** or **Staff**. Codes not in the map import as Staff, so it's enough
+  to list the faculty codes; job codes seen on assignments with no mapping are
+  listed below the table so you can spot faculty positions still coming in as
+  Staff.
 - **Field mapping** — a reference crosswalk showing how each NextGen field lines
   up with PowerSchool and where it ends up on the golden record. (Read-only
   reference; useful for understanding the person detail page.)
@@ -369,7 +375,76 @@ change their role once they've signed in.
 
 ---
 
-## 15. Terms you'll see
+## 15. Logins export & orientation checklists
+
+This replaces the old manual *Logins* spreadsheet and the Word mail-merge for
+new-employee account notifications.
+
+### The Logins export
+
+Open **Logins export** in the sidebar. It shows the golden record in the exact
+columns of the old Logins spreadsheet — last name, first name + MI, from/to
+school and position, effective and end dates, board approval, employee ID, DOB,
+gender, race, and ALSDE ID — pulled straight from what NextGen and PowerSchool
+already feed in. No more copying from NextGen by hand.
+
+- **Filter** by status, school, and an effective-date window (position start,
+  falling back to hire date), or search by name/ID.
+- **From School / From Position** are filled in automatically for a transfer (from
+  the person's previous assignment) and left blank for a brand-new hire.
+- Cells that still need a human — **Board Approval** and, for a brand-new hire not
+  yet in PowerSchool, **ALSDE ID** — are highlighted. Enter Board Approval on the
+  person's **Edit** screen; ALSDE ID fills in automatically once PowerSchool has
+  the person (or can be typed on the Edit screen).
+- **Download CSV** exports exactly what you see (respecting the current filters).
+
+### Orientation checklists
+
+Once OneSync has minted a person's username, you can generate their **Technology
+Orientation Checklist** — the New Teacher version for faculty, the
+Non-Instructional version for everyone else — pre-filled with their name, school,
+position, and their new **username, email, and sign-in**. When OneSync has also
+delivered the account's **temporary password** (via the write-back API), it
+appears in the "Your account" box; until then the box says *provided by your
+school* / *provided by your supervisor* as before. Treat a checklist that carries
+a password like the credential it contains — hand it to the new hire directly.
+
+- On a **person's record**, click **Orientation checklist** (editors/admins; it
+  appears once a username exists). It opens a preview with a **Download PDF**
+  button (a real PDF generated on the server) and a **Print** option. The links
+  are genuine, clickable hyperlinks, so the PDF never has the broken-link problem
+  the old Word *Finish & Merge* had.
+- On the **Logins export**, the **Checklist** column has an **Open** link for
+  everyone whose account is ready.
+- **Generate all at once.** On the Logins export, **Generate all checklists**
+  produces one PDF per ready person in the current filter and downloads them as a
+  single ZIP. Every generation (single or bulk) is written to the audit log and
+  the person's timeline.
+
+### Editing the checklist content
+
+Click **Edit checklist content** on the Logins export (editors/admins) to change
+the heading, intro, and steps for each variant. Content uses a simple format:
+
+- Start a section with `## Section name`.
+- Start each step with `- step text`.
+- Add links as `[label](https://example.com)` — only `http`/`https` links become
+  clickable.
+- The placeholders `{name}`, `{username}`, `{email}`, `{employeeid}`, `{school}`,
+  `{position}`, `{start_date}`, and `{temp_password}` are filled in per person
+  (`{temp_password}` is blank until OneSync delivers one; the "Your account" box
+  shows it automatically either way).
+
+Account details are always inserted live regardless of the template. **Reset to
+default** restores the built-in content for a variant.
+
+> **Prefer the old Word document?** You can keep the existing merge and just point
+> its data source at the Logins **Download CSV** instead of the hand-maintained
+> workbook — same document, authoritative data, no OneDrive step.
+
+---
+
+## 16. Terms you'll see
 
 - **Golden record** — the single, authoritative record for one person. Everything
   in this app revolves around keeping one golden record per human.

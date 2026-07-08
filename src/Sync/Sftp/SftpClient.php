@@ -26,4 +26,7 @@ interface SftpClient
 
     /** Download $remotePath to $localPath; returns bytes written. */
     public function download(string $remotePath, string $localPath): int;
+
+    /** Upload $localPath to $remotePath; returns bytes sent. */
+    public function upload(string $localPath, string $remotePath): int;
 }
