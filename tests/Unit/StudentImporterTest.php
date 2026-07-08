@@ -76,7 +76,7 @@ final class StudentImporterTest extends TestCase
     {
         $res = $this->importer()->importRows([self::row('1001'), self::row('1002')]);
 
-        self::assertSame(['total' => 2, 'inserted' => 2, 'updated' => 0, 'deactivated' => 0, 'skipped' => 0], $res['counts']);
+        self::assertSame(['total' => 2, 'inserted' => 2, 'updated' => 0, 'deactivated' => 0, 'skipped' => 0, 'dropout_blocked' => 0], $res['counts']);
         self::assertSame(2, (int) $this->db->query('SELECT COUNT(*) FROM student')->fetchColumn());
 
         $batch = $this->db->query('SELECT * FROM student_import_batch ORDER BY batch_id DESC LIMIT 1')->fetch();
@@ -97,7 +97,7 @@ final class StudentImporterTest extends TestCase
 
         $res = $this->importer()->importRows([self::row('1001', ['Students.Grade_Level' => '10', 'Students.First_Name' => 'Renamed'])]);
 
-        self::assertSame(['total' => 1, 'inserted' => 0, 'updated' => 1, 'deactivated' => 0, 'skipped' => 0], $res['counts']);
+        self::assertSame(['total' => 1, 'inserted' => 0, 'updated' => 1, 'deactivated' => 0, 'skipped' => 0, 'dropout_blocked' => 0], $res['counts']);
         $student = $this->db->query("SELECT * FROM student WHERE ps_dcid = '1001'")->fetch();
         self::assertSame('10', $student['grade_level'], 'field refreshed');
         self::assertSame('Renamed', $student['first_name']);
@@ -173,5 +173,87 @@ final class StudentImporterTest extends TestCase
         $this->importer()->importRows([self::row('1001', ['Students.ExitCode' => 'WD', 'Students.ExitDate' => '5/30/2026'])]);
 
         self::assertSame('2026-05-30', $this->db->query("SELECT exit_date FROM student WHERE ps_dcid = '1001'")->fetchColumn());
+    }
+
+    public function testGuardBlocksMassDeactivationFromTruncatedFeed(): void
+    {
+        // Seed a sizeable active population (>= the guardMinActive floor of 20).
+        $seed = [];
+        for ($i = 1; $i <= 30; $i++) {
+            $seed[] = self::row((string) (1000 + $i));
+        }
+        $this->importer()->importRows($seed);
+
+        // The next pull comes back nearly empty (5 of 30) — 83% would drop, over
+        // the 20% ratio. The destructive step must be blocked, inserts/updates OK.
+        $next = [];
+        for ($i = 1; $i <= 5; $i++) {
+            $next[] = self::row((string) (1000 + $i));
+        }
+        $res = $this->importer()->importRows($next);
+
+        self::assertSame(1, $res['counts']['dropout_blocked']);
+        self::assertSame(0, $res['counts']['deactivated'], 'blocked run deactivates nothing');
+        self::assertSame(5, $res['counts']['updated']);
+        self::assertSame(30, (int) $this->db->query('SELECT COUNT(*) FROM student WHERE is_active = 1')->fetchColumn(),
+            'every student stays active when the guard trips');
+
+        // The block is surfaced on the batch the dashboard reads.
+        $batch = $this->db->query('SELECT * FROM student_import_batch ORDER BY batch_id DESC LIMIT 1')->fetch();
+        self::assertSame('complete', $batch['status']);
+        self::assertStringContainsString('DROP-OUT BLOCKED', (string) $batch['message']);
+    }
+
+    public function testEmptyFeedAgainstLargePopulationIsBlocked(): void
+    {
+        $seed = [];
+        for ($i = 1; $i <= 25; $i++) {
+            $seed[] = self::row((string) (2000 + $i));
+        }
+        $this->importer()->importRows($seed);
+
+        // The classic failure mode: the ODBC pull returns zero rows.
+        $res = $this->importer()->importRows([]);
+
+        self::assertSame(1, $res['counts']['dropout_blocked']);
+        self::assertSame(0, $res['counts']['deactivated']);
+        self::assertSame(25, (int) $this->db->query('SELECT COUNT(*) FROM student WHERE is_active = 1')->fetchColumn());
+    }
+
+    public function testGuardIgnoredForSmallPopulations(): void
+    {
+        // Below the guardMinActive floor a 100% drop is plausible (tiny cohort),
+        // so small populations still roll over — matching the staff valve.
+        $this->importer()->importRows([self::row('3001'), self::row('3002'), self::row('3003')]);
+
+        $res = $this->importer()->importRows([]);
+
+        self::assertSame(0, $res['counts']['dropout_blocked']);
+        self::assertSame(3, $res['counts']['deactivated']);
+        self::assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM student WHERE is_active = 1')->fetchColumn());
+    }
+
+    public function testGuardRatioIsConfigurable(): void
+    {
+        putenv('STUDENT_DROPOUT_MAX_RATIO=0.9');
+        try {
+            $seed = [];
+            for ($i = 1; $i <= 30; $i++) {
+                $seed[] = self::row((string) (4000 + $i));
+            }
+            $this->importer()->importRows($seed);
+
+            // 50% would drop — under the raised 90% threshold, so it proceeds.
+            $next = [];
+            for ($i = 1; $i <= 15; $i++) {
+                $next[] = self::row((string) (4000 + $i));
+            }
+            $res = $this->importer()->importRows($next);
+
+            self::assertSame(0, $res['counts']['dropout_blocked']);
+            self::assertSame(15, $res['counts']['deactivated']);
+        } finally {
+            putenv('STUDENT_DROPOUT_MAX_RATIO');
+        }
     }
 }

@@ -7,6 +7,7 @@
         "php": ">=8.2",
         "ext-pdo": "*",
         "ext-pdo_mysql": "*",
+        "dompdf/dompdf": "^3.0",
         "onelogin/php-saml": "^4.0",
         "phpseclib/phpseclib": "^3.0"
     },

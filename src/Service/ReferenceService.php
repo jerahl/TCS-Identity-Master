@@ -10,8 +10,9 @@ use PDO;
 /**
  * Reference-data admin: the school and ethnicity maps that resolve incoming
  * source codes, plus the "unmapped values" surfaces (values seen in feeds/records
- * with no mapping) that block clean provisioning. Read-only in M6; editing +
- * RBAC arrive in M7.
+ * with no mapping) that block clean provisioning. The school OU mapping (AD OU +
+ * Google OU) is editable from the web UI (admin only); the rest is still seeded
+ * from db/seeds/*.csv.
  */
 final class ReferenceService
 {
@@ -39,6 +40,51 @@ final class ReferenceService
         return $rows;
     }
 
+    /** One school row (for the edit round-trip + audit before-image). @return array<string,mixed>|null */
+    public function findSchool(int $schoolId): ?array
+    {
+        $stmt = $this->db->prepare('SELECT school_id, name, ps_school_id, ad_ou, google_ou, status FROM school WHERE school_id = :id');
+        $stmt->execute([':id' => $schoolId]);
+        $row = $stmt->fetch();
+        return $row === false ? null : $row;
+    }
+
+    /**
+     * Update a school's provisioning OU mapping (the two columns the destination
+     * writers read: ad_ou for AD, google_ou for Google Workspace). Values are
+     * normalized (Google OU to leading-slash form); blank clears the mapping —
+     * which puts new Google creates in the root OU, so the UI flags it.
+     */
+    public function updateSchoolMapping(int $schoolId, ?string $adOu, ?string $googleOu): void
+    {
+        $stmt = $this->db->prepare('UPDATE school SET ad_ou = :ad_ou, google_ou = :google_ou WHERE school_id = :id');
+        $stmt->execute([
+            ':ad_ou'     => self::cleanOu($adOu),
+            ':google_ou' => self::normalizeGoogleOu($googleOu),
+            ':id'        => $schoolId,
+        ]);
+    }
+
+    /** Trim an OU value; NULL when blank (blank = unmapped, never an empty string). */
+    public static function cleanOu(?string $ou): ?string
+    {
+        $ou = trim((string) $ou);
+        return $ou === '' ? null : $ou;
+    }
+
+    /**
+     * Normalize a Google OU path to Google's leading-slash form — the district
+     * convention is /tcs/faculty/{school OU}. NULL when blank (unmapped).
+     */
+    public static function normalizeGoogleOu(?string $ou): ?string
+    {
+        $ou = self::cleanOu($ou);
+        if ($ou === null || $ou === '/') {
+            return $ou;
+        }
+        return '/' . trim($ou, '/');
+    }
+
     /** Ethnicity source→ALSDE map. */
     public function ethnicityMap(): array
     {
@@ -55,6 +101,35 @@ final class ReferenceService
              FROM person
              WHERE ethnicity_source IS NOT NULL AND ethnicity_source <> '' AND (ethnicity_code IS NULL OR ethnicity_code = '')
              GROUP BY ethnicity_source ORDER BY n DESC, ethnicity_source"
+        )->fetchAll();
+    }
+
+    /** Job code -> person type map (classifies imported employees as faculty/staff). */
+    public function positionMap(): array
+    {
+        return $this->db->query(
+            "SELECT job_code, person_type, description
+             FROM position_type_map
+             ORDER BY FIELD(person_type, 'faculty','staff','contractor','sub','intern','other'), job_code"
+        )->fetchAll();
+    }
+
+    /**
+     * Distinct job codes on assignments with no position mapping. Informational,
+     * not necessarily wrong — the map may be partial by design (list the faculty
+     * codes; unmapped codes default to 'staff' on import).
+     */
+    public function unmappedJobCodes(): array
+    {
+        return $this->db->query(
+            "SELECT a.job_code AS code, MAX(a.title) AS title, COUNT(DISTINCT a.person_id) AS n
+             FROM assignment a
+             WHERE a.job_code IS NOT NULL AND a.job_code <> ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM position_type_map m
+                   WHERE LOWER(TRIM(m.job_code)) = LOWER(TRIM(a.job_code))
+               )
+             GROUP BY a.job_code ORDER BY n DESC, a.job_code"
         )->fetchAll();
     }
 

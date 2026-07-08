@@ -71,7 +71,7 @@ $badge = static fn(string $mod): string => match ($mod) {
       </label>
       <button class="btn btn--primary" type="submit" style="height:38px;">Import</button>
     </form>
-    <p class="muted" style="font-size:11.5px; margin:10px 0 0;">Columns must match the source's expected headers (see <code>src/Import/ColumnMap.php</code>). Re-uploads are idempotent — existing people re-match by source id. <strong>NextGen imports from the SFTP feed and PowerSchool reads directly from Oracle (ODBC)</strong> — neither is a single-file upload.</p>
+    <p class="muted" style="font-size:11.5px; margin:10px 0 0;">Columns must match the source's expected headers (see <code>src/Import/ColumnMap.php</code>). A <code>School Name</code> column is matched to a known school and takes precedence over the numeric <code>SchoolID</code> code; a name that matches no school fails that row with an error. Re-uploads are idempotent — existing people re-match by source id. <strong>NextGen imports from the SFTP feed and PowerSchool reads directly from Oracle (ODBC)</strong> — neither is a single-file upload.</p>
   </div>
   <?php endif; ?>
 
@@ -80,7 +80,7 @@ $badge = static fn(string $mod): string => match ($mod) {
       <thead><tr><th>System</th><th>File</th><th>Time</th><th style="text-align:right;">Rows</th><th style="text-align:right;">Matched</th><th>Status</th></tr></thead>
       <tbody>
         <?php foreach ($batches as $b): ?>
-        <tr class="is-clickable" onclick="window.location='<?= e(url('/import', ['batch' => $b['batch_id']])) ?>'">
+        <tr class="is-clickable" data-href="<?= e(url('/import', ['batch' => $b['batch_id']])) ?>">
           <td class="cell-name"><?= e(ucfirst($b['system'])) ?></td>
           <td class="mono" style="font-size:12px;"><?= e($b['file_name'] ?? '—') ?></td>
           <td class="mono" style="font-size:12px;"><?= e($b['started_at']) ?></td>
@@ -110,7 +110,7 @@ $badge = static fn(string $mod): string => match ($mod) {
       <thead><tr><th>Incoming name</th><th>Source ID</th><th>Employee ID</th><th>Match outcome</th><th>Detail</th></tr></thead>
       <tbody>
         <?php foreach ($staged as $r): [$label, $mod] = Present::matchOutcome($r['match_status']); ?>
-        <tr<?= $r['matched_person_id'] ? ' class="is-clickable" onclick="window.location=\'' . e(url('/people/' . $r['matched_person_id'])) . '\'"' : '' ?>>
+        <tr<?= $r['matched_person_id'] ? ' class="is-clickable" data-href="' . e(url('/people/' . $r['matched_person_id'])) . '"' : '' ?>>
           <td class="cell-name"><?= e(trim($r['n_first'] . ' ' . $r['n_last'])) ?: '—' ?></td>
           <td class="mono"><?= e($r['n_source_key'] ?? '—') ?></td>
           <td class="mono"><?= e($r['n_employee_id'] ?? '—') ?></td>

@@ -5,7 +5,8 @@ declare(strict_types=1);
 /**
  * Reference-data seeder.
  *
- *   php bin/seed.php            upsert school, school_code_alias, ethnicity_map
+ *   php bin/seed.php            upsert school, school_code_alias, ethnicity_map,
+ *                               position_type_map
  *   php bin/seed.php --dry-run  parse + report counts, change nothing
  *   php bin/seed.php --prune    also DELETE schools/aliases not in the CSVs
  *                               (makes the CSVs authoritative; clears stale rows)
@@ -44,6 +45,27 @@ try {
                 ':source_value'  => $row['source_value'],
                 ':alsde_code'    => $row['alsde_code'],
                 ':federal_group' => $row['federal_group'] ?? null,
+            ]);
+        }
+    }
+
+    // --- position_type_map (PK: job_code) — classifies imported employees as
+    //     faculty/staff by the NextGen JOB CODE. May be partial: unmapped codes
+    //     default to 'staff' on create. ---
+    $positions = readCsv("{$seedDir}/position_type_map.csv");
+    echo 'position_type_map: ' . count($positions) . " row(s)\n";
+    if (!$dryRun) {
+        $stmt = $pdo->prepare(
+            'INSERT INTO position_type_map (job_code, person_type, description)
+             VALUES (:job_code, :person_type, :description)
+             ON DUPLICATE KEY UPDATE person_type = VALUES(person_type),
+                                     description = VALUES(description)'
+        );
+        foreach ($positions as $row) {
+            $stmt->execute([
+                ':job_code'    => $row['job_code'],
+                ':person_type' => $row['person_type'],
+                ':description' => $row['description'] ?: null,
             ]);
         }
     }

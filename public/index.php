@@ -65,6 +65,8 @@ try {
     $import = new ImportController();
     $users = new UserController();
     $audit = new \App\Controller\AuditController();
+    $admin = new \App\Controller\AdminController();
+    $security = new \App\Controller\SecurityController();
     $authCtl = new AuthController();
     $google = new GoogleController();
 
@@ -75,6 +77,12 @@ try {
     $router->get('/api/onesync/ping', static fn() => $api->ping());
     $router->post('/api/onesync/username', static fn() => $api->username());
     $router->post('/api/onesync/sync-status', static fn() => $api->syncStatus());
+    $router->post('/api/onesync/password', static fn() => $api->password());
+
+    // ---- MCP server for Claude (per-user API key auth; role gates the tools) ----
+    $mcp = new \App\Controller\McpController();
+    $router->post('/mcp', static fn() => $mcp->handle());
+    $router->get('/mcp', static fn() => $mcp->handle());
 
     // ---- Public (no auth) ----
     $router->get('/login', static fn() => $authCtl->loginPage());
@@ -89,30 +97,61 @@ try {
     $router->get('/dashboard', $guard('view', static fn() => $dashboard->index()));
     $router->get('/people', $guard('view', static fn() => $person->index()));
     $router->get('/people/{id}', $guard('view', static fn(array $p) => $person->show($p)));
+    $router->get('/people/{id}/adaxes', $guard('view', static fn(array $p) => $person->adaxes($p)));
     $router->get('/review', $guard('view', static fn() => $review->index()));
     $router->get('/reference', $guard('view', static fn() => $reference->index()));
+    $router->get('/reference/data-flow', $guard('view', static fn() => $reference->dataflow()));
     $router->get('/import', $guard('view', static fn() => $import->index()));
     $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
+
+    $logins = new \App\Controller\LoginsController();
+    $router->get('/logins', $guard('view', static fn() => $logins->index()));
+    $router->get('/logins.csv', $guard('view', static fn() => $logins->csv()));
+
+    // Self-service API keys (any authenticated user manages their own keys).
+    $apiKeys = new \App\Controller\ApiKeyController();
+    $router->get('/settings/api-keys', $guard('view', static fn() => $apiKeys->index()));
+    $router->post('/settings/api-keys/create', $guard('view', static fn() => $apiKeys->create()));
+    $router->post('/settings/api-keys/revoke', $guard('view', static fn() => $apiKeys->revoke()));
 
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
     $router->get('/add', $guard('edit', static fn() => $person->addForm()));
     $router->post('/add', $guard('edit', static fn() => $person->create()));
+    // Orientation checklists. Literal routes are registered before /notify/{id}
+    // so "templates"/"bulk" aren't captured as an id.
+    $notify = new \App\Controller\NotifyController();
+    $router->get('/notify/templates', $guard('edit', static fn() => $notify->templates()));
+    $router->post('/notify/templates/save', $guard('edit', static fn() => $notify->saveTemplate()));
+    $router->post('/notify/bulk', $guard('edit', static fn() => $notify->bulk()));
+    $router->get('/notify/{id}', $guard('edit', static fn(array $p) => $notify->show($p)));
+    $router->get('/notify/{id}/pdf', $guard('edit', static fn(array $p) => $notify->pdf($p)));
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));
     // Direct-to-Google provisioning (bypasses OneSync): link/create/push/suspend/restore.
     $router->post('/people/{id}/google/{action}', $guard('edit', static fn(array $p) => $google->act($p)));
+    $router->post('/people/{id}/reconcile', $guard('edit', static fn(array $p) => $person->reconcile($p)));
+    $router->post('/people/{id}/adaxes/accept', $guard('edit', static fn(array $p) => $person->acceptAdaxes($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
     $router->post('/import/fetch', $guard('edit', static fn() => $import->fetch()));
     $router->post('/import/google-sync', $guard('edit', static fn() => $import->googleSync()));
+    $router->post('/vpn/restart', $guard('edit', static fn() => (new \App\Controller\VpnController())->restart()));
 
     // ---- Admin only ----
+    // School OU mapping (where AD/Google creates place accounts) — admin, not
+    // editor: it's provisioning configuration, not day-to-day record editing.
+    $router->post('/reference/school/{id}', $guard('admin', static fn(array $p) => $reference->saveSchool($p)));
     $router->get('/users', $guard('admin', static fn() => $users->index()));
     $router->post('/users/role', $guard('admin', static fn() => $users->updateRole()));
     $router->post('/users/add', $guard('admin', static fn() => $users->addUser()));
     $router->get('/audit', $guard('admin', static fn() => $audit->index()));
+    $router->get('/admin', $guard('admin', static fn() => $admin->index()));
+    $router->post('/admin/run/feeds', $guard('admin', static fn() => $admin->runFeeds()));
+    $router->post('/admin/run/students', $guard('admin', static fn() => $admin->runStudents()));
+    $router->post('/admin/run/onesync-db', $guard('admin', static fn() => $admin->runOnesyncDb()));
+    $router->get('/security', $guard('admin', static fn() => $security->index()));
 
     $router->setNotFound(static fn() => $page->notFound());
 

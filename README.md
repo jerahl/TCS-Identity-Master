@@ -7,31 +7,43 @@ OneSync provisions exactly **one user per person** instead of one per source.
 
 See `docs/` for the full design:
 - `docs/user-guide.md` — **end-user guide** for the web app (front-end users)
+- `docs/data-flow.md` — **end-to-end data flow** (imports → internal processes → OneSync loop → destinations); an interactive chart of it is in-app at `/reference/data-flow`
 - `docs/schema.sql` — the data model (source of `db/migrations/0001_init.sql`)
 - `docs/Identity-DB-and-Dashboard-Design.md` — architecture
 - `docs/claude-design-prompt.md` — dashboard UI spec
 - `docs/claude-code-project-prompt.md` — the build plan / milestones
+- `docs/saml-sso-setup.md` — configure SAML SSO against the district IdP
+- `docs/server-hardening.md` — production hardening / HTTPS
+- `docs/onesync-api.md`, `docs/onesync-mapping.md` — the OneSync interface
+- `docs/mcp-server.md` — the MCP server for Claude (per-user keys, role-gated tools)
+- `docs/cron-feed-pull.md` — schedule the nightly SFTP feed pull
+- `docs/dev-box-git-main.md` — swap the dev box git checkout back to `main`
 
-> **Status:** Milestone 7 (final) — SAML SSO + server-side RBAC, admin Users
-> screen, manual Add person, security headers + HTTPS enforcement, and
-> login/logout auditing. All seven milestones are in place; the app is
-> feature-complete per the build plan.
+> **Status:** All seven build-plan milestones are in place (through Milestone 7 —
+> SAML SSO + server-side RBAC, admin Users screen, manual Add person, security
+> headers + HTTPS enforcement, and login/logout auditing). Post-milestone
+> operational work has continued on top of that base: live Active Directory
+> verification via the Adaxes REST API, reading OneSync results straight from its
+> database, feed/API diagnostics, a name-case normalizer, and an admin/editor VPN
+> service-restart control.
 
 ## Stack
 
-PHP 8.2+ (developed on 8.4), MySQL 8+, plain PDO with prepared statements. No
-heavy framework. Server-rendered pages (added in later milestones).
+PHP 8.2+ (developed on 8.4), MySQL/MariaDB 8+/10.11+, plain PDO with prepared
+statements. No heavy framework — a small front controller and server-rendered
+PHP templates.
 
 ## Layout
 
 ```
-public/        web root (front controller + assets — later milestones)
-src/           app code (Config, Db, bootstrap; services/controllers later)
-bin/           CLI tools — migrate.php, seed.php (importers later)
+public/        web root (front controller + assets)
+src/           app code — Config, Db, bootstrap; Auth, Controller, Http,
+               Import, Matching, Service, Sync, Support, View
+bin/           CLI tools — migrate/seed, the importers, and diagnostics
 db/migrations/ ordered *.sql; 0001_init.sql == docs/schema.sql
 db/seeds/      reference CSVs (school, school_code_alias, ethnicity_map)
-docs/          specs
-tests/         PHPUnit (matcher suite lands in Milestone 3)
+docs/          specs and runbooks
+tests/         PHPUnit (config, matcher, and service suites)
 ```
 
 ## Quick start (Debian 12 dev server)
@@ -159,6 +171,15 @@ php bin/sftp_ls.php --dir=/Nextgen
 
 It prints the resolved home and a `[dir]/[file]` listing (with the server's real
 error if a path is wrong), so you can set `SFTP_<SOURCE>_DIR` to the exact path.
+
+**Diagnose a skipped feed.** If rows import as zero or get skipped, the CSV's
+delimiter or headers likely don't match the source's `ColumnMap`. Inspect a file
+— it detects the delimiter, lists the headers, and shows how each lines up with
+the expected logical fields:
+
+```sh
+php bin/feed_headers.php --system=nextgen --file=/var/idm/feeds/nextgen/staff.csv
+```
 
 **Import source categories.** Each feed is a first-class source (`src/Import/ImportSource.php`)
 that drives the person type and crosswalk provenance:
@@ -444,8 +465,10 @@ truncated feed — and logs it instead of deactivating.
 - **Reference data** (`/reference`): the school map (codes + AD/Google OUs),
   ethnicity map, and the **NextGen ↔ PowerSchool field mapping** crosswalk, with
   **unmapped values surfaced** — ethnicity values seen on records and school codes
-  seen in feeds that have no mapping (they block clean provisioning). Read-only in
-  M6; editing + RBAC in M7.
+  seen in feeds that have no mapping (they block clean provisioning). The school
+  **OU mapping is editable inline** on the Schools tab (admin only, CSRF-checked,
+  audited with a before/after image); Google OUs follow the district convention
+  `/tcs/faculty/{school}` and are normalized to leading-slash form on save.
 - **Import / feeds** (`/import`): batch history with a drill-in to each batch's
   staged rows and how each one matched (auto / new / review / skipped). Editors
   can **upload a CSV** here (pick the source system, optional dry-run) to run the
@@ -502,6 +525,32 @@ returns `{ok, results:[…]}` with HTTP 207 if any event failed. `uniqueId` is t
 
 Full reference: [`docs/onesync-api.md`](docs/onesync-api.md).
 
+### MCP server for Claude
+
+An MCP (Model Context Protocol) server lets Claude query — and, for the right
+roles, act on — the identity system at `POST /mcp`. Unlike the OneSync API's
+shared secret, auth here is **per user**: each person mints their own API key
+(**Settings ▸ API keys**, or `bin/api_key.php`) and sends it as
+`Authorization: Bearer <key>`. A key acts as its owner, and the owner's app role
+(`readonly`/`editor`/`admin`) bounds which tools Claude can list and call —
+checked live on every request, so revoking or downgrading takes effect at once.
+
+```sh
+# Mint a key from the CLI (or use the Settings ▸ API keys page)
+php bin/api_key.php create --email=you@tuscaloosacityschools.com --label="Claude Desktop"
+
+# Connect Claude Code
+claude mcp add --transport http tcs-identity https://idm.example.org/mcp \
+  --header "Authorization: Bearer $KEY"
+```
+
+Tools range from read-only (`search_people`, `get_person`, `dashboard_summary`,
+`list_failed_syncs`, `list_review_queue`) through editor (`confirm_match`,
+`reject_match`) to admin (`list_users`); writes are audited as `mcp:<email>`.
+Set `MCP_ENABLED=false` to disable the endpoint.
+
+Full reference: [`docs/mcp-server.md`](docs/mcp-server.md).
+
 ### Students passthrough
 
 Students are **not** part of the staff golden-record model — no matching, no
@@ -538,6 +587,15 @@ status/outcome) to `ONESYNC_API_LOG` (default `/var/idm/onesync/api_debug.log`),
 one JSON line per request — so you can see exactly why OneSync's calls fail (401
 wrong/missing token, 400 bad JSON, 422 unknown uniqueId). Turn it off once working.
 `tail -f /var/idm/onesync/api_debug.log` while OneSync runs.
+
+If the log stays empty, confirm it's enabled and that the web user can actually
+write to it — `bin/api_log_check.php` reports whether debug is on, where it writes,
+and writes a test line. Run it as the **same user the web server runs as**, or the
+writability result won't match what the API sees:
+
+```sh
+sudo -u www-data php bin/api_log_check.php
+```
 
 **One-time AD username link.** To adopt the usernames that already exist in AD
 (before OneSync was authoritative), import an AD export. Each row matches a person
@@ -585,6 +643,19 @@ aren't left unlinked — re-run the Employee List import to give them a GUID);
 `--all` removes those too. Each removal is audited and added to the person
 timeline.
 
+**Fix name casing.** Feeds sometimes deliver names all-caps or all-lowercase.
+Normalize every person's first/last name to conventional "first letter capital"
+form (`JAMES SMITH` / `james smith` → `James Smith`):
+
+```sh
+php bin/fix_name_case.php --dry-run    # preview what would change
+php bin/fix_name_case.php              # apply
+```
+
+Only rows whose casing actually changes are written; common exceptions are cased
+correctly (`McDonald`, `O'Brien`, `Smith-Jones`, generational suffix `III`). Each
+change is audited and added to the person timeline. Idempotent — safe to re-run.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 back **straight to the DB** (no files): insert usernames into `onesync_writeback`
 and upsert per-user success/failure into `account_sync_status`. The exact table +
@@ -609,15 +680,54 @@ php bin/import_writeback.php --pending     # apply onesync_writeback rows (appli
 > defaults) — confirm OneSync's real usernames-file and export-log columns and
 > adjust the maps. The sample files are keyed to the demo people's UUIDs.
 
+**Pull results from OneSync's own database.** Instead of CSVs, the API, or having
+OneSync write into our tables, the app can read provisioning results **straight
+from OneSync's MariaDB** (its `os_users` / `os_export_log` tables) and upsert them
+into `account_sync_status` (per-destination state + failure messages). It connects
+read-only via `ONESYNC_DB_*` and writes as the limited write-back role, joining
+`os_users.userId` to our `person_uuid` across both IDM feeds
+(`ONESYNC_DB_SOURCE_ID_STUDENTS` / `ONESYNC_DB_SOURCE_ID_FACULTY`; the legacy
+single `ONESYNC_DB_SOURCE_ID` is honored when those are unset).
+
+```sh
+php bin/import_onesync_db.php --dry-run   # read OneSync's DB, change nothing
+php bin/import_onesync_db.php             # upsert results into account_sync_status
+```
+
+Grant the `ONESYNC_DB_*` user **SELECT only** on OneSync's database. To map an
+unfamiliar OneSync schema (which tables/columns hold the minted username and the
+per-destination success/failure), use the read-only inspector:
+
+```sh
+php bin/onesync_db_inspect.php                          # tables + row counts
+php bin/onesync_db_inspect.php --table=os_export_log    # columns of one table
+php bin/onesync_db_inspect.php --table=os_users --sample=5   # + sample rows
+php bin/onesync_db_inspect.php --distinct=os_export_log.actionStatus  # decode enum ints
+```
+
+`--sample` prints real data (may include usernames/emails) — run it on a trusted
+terminal; the default is columns only.
+
 ## Active Directory verification (Adaxes REST API)
 
 The Provisioning panel shows what *OneSync reported* about each AD account. The
 **Active Directory (live)** panel on the person detail page shows what AD itself
 currently holds, fetched on demand from the [Adaxes REST API](https://www.adaxes.com/sdk/ApiDocumentation.RESTApi/)
 and compared field-by-field to the golden record — account enabled/disabled,
-`sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. It is a
-verification aid only: the app **reads** from AD via Adaxes and never writes,
-enables, or modifies anything.
+`sAMAccountName`, `userPrincipalName`, `mail`, `displayName`, and OU/DN. The
+lookup is **read-only** against AD: the app never writes, enables, or modifies
+anything in Active Directory. The panel loads **asynchronously** after the rest
+of the person page renders, so a slow or unreachable Adaxes never blocks the page.
+
+For a **pending** person, an editor can **Accept AD as golden record** from the
+panel — a deliberate `POST` action (never a side effect of viewing) that adopts
+the AD `sAMAccountName`, `userPrincipalName`, and `mail` as the golden `username`
+(set + locked), `upn`, and `email`, links the `objectGUID` into the crosswalk,
+and activates the person. It fills only the values the golden record is still
+missing — present values are never overwritten — and is audited like any other
+golden-record write. The button appears only when AD holds an identity value the
+record lacks; an active record's identity stays OneSync's to own, so the action
+is never offered there.
 
 It is off until configured. Set the base URL and a token (or a **read-only**
 service account) in `.env` (`ADAXES_*`, documented in `.env.example`):
@@ -700,27 +810,57 @@ silently undone. Every write is reflected into `account_sync_status` (the same
 table OneSync writes, so the dashboard/person page show it), the crosswalk, and
 `audit_log` + `lifecycle_event`.
 
-**Auth.** A service account with **domain-wide delegation**: a short-lived RS256
-JWT is signed locally with the SA key (native `openssl_sign`, no vendored
-dependency) and exchanged at Google's OAuth2 endpoint for an access token that
-impersonates `GOOGLE_ADMIN_SUBJECT`. In the Google Admin console, authorize the
-SA client ID for the `admin.directory.user` scope. Off until configured; the
-client degrades gracefully (never an error page) and is unit-tested with an
-injected HTTP client (`App\Service\GoogleWorkspaceService`).
+**Transport backends (`GOOGLE_BACKEND`).** The correlation tiers, write
+semantics, guardrails, and UI are identical either way — only the low-level
+directory calls swap:
+
+- **`api`** (default) — the built-in Admin SDK client. A service account with
+  **domain-wide delegation**: a short-lived RS256 JWT is signed locally with the
+  SA key (native `openssl_sign`, no vendored dependency) and exchanged at
+  Google's OAuth2 endpoint for an access token that impersonates
+  `GOOGLE_ADMIN_SUBJECT`. In the Google Admin console, authorize the SA client
+  ID for the `admin.directory.user` scope.
+- **`gam`** — shell out to [GAM](https://github.com/GAM-team/GAM) (GAM7), the
+  CLI most Workspace admins already run (`App\Service\GamClient`). Auth lives
+  entirely in GAM's own project/config, so **the app holds no Google key at
+  all** — no `GOOGLE_SA_*`, no delegation wiring in this app; you reuse (or set
+  up once with `gam create project` + `gam oauth create`) the same GAM the
+  district already trusts, and GAM's own logging/quota handling applies.
+  Commands are executed argv-style (no shell, so person data can't inject), the
+  initial password never appears on a command line (GAM's `password random`),
+  and results are parsed from `formatjson` output. Point `GAM_PATH` at the
+  binary and (optionally) `GAM_CONFIG_DIR` at a shared config dir (exported as
+  `GAMCFGDIR`); the config must be authorized for the user the app/timer runs
+  as. Prefer `api` when you don't want a GAM install on the web host; prefer
+  `gam` when you'd rather not hand this app a service-account key.
+
+Off until configured; both backends degrade gracefully (never an error page) and
+are unit-tested with an injected HTTP client / process runner
+(`App\Service\GoogleWorkspaceService`, `App\Service\GamClient`).
 
 ```sh
 GOOGLE_DIRECT_ENABLED=true
-GOOGLE_SA_KEY_FILE=/var/idm/google-sa.json          # downloaded SA key (client_email + private_key)
-GOOGLE_ADMIN_SUBJECT=idm-admin@tuscaloosacityschools.com
 GOOGLE_DOMAIN=tuscaloosacityschools.com
 GOOGLE_SYNC_MAX_RATIO=0.2                            # block a run that would mass-suspend
+
+# backend 'api' (default):
+GOOGLE_SA_KEY_FILE=/var/idm/google-sa.json          # downloaded SA key (client_email + private_key)
+GOOGLE_ADMIN_SUBJECT=idm-admin@tuscaloosacityschools.com
+
+# or backend 'gam' (no SA key handled by the app):
+#GOOGLE_BACKEND=gam
+#GAM_PATH=/usr/local/bin/gam
+#GAM_CONFIG_DIR=/var/idm/gam                         # exported as GAMCFGDIR
 ```
 
 **Safety.** The batch supports `--dry-run` (plan only) and a **threshold
 guardrail**: if a run would suspend more than `GOOGLE_SYNC_MAX_RATIO` of a linked
 population of at least `GOOGLE_SYNC_GUARD_MIN`, the whole run is **blocked** and
 nothing is written — a bad feed can't mass-suspend accounts. Per-school Google OU
-placement comes from `school.google_ou`. Full `GOOGLE_*` reference in
+placement comes from `school.google_ou` — district convention
+`/tcs/faculty/{school}`, editable on `/reference` (Schools tab, admin only); a
+school with no mapping places new accounts in the root OU, so the reference page
+flags unmapped rows in amber. Full `GOOGLE_*` reference in
 `.env.example`. The batch runs as the `idm_writeback` role (see the added
 `person_source_id` / `school` grants below).
 
@@ -785,6 +925,124 @@ GRANT SELECT ON tcs_identity.v_onesync_student_source TO 'onesync_ro'@'%'; -- st
 FLUSH PRIVILEGES;
 ```
 
+## Services (admin)
+
+The **Services** page (`/admin`, admin-only) is one place to see the health of
+every moving part and to run the background jobs on demand:
+
+- **Service status** — live cards for the application database, the OneSync
+  source DB (read), OneSync write-back freshness, the SFTP feed config, the
+  PowerSchool Oracle ODBC connection, and the VPN monitor. The OneSync source-DB
+  card is a live probe bounded by a short connect timeout (`SERVICE_PING_TIMEOUT`,
+  default 3s) so an unreachable host fails fast instead of hanging the page; the
+  app-DB card reuses the app's existing connection, and everything else reports
+  configuration presence.
+- **Jobs & last run** — the most recent **feed imports** (per source, from
+  `import_batch`), the **students sync** (`student_import_batch`), and the
+  **OneSync DB sync**. The OneSync DB sync had no run record of its own, so each
+  run — from cron (`bin/import_onesync_db.php`) or the button — now lands in a
+  new `service_run` table (job, origin, status, actor, counts, timing), which
+  also drives the **Recent runs** history.
+- **Run now** — admins can trigger the feed pull, the students sync, or the
+  OneSync DB sync from here. Each runs the same code path as its CLI/cron job,
+  synchronously in the request (like the existing feed-pull action), is
+  CSRF-protected, records a `service_run` row, and writes an `audit_log` entry
+  (entity `config`, action `service-run`). Buttons are hidden when the
+  underlying integration isn't configured.
+
+The app DB user needs `INSERT/UPDATE/SELECT` on `service_run` (covered by its
+existing "DML on app tables" grant). Run `php bin/migrate.php` to create the
+table (migration `0011_service_run.sql`).
+
+## VPN status & restart
+
+The **VPN status** page (`/vpn`) relays the read-only `pseast-vpn-monitor`
+snapshot — systemd service, `tun0`, the route + reachability to the PowerSchool
+database, portal liveness, recent logs, and uptime history. Point the app at the
+monitor with `VPN_MONITOR_URL` (usually `http://127.0.0.1:8787`); the app fetches
+it server-side and degrades gracefully if the monitor is down.
+
+**Restart from the UI (editors/admins).** The page is view-only except for one
+action: when `VPN_CONTROL_ENABLED=true`, edit/admin roles see a **Restart VPN
+service** button that asks systemd to restart the unit on this host. It's gated
+server-side on the `edit` capability (not just hidden), CSRF-protected, and every
+restart is written to `audit_log` (entity `config`) with the actor and result.
+The app runs, with no shell, `sudo -n systemctl restart <VPN_SERVICE_UNIT>`
+(default `openconnect-pseast.service`, validated so a stray config value can't add
+arguments), so the web user needs a tightly-scoped NOPASSWD sudoers rule:
+
+```sh
+sudo visudo -cf deploy/idm-vpn-restart.sudoers            # syntax check
+sudo install -m 0440 -o root -g root deploy/idm-vpn-restart.sudoers \
+     /etc/sudoers.d/idm-vpn-restart
+```
+
+Adjust the user (Debian's `www-data`) and unit name in that file to match your
+install and `VPN_SERVICE_UNIT`. Leave `VPN_CONTROL_ENABLED=false` (the default)
+to keep the whole VPN feature read-only — the button won't appear and the route
+returns a "disabled" notice.
+
+## Security dashboard
+
+The **Security** page (`/security`, admin-only) is a read-only view of the
+host's security posture — the runtime state of the controls
+`scripts/harden-debian12.sh` configures:
+
+- **Firewall (ufw)** — active/inactive, default inbound policy, and the allow-rule
+  list (`ufw status verbose`).
+- **fail2ban** — running jails, per-jail failed/banned counts, and a live table of
+  **currently banned IPs** across all jails (`fail2ban-client status [<jail>]`).
+- **SSH daemon** — the effective `sshd -T` policy: port, `PermitRootLogin`,
+  `PasswordAuthentication` (flags password-auth / root-login exposure).
+- **Automatic updates** — `unattended-upgrades` active + whether a reboot is
+  pending.
+- **AppArmor** and **auditd** — service state (`systemctl is-active`).
+- **App HTTP hardening** — HTTPS enforcement, HSTS, and CSP from the app itself
+  (always shown; needs no host access).
+
+Reading firewall/fail2ban/sshd state needs root. The page never changes
+anything; it's **off** unless `SECURITY_STATUS_ENABLED=true`. There are two ways
+to feed it, because `harden-debian12.sh` **disables `proc_open` in php-fpm** — so
+on a properly hardened host the web app cannot run these commands itself:
+
+**1. Collector + JSON file (recommended; required on a hardened host).** A root
+systemd timer runs `bin/security_snapshot.php`, which reads the host state
+(directly, as root — no sudo) and writes a world-readable JSON file. The web app
+just reads that file — no `proc_open`, no sudo in the web tier, so php-fpm stays
+fully locked down. Install the timer and point the app at its output:
+
+```sh
+sudo install -m 0644 deploy/idm-security-snapshot.service /etc/systemd/system/
+sudo install -m 0644 deploy/idm-security-snapshot.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now idm-security-snapshot.timer
+# then in .env:  SECURITY_STATUS_ENABLED=true  and  SECURITY_STATUS_FILE=/var/idm/security-status.json
+```
+
+The page shows how long ago the snapshot was collected and flags it stale past
+`SECURITY_SNAPSHOT_MAX_AGE` (default 600s) so a stopped timer is obvious. Adjust
+`WorkingDirectory`/`ExecStart` paths in the unit files to your install.
+
+**2. Live via sudo (only where php-fpm may spawn processes — i.e. not hardened).**
+Leave `SECURITY_STATUS_FILE` unset and the app runs a small, fixed allow-list of
+read-only commands via `sudo -n`, which needs the NOPASSWD rule:
+
+```sh
+sudo visudo -cf deploy/idm-security-status.sudoers            # syntax check
+sudo install -m 0440 -o root -g root deploy/idm-security-status.sudoers \
+     /etc/sudoers.d/idm-security-status
+```
+
+> If every host card reads **"unknown"** while only the App-HTTP card shows, the
+> web app can't execute commands — that's the hardened-host `proc_open` case
+> above. Use the collector (option 1). If just the *sudo* commands fail, check
+> the sudoers rule and that the web user matches.
+
+Confirm the tool paths on your host (`command -v ufw fail2ban-client sshd`) match
+the `SECURITY_*_BIN` env vars (and the sudoers rule, for live mode). Configure the
+controls themselves — don't try to change them from here — with
+`scripts/harden-debian12.sh`.
+
 ## Operations / backups
 
 - **Backups (critical path).** This DB is now authoritative for staff identity.
@@ -809,6 +1067,8 @@ composer install   # once, to get PHPUnit
 composer test      # or: ./vendor/bin/phpunit
 ```
 
-Milestone 1 ships smoke tests for the config loader. The thorough **matcher**
-suite (exact / employee_id / name+DOB / name-only-never-auto) arrives in
-Milestone 3.
+The PHPUnit suite under `tests/Unit/` covers the config loader, the **matcher**
+(exact / employee_id / name+DOB / name-only-never-auto), the importers and
+column maps, staff drop-out tracking, RBAC and CSRF, the OneSync write-back/result
+paths, AD username linking and the Adaxes service (with an injected HTTP client),
+name-case normalization, and the VPN monitor — among others.

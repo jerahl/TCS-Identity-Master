@@ -52,6 +52,18 @@ CREATE TABLE ethnicity_map (
   PRIMARY KEY (source_value)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- NextGen JOB CODE -> person_type, so imports classify employees as faculty vs
+-- staff (the HR feed has no type column; without a mapping everyone lands as
+-- 'staff'). May be partial: list the faculty codes, unmapped codes default to
+-- 'staff'. Matched case-insensitively; unmapped codes are surfaced on the
+-- Reference page. (Migration 0015.)
+CREATE TABLE position_type_map (
+  job_code     VARCHAR(40)  NOT NULL,
+  person_type  ENUM('faculty','staff','contractor','sub','intern','other') NOT NULL,
+  description  VARCHAR(120) NULL,
+  PRIMARY KEY (job_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ----------------------------------------------------------------------------
 -- Golden record
 -- ----------------------------------------------------------------------------
@@ -80,6 +92,8 @@ CREATE TABLE person (
   primary_school_id INT         NULL,
   hire_date        DATE         NULL,
   end_date         DATE         NULL,
+  board_approval_date DATE      NULL,                -- board-approved hire/transfer date (0013; Logins export)
+  board_approval_note VARCHAR(120) NULL,             -- optional agenda item / status (0013)
 
   -- assigned identity: minted by OneSync, written back here. Immutable once set.
   username         VARCHAR(64)  NULL,
@@ -87,6 +101,8 @@ CREATE TABLE person (
   upn              VARCHAR(160) NULL,
   username_assigned_at DATETIME NULL,
   username_locked  TINYINT(1)   NOT NULL DEFAULT 0,  -- 1 = never re-mint/rename
+  initial_password_enc    VARBINARY(512) NULL,       -- OneSync's temp password, libsodium-encrypted (0016; never plaintext)
+  initial_password_set_at DATETIME       NULL,       -- when OneSync last delivered it (0016)
 
   source_of_record ENUM('nextgen','manual','powerschool') NOT NULL DEFAULT 'nextgen',
   notes            VARCHAR(500) NULL,
@@ -147,7 +163,7 @@ CREATE TABLE assignment (
 CREATE TABLE lifecycle_event (
   id          BIGINT      NOT NULL AUTO_INCREMENT,
   person_id   BIGINT      NOT NULL,
-  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned') NOT NULL,
+  event_type  ENUM('create','update','disable','enable','terminate','convert','merge','username_assigned','notify','password_received') NOT NULL,
   detail      JSON        NULL,
   occurred_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   actor       VARCHAR(60) NULL,                      -- user or 'system:<job>'
@@ -158,15 +174,27 @@ CREATE TABLE lifecycle_event (
 
 CREATE TABLE audit_log (
   id         BIGINT      NOT NULL AUTO_INCREMENT,
-  entity     ENUM('person','assignment','source_id','match','school','config') NOT NULL,
+  entity     ENUM('person','assignment','source_id','match','school','config','user') NOT NULL,
   entity_id  BIGINT      NULL,
-  action     ENUM('insert','update','delete','merge') NOT NULL,
+  action     ENUM('insert','update','delete','merge','login','logout','notify') NOT NULL,
   before_json JSON       NULL,
   after_json  JSON       NULL,
   actor      VARCHAR(60) NULL,
   at         DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_audit_entity (entity, entity_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Editable content for the orientation-checklist variants (0014). One row per
+-- doc; absent rows fall back to built-in defaults in NotifyTemplateService.
+CREATE TABLE notify_template (
+  doc         VARCHAR(40)  NOT NULL,                 -- 'new_teacher' | 'non_instructional'
+  heading     VARCHAR(160) NOT NULL,
+  intro       TEXT         NULL,
+  body        MEDIUMTEXT   NULL,                     -- safe mini-markup (## / - / [label](url))
+  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  updated_by  VARCHAR(60)  NULL,
+  PRIMARY KEY (doc)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ----------------------------------------------------------------------------

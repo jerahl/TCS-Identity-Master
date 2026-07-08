@@ -1,0 +1,16 @@
+# Allow the web user (php-fpm) to restart ONLY the VPN unit — nothing else.
+#
+# Enables the "Restart VPN service" button on the /vpn page (VPN_CONTROL_ENABLED=true).
+# The app runs, with no shell:  sudo -n systemctl restart openconnect-pseast.service
+#
+# Install (validate with visudo, then drop in place):
+#   sudo visudo -cf deploy/idm-vpn-restart.sudoers   # syntax check
+#   sudo install -m 0440 -o root -g root deploy/idm-vpn-restart.sudoers \
+#        /etc/sudoers.d/idm-vpn-restart
+#
+# Adjust the user (www-data on Debian/Ubuntu; nginx/apache elsewhere) and the unit
+# name to match VPN_SERVICE_UNIT / pseast-vpn-monitor's unit_name. Keep the command
+# EXACT — a trailing wildcard would let the web user restart any unit.
+# Confirm the absolute path once with:  command -v systemctl  (usually /usr/bin).
+
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl restart openconnect-pseast.service

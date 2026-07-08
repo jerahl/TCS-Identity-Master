@@ -13,6 +13,8 @@ $eventTitle = [
     'create' => 'Record created', 'update' => 'Record updated', 'disable' => 'Account disabled',
     'enable' => 'Account enabled', 'terminate' => 'Record terminated', 'convert' => 'Record converted',
     'merge' => 'Records merged', 'username_assigned' => 'Username assigned by OneSync',
+    'notify' => 'Orientation checklist generated',
+    'password_received' => 'Initial password received from OneSync',
 ];
 ?>
 <div class="detail">
@@ -36,6 +38,12 @@ $eventTitle = [
         </div>
       </div>
       <?php if (!empty($canEdit)): ?>
+      <?php if ($p['username']): ?>
+      <a class="btn btn--ghost" href="<?= e(url('/notify/' . $p['person_id'])) ?>" target="_blank" rel="noopener" title="Open the printable orientation checklist">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2h5L13 5.5V14a1 1 0 01-1 1H4.5a1 1 0 01-1-1V3a1 1 0 011-1z"/><path d="M9 2v4h4M6 9h4M6 11.5h3"/></svg>
+        Orientation checklist
+      </a>
+      <?php endif; ?>
       <a class="btn btn--ghost" href="<?= e(url('/people/' . $p['person_id'] . '/edit')) ?>">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L6 12l-2.7.7L4 10z"/></svg>
         Edit record
@@ -96,6 +104,7 @@ $eventTitle = [
           <div><div class="kv__label">Employee ID</div><div class="kv__value mono"><?= e($dash($p['employee_id'])) ?></div></div>
           <div><div class="kv__label">Hire date</div><div class="kv__value mono"><?= e($dash($p['hire_date'])) ?></div></div>
           <div><div class="kv__label">End date</div><div class="kv__value mono"><?= e($dash($p['end_date'])) ?></div></div>
+          <div><div class="kv__label">Board approval</div><div class="kv__value mono"><?= e($dash($p['board_approval_date'] ?? null)) ?><?php if (!empty($p['board_approval_note'])): ?> <span class="muted" style="font-family:inherit;">· <?= e($p['board_approval_note']) ?></span><?php endif; ?></div></div>
         </div>
       </div>
 
@@ -213,6 +222,7 @@ $eventTitle = [
     <?php elseif ($differs > 0): ?>
       <div class="identity-note" style="margin-bottom:14px; color:#B42318;">
         <strong><?= e((string) $differs) ?></strong> field<?= $differs === 1 ? '' : 's' ?> differ between NextGen and PowerSchool — review before the next OneSync run.
+        <?php if (!empty($canEdit)): ?><span style="color:#52677A;">Use <strong>Use this</strong> beside a value to write it to the golden record.</span><?php endif; ?>
       </div>
     <?php else: ?>
       <div class="identity-note" style="margin-bottom:14px; color:#1F7A3D;">
@@ -229,15 +239,39 @@ $eventTitle = [
           <tr><td colspan="4" style="font-weight:600; color:#22343F; background:#F4F7F9; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px;"><?= e($glabel) ?></td></tr>
           <?php foreach ($groupRows as $f):
               $isDiff = in_array($f['state'], ['differ', 'missing'], true);
-              $v = $verdict[$f['state']] ?? null; ?>
+              $v = $verdict[$f['state']] ?? null;
+              $canPick = !empty($canEdit) && !empty($f['overridable']) && $isDiff;
+              $pickBtn = static function (string $source, string $value) use ($f, $p, $csrf): string {
+                  if ($value === '') { return ''; }
+                  ob_start(); ?>
+                  <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/reconcile')) ?>" style="display:inline; margin-top:4px;">
+                    <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+                    <input type="hidden" name="field" value="<?= e($f['key']) ?>">
+                    <input type="hidden" name="source" value="<?= e($source) ?>">
+                    <button type="submit" title="Write this value to the golden record"
+                      style="cursor:pointer; font-size:10.5px; font-weight:600; color:#3D6478; background:#EAF1F5; border:1px solid #CFE0E9; border-radius:9px; padding:1px 8px;">Use this</button>
+                  </form>
+                  <?php return (string) ob_get_clean();
+              }; ?>
           <tr<?= $isDiff ? ' style="background:#FFF8F7;"' : '' ?>>
             <td>
               <span style="color:#22343F; font-weight:500;"><?= e($f['label']) ?></span>
               <?php if ($f['pii']): ?> <span class="pii-tag">PII</span><?php endif; ?>
               <div class="mono" style="font-size:10.5px; color:#9AA9B4;"><?= e($f['nextgen'] ?? '—') ?> · <?= e($f['powerschool'] ?? '—') ?></div>
             </td>
-            <td><?= $f['ngValue'] === '' ? '<span class="value-missing">—</span>' : e($f['ngValue']) ?></td>
-            <td><?= $f['psValue'] === '' ? '<span class="value-missing">—</span>' : e($f['psValue']) ?></td>
+            <?php
+              $goldenTag = '<span title="Currently on the golden record" style="margin-left:6px; font-size:10px; font-weight:600; color:#1F7A3D; background:#E7F4EC; border-radius:9px; padding:1px 7px;">● in golden</span>';
+            ?>
+            <td>
+              <?= $f['ngValue'] === '' ? '<span class="value-missing">—</span>' : e($f['ngValue']) ?>
+              <?php if (!empty($f['overridable']) && !empty($f['ngIsGolden'])): ?><?= $goldenTag ?><?php endif; ?>
+              <?php if ($canPick && empty($f['ngIsGolden'])): ?><div><?= $pickBtn('nextgen', $f['ngValue']) ?></div><?php endif; ?>
+            </td>
+            <td>
+              <?= $f['psValue'] === '' ? '<span class="value-missing">—</span>' : e($f['psValue']) ?>
+              <?php if (!empty($f['overridable']) && !empty($f['psIsGolden'])): ?><?= $goldenTag ?><?php endif; ?>
+              <?php if ($canPick && empty($f['psIsGolden'])): ?><div><?= $pickBtn('powerschool', $f['psValue']) ?></div><?php endif; ?>
+            </td>
             <td>
               <?php if ($v !== null): ?>
                 <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; color:<?= e($v[0]) ?>; background:<?= e($v[1]) ?>;"><?= e($v[2]) ?></span>
@@ -253,76 +287,29 @@ $eventTitle = [
   </div>
 
   <!-- Live Active Directory verification (Adaxes REST API) -->
-  <?php
-    $adConfigured = !empty($adaxes['configured']);
-    $adComparison = $adaxes['comparison'] ?? [];
-    $adDiffers = \App\Service\AdaxesService::diffCount($adComparison);
-    $adBy = $adaxes['by'] ?? null;
-    $adId = $adaxes['identifier'] ?? null;
-  ?>
+  <!--
+    The AD lookup is a live REST call to Adaxes that can take a moment. Rather than
+    block the whole page on it, we render the panel immediately with a loading
+    indicator and fetch the comparison over AJAX (GET /people/{id}/adaxes) — see
+    public/assets/js/person-adaxes.js, which swaps the result into #adaxes-live.
+    When Adaxes isn't configured there's nothing to look up, so we render that
+    (static) state inline and skip the round trip entirely.
+  -->
   <div class="panel" style="margin-top:18px;">
     <div class="panel__head">
       <h2 class="panel__title">Active Directory <span class="muted" style="font-weight:500;">(live)</span></h2>
       <span class="panel__note">— queried from Adaxes vs the golden record</span>
     </div>
 
-    <?php if (!$adConfigured): ?>
-      <div class="identity-note" style="margin-bottom:0;">
-        Live AD verification is <strong>off</strong>. Set <span class="mono">ADAXES_BASE_URL</span> plus a <span class="mono">ADAXES_TOKEN</span> (or <span class="mono">ADAXES_USERNAME</span> + <span class="mono">ADAXES_PASSWORD</span> for a read-only service account) to compare each account against Active Directory here.
-      </div>
-    <?php elseif (empty($adaxes['ok'])): ?>
-      <div class="identity-note" style="margin-bottom:0; color:#B42318;">
-        Could not reach Active Directory: <?= e((string) ($adaxes['error'] ?? 'unknown error')) ?>
-      </div>
-    <?php elseif (empty($adaxes['found'])): ?>
-      <div class="identity-note" style="margin-bottom:0; color:#B45309;">
-        <?php if ($adBy === null): ?>
-          No AD identifier on file and no username/email/employee&nbsp;ID to search on, so there is no account to verify.
-        <?php elseif ($adBy === 'objectGUID'): ?>
-          No Active Directory account matched this person (looked up by <span class="mono">objectGUID</span> = <span class="mono"><?= e((string) $adId) ?></span>).
-        <?php else: ?>
-          No Active Directory account matched this person (searched <span class="mono"><?= e((string) $adId) ?></span>).
-        <?php endif; ?>
+    <?php if (!empty($adaxesConfigured)): ?>
+      <div id="adaxes-live" class="adaxes-live" data-adaxes-url="<?= e($adaxesUrl) ?>">
+        <div class="adaxes-loading identity-note" style="margin-bottom:0;">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Checking Active Directory…</span>
+        </div>
       </div>
     <?php else: ?>
-      <?php if ($adDiffers > 0): ?>
-        <div class="identity-note" style="margin-bottom:14px; color:#B42318;">
-          <strong><?= e((string) $adDiffers) ?></strong> field<?= $adDiffers === 1 ? '' : 's' ?> differ between the golden record and Active Directory — review before the next OneSync run.
-        </div>
-      <?php else: ?>
-        <div class="identity-note" style="margin-bottom:14px; color:#1F7A3D;">
-          The golden record and Active Directory agree on every comparable field.
-        </div>
-      <?php endif; ?>
-      <p class="panel__note" style="margin:0 0 12px;">
-        <?php if ($adBy === 'objectGUID'): ?>
-          Matched by <span class="mono">objectGUID</span> = <span class="mono"><?= e((string) $adId) ?></span>.
-        <?php else: ?>
-          Matched by directory search (<span class="mono"><?= e((string) $adId) ?></span>).
-        <?php endif; ?>
-      </p>
-
-      <table class="assign-table">
-        <thead><tr><th>Field</th><th>Golden record</th><th>Active Directory</th><th>Verify</th></tr></thead>
-        <tbody>
-          <?php foreach ($adComparison as $f):
-              $isDiff = in_array($f['state'], ['differ', 'missing'], true);
-              $v = $verdict[$f['state']] ?? null; ?>
-          <tr<?= $isDiff ? ' style="background:#FFF8F7;"' : '' ?>>
-            <td><span style="color:#22343F; font-weight:500;"><?= e($f['label']) ?></span></td>
-            <td><?= $f['golden'] === '' ? '<span class="value-missing">—</span>' : e($f['golden']) ?></td>
-            <td><?= $f['ad'] === '' ? '<span class="value-missing">—</span>' : e($f['ad']) ?></td>
-            <td>
-              <?php if ($v !== null): ?>
-                <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; color:<?= e($v[0]) ?>; background:<?= e($v[1]) ?>;"><?= e($v[2]) ?></span>
-              <?php else: ?>
-                <span class="value-missing">—</span>
-              <?php endif; ?>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </tbody>
-      </table>
+      <?= \App\View\View::partial('people/_adaxes', ['adaxes' => $adaxes, 'verdict' => $verdict, 'p' => $p, 'canEdit' => $canEdit ?? false, 'csrf' => $csrf ?? '']) ?>
     <?php endif; ?>
   </div>
 
@@ -458,3 +445,6 @@ $eventTitle = [
     <p style="margin:0; font-size:13px; color:#3D5462; line-height:1.5;"><?= $p['notes'] ? e($p['notes']) : '<span class="muted">No notes.</span>' ?></p>
   </div>
 </div>
+<?php if (!empty($adaxesConfigured)): ?>
+<script src="<?= e(asset('assets/js/person-adaxes.js')) ?>" defer></script>
+<?php endif; ?>

@@ -139,7 +139,7 @@ $cards = [
       <thead><tr><th>Person</th><th>Destination</th><th>When</th><th>Last error</th></tr></thead>
       <tbody>
         <?php foreach ($failedSyncs as $s): ?>
-        <tr<?= $s['person_id'] ? ' class="is-clickable" onclick="window.location=\'' . e(url('/people/' . $s['person_id'])) . '\'"' : '' ?>>
+        <tr<?= $s['person_id'] ? ' class="is-clickable" data-href="' . e(url('/people/' . $s['person_id'])) . '"' : '' ?>>
           <td class="cell-name"><?= e($s['person_id'] ? trim($s['first_name'] . ' ' . $s['last_name']) : '(unresolved)') ?></td>
           <td><?= e($s['destination']) ?></td>
           <td class="mono" style="font-size:12px;"><?= e($s['last_sync_at'] ?? '—') ?></td>
