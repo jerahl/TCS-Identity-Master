@@ -9,6 +9,7 @@ use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AdaxesWriter;
 use App\Service\AuditService;
+use App\Service\GroupPolicy;
 use App\Service\UsernameMinter;
 use PDO;
 
@@ -46,6 +47,7 @@ final class AdaxesReconciler
 
     private AuditService $audit;
     private PersonWriter $people;
+    private GroupPolicy $groups;
     private float $maxDisableRatio;
     private int $disableGuardMin;
     private int $maxCreates;
@@ -63,9 +65,11 @@ final class AdaxesReconciler
         private readonly AdaxesWriter $writer,
         ?AuditService $audit = null,
         ?PersonWriter $people = null,
+        ?GroupPolicy $groups = null,
     ) {
         $this->audit  = $audit ?? new AuditService($this->db);
         $this->people = $people ?? new PersonWriter($this->db, $this->audit);
+        $this->groups = $groups ?? new GroupPolicy();
 
         $this->maxDisableRatio = (float) Config::get('ADAXES_WRITE_MAX_DISABLES_RATIO', '0.2');
         $this->disableGuardMin = max(1, (int) Config::get('ADAXES_WRITE_DISABLE_GUARD_MIN', '20'));
@@ -81,14 +85,14 @@ final class AdaxesReconciler
     /**
      * Run the reconciler.
      *
-     * @param list<string> $phases any of 'disable','edit','create'
+     * @param list<string> $phases any of 'disable','edit','create','groups'
      * @param callable(string,array<string,mixed>):void|null $log optional live-progress
      *        callback: fires 'phase' (with the phase name + people count) as each phase
      *        starts and 'item' as each person's outcome is decided. Lets a CLI stream
      *        progress instead of waiting for the batch summary.
      * @return array<string,mixed>
      */
-    public function run(bool $dryRun = true, array $phases = ['disable', 'edit', 'create'], ?int $limit = null, ?callable $log = null): array
+    public function run(bool $dryRun = true, array $phases = ['disable', 'edit', 'create', 'groups'], ?int $limit = null, ?callable $log = null): array
     {
         $this->log = $log;
         $writeEnabled = $this->writer->configured();
@@ -122,6 +126,10 @@ final class AdaxesReconciler
         if (in_array('create', $phases, true)) {
             $result['create'] = $this->runCreate($apply, $limit);
             $result['errors'] += $result['create']['errors'];
+        }
+        if (in_array('groups', $phases, true)) {
+            $result['groups'] = $this->runGroups($apply, $limit);
+            $result['errors'] += $result['groups']['errors'];
         }
 
         return $result;
@@ -403,7 +411,156 @@ final class AdaxesReconciler
         return $out;
     }
 
+    // ---- Phase 4: groups ----------------------------------------------------
+
+    /**
+     * Reconcile AD group membership for active/pending people with a linked
+     * objectGUID: compute the desired groups (GroupPolicy) and diff against the
+     * live `memberOf`, adding missing groups and removing memberships IDM manages
+     * that the person no longer qualifies for. Groups outside the managed set are
+     * never touched. Requires the group-membership write endpoints
+     * (ADAXES_GROUP_ADD_PATH / _REMOVE_PATH) to actually write — until they are
+     * set the phase reports the intended add/remove and applies nothing.
+     *
+     * @return array{applied:int,added:int,removed:int,noop:int,skipped:int,errors:int,items:list<Item>}
+     */
+    private function runGroups(bool $apply, ?int $limit): array
+    {
+        $out = ['applied' => 0, 'added' => 0, 'removed' => 0, 'noop' => 0, 'skipped' => 0, 'errors' => 0, 'items' => []];
+
+        $people = $this->fetchPeople("status IN ('active','pending')", $limit);
+        $this->emit('phase', ['phase' => 'groups', 'total' => count($people)]);
+
+        foreach ($people as $p) {
+            $pid = (int) $p['person_id'];
+            $name = self::displayName($p);
+            $guid = self::linkedGuid($this->sourceIdsFor($pid));
+            if ($guid === null) {
+                continue; // no link → create/correlation territory, not groups
+            }
+
+            $desired = $this->groups->desiredGroups(
+                (string) ($p['title'] ?? ''),
+                (string) ($p['person_type'] ?? ''),
+                $this->schoolToken($p),
+                self::isBusDriver($p),
+            );
+
+            $live = $this->read->memberOf($guid);
+            if (!$live['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'groups', 'error', (string) $live['error']);
+                continue;
+            }
+            if (!$live['found']) {
+                $out['skipped']++;
+                $this->item($out, $pid, $name, 'groups', 'skip', 'no live AD account found');
+                continue;
+            }
+
+            // Compare by cn (case-insensitive). Keep the DN for removals.
+            $liveByCn = [];
+            foreach ($live['groups'] as $dn) {
+                $cn = self::cnOf($dn);
+                if ($cn !== '') {
+                    $liveByCn[strtolower($cn)] = ['cn' => $cn, 'dn' => $dn];
+                }
+            }
+            $desiredByCn = [];
+            foreach ($desired as $cn) {
+                $desiredByCn[strtolower($cn)] = $cn;
+            }
+
+            // Add: desired groups the account isn't in yet.
+            $toAdd = [];
+            foreach ($desiredByCn as $lc => $cn) {
+                if (!isset($liveByCn[$lc])) {
+                    $toAdd[] = $cn;
+                }
+            }
+            // Remove: managed groups the account is in but no longer qualifies for.
+            $toRemove = [];
+            foreach ($liveByCn as $lc => $g) {
+                if (!isset($desiredByCn[$lc]) && $this->groups->isManaged($g['cn'])) {
+                    $toRemove[] = $g;
+                }
+            }
+
+            if ($toAdd === [] && $toRemove === []) {
+                $out['noop']++;
+                continue;
+            }
+
+            $summary = trim(($toAdd !== [] ? '+' . implode(',+', $toAdd) : '') . ' ' . ($toRemove !== [] ? '-' . implode(',-', array_column($toRemove, 'cn')) : ''));
+
+            if (!$apply) {
+                $this->item($out, $pid, $name, 'groups', 'would-sync', $summary);
+                continue;
+            }
+
+            $changed = 0;
+            $errs = [];
+            foreach ($toAdd as $cn) {
+                $r = $this->writer->addToGroup($cn, $guid);
+                if ($r['ok']) {
+                    $out['added']++;
+                    $changed++;
+                } else {
+                    $errs[] = "add {$cn}: " . $r['error'];
+                }
+            }
+            foreach ($toRemove as $g) {
+                $r = $this->writer->removeFromGroup($g['dn'], $guid);
+                if ($r['ok']) {
+                    $out['removed']++;
+                    $changed++;
+                } else {
+                    $errs[] = "remove {$g['cn']}: " . $r['error'];
+                }
+            }
+
+            if ($errs !== []) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'groups', 'error', implode('; ', $errs));
+                continue;
+            }
+            $this->audit->log('person', $pid, 'update', ['ad_groups' => 'drift'], ['added' => $toAdd, 'removed' => array_column($toRemove, 'cn')], self::ACTOR);
+            $this->audit->lifecycle($pid, 'update', ['summary' => 'AD group membership synced via Adaxes: ' . $summary . '.'], self::ACTOR);
+            $out['applied']++;
+            $this->item($out, $pid, $name, 'groups', 'synced', $summary);
+        }
+
+        return $out;
+    }
+
     // ---- helpers ------------------------------------------------------------
+
+    /**
+     * The building OU token used for the per-school Everyone group — the leftmost
+     * RDN value of school.ad_ou (e.g. "OU=STC,OU=CO" → "STC", "OU=CO" → "CO").
+     * '' when the person has no resolvable building.
+     *
+     * @param array<string,mixed> $p
+     */
+    private function schoolToken(array $p): string
+    {
+        $adOu = $this->schoolRow($p)['ad_ou'];
+        if ($adOu === '') {
+            return '';
+        }
+        $first = trim(explode(',', $adOu)[0]);
+        return trim((string) preg_replace('/^OU=/i', '', $first));
+    }
+
+    /** The cn (leftmost RDN value) of a distinguishedName, or '' if not a DN. */
+    private static function cnOf(string $dn): string
+    {
+        $first = trim(explode(',', $dn)[0]);
+        if (stripos($first, 'CN=') === 0) {
+            return trim(substr($first, 3));
+        }
+        return $first; // already a bare cn
+    }
 
     /**
      * The username to use on create: an already-assigned (locked) username is

@@ -202,6 +202,43 @@ final class AdaxesWriterTest extends TestCase
         self::assertStringContainsString('credentials', (string) $res['error']);
     }
 
+    public function testGroupAddIsNotConfiguredByDefault(): void
+    {
+        $res = $this->writer(null)->addToGroup('CN=All-Faculty,OU=Groups,DC=x', '2b6160e2-ad91-419c-8960-cf672c75528f');
+        self::assertFalse($res['ok']);
+        self::assertStringContainsString('ADAXES_GROUP_ADD_PATH', (string) $res['error']);
+    }
+
+    public function testGroupAddAndRemovePostWhenConfigured(): void
+    {
+        putenv('ADAXES_GROUP_ADD_PATH=api/directoryObjects/group/members/add');
+        putenv('ADAXES_GROUP_REMOVE_PATH=api/directoryObjects/group/members/remove');
+        try {
+            $captured = null;
+            $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+                $captured = ['method' => $method, 'url' => $url, 'body' => $body];
+                return ['status' => 200, 'body' => '{}'];
+            };
+            $w = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $fetch, 'test-token', true);
+
+            $add = $w->addToGroup('All-Faculty', '2b6160e2-ad91-419c-8960-cf672c75528f');
+            self::assertTrue($add['ok']);
+            self::assertTrue($add['changed']);
+            self::assertSame('POST', $captured['method']);
+            self::assertStringContainsString('/group/members/add', $captured['url']);
+            $body = json_decode((string) $captured['body'], true);
+            self::assertSame('All-Faculty', $body['group']);
+            self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $body['member']);
+
+            $rem = $w->removeFromGroup('CN=CO-Everyone,OU=Groups,DC=x', '2b6160e2-ad91-419c-8960-cf672c75528f');
+            self::assertTrue($rem['ok']);
+            self::assertStringContainsString('/group/members/remove', $captured['url']);
+        } finally {
+            putenv('ADAXES_GROUP_ADD_PATH');
+            putenv('ADAXES_GROUP_REMOVE_PATH');
+        }
+    }
+
     public function testDedicatedDisablePathIsPostedWhenConfigured(): void
     {
         putenv('ADAXES_DISABLE_PATH=api/directoryObjects/disable');

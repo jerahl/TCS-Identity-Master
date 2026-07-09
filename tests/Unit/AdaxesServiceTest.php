@@ -512,6 +512,39 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('john.smith@example.org', $ad['email']);
     }
 
+    public function testMemberOfReturnsRawGroupDnsWithoutCommaCorruption(): void
+    {
+        // memberOf is multi-valued and each value is a DN full of commas — the
+        // raw list must survive intact (not be flattened/split on commas).
+        $captured = null;
+        $svc = $this->service(['status' => 200, 'body' => json_encode([
+            'properties' => [
+                ['name' => 'memberOf', 'values' => [
+                    'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                    'CN=CO-Everyone,OU=Groups,DC=example,DC=org',
+                ]],
+            ],
+        ])], $captured);
+
+        $res = $svc->memberOf('2b6160e2-ad91-419c-8960-cf672c75528f');
+        self::assertTrue($res['ok']);
+        self::assertTrue($res['found']);
+        self::assertSame([
+            'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+            'CN=CO-Everyone,OU=Groups,DC=example,DC=org',
+        ], $res['groups']);
+        self::assertStringContainsString('properties=memberOf', $captured['url']);
+    }
+
+    public function testMemberOfMissingObjectIsCleanNotFound(): void
+    {
+        $svc = $this->service(['status' => 404, 'body' => 'not found']);
+        $res = $svc->memberOf('2b6160e2-ad91-419c-8960-cf672c75528f');
+        self::assertTrue($res['ok']);
+        self::assertFalse($res['found']);
+        self::assertSame([], $res['groups']);
+    }
+
     public function testGoldenCandidateEmptyWhenNoAttributes(): void
     {
         // A not-found / off envelope yields nothing to adopt.

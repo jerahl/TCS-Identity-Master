@@ -207,6 +207,37 @@ final class AdaxesService
     }
 
     /**
+     * The group DNs a directory object is a direct member of (`memberOf`). Kept
+     * separate from getObject() because memberOf is multi-valued and each value
+     * is a DN (full of commas), which the scalar property flattening would
+     * corrupt — this returns the raw list. Requests only memberOf, so it's cheap
+     * enough for the group reconciler to call per person.
+     *
+     * @return array{ok:bool, error:?string, found:bool, groups:list<string>}
+     */
+    public function memberOf(string $idOrDn): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Adaxes is not configured.', 'found' => false, 'groups' => []];
+        }
+        try {
+            $url = $this->baseUrl . '/' . $this->objectsPath
+                 . '?' . $this->objectParam . '=' . rawurlencode($idOrDn)
+                 . '&properties=' . rawurlencode('memberOf');
+            $res = $this->request('GET', $url);
+            if (!$res['ok']) {
+                if ($res['status'] === 404) {
+                    return ['ok' => true, 'error' => null, 'found' => false, 'groups' => []];
+                }
+                return ['ok' => false, 'error' => $res['error'], 'found' => false, 'groups' => []];
+            }
+            return ['ok' => true, 'error' => null, 'found' => true, 'groups' => self::rawMultiValue($res['data'], 'memberOf')];
+        } finally {
+            $this->endSession();
+        }
+    }
+
+    /**
      * Find a single user by any of username (sAMAccountName), email (mail), or
      * employee id (employeeID) — whichever the person record carries. Convenience
      * wrapper around searchByCriteria(); returns found=false when the person has
@@ -598,6 +629,56 @@ final class AdaxesService
         }
 
         return $out;
+    }
+
+    /**
+     * Pull a named multi-valued property out of a response as its RAW list of
+     * string values (NOT comma-joined — the values may be DNs). Tolerates the
+     * list-form ([{name,value|values}]) and map-form ({name: value|values})
+     * property shapes and a top-level attribute. Case-insensitive on the name.
+     *
+     * @param array<string,mixed> $data
+     * @return list<string>
+     */
+    private static function rawMultiValue(array $data, string $name): array
+    {
+        $wanted = strtolower($name);
+        $collect = static function (mixed $value): array {
+            if ($value === null) {
+                return [];
+            }
+            $items = is_array($value) && array_is_list($value) ? $value : [$value];
+            $out = [];
+            foreach ($items as $v) {
+                if (is_scalar($v) && trim((string) $v) !== '') {
+                    $out[] = trim((string) $v);
+                }
+            }
+            return $out;
+        };
+
+        $props = $data['properties'] ?? null;
+        if (is_array($props)) {
+            if (array_is_list($props)) {
+                foreach ($props as $p) {
+                    if (is_array($p) && strtolower((string) ($p['name'] ?? $p['type'] ?? '')) === $wanted) {
+                        return $collect($p['value'] ?? $p['values'] ?? null);
+                    }
+                }
+            } else {
+                foreach ($props as $k => $v) {
+                    if (strtolower((string) $k) === $wanted) {
+                        return $collect($v);
+                    }
+                }
+            }
+        }
+        foreach ($data as $k => $v) {
+            if (strtolower((string) $k) === $wanted) {
+                return $collect($v);
+            }
+        }
+        return [];
     }
 
     /** Flatten a property value (scalar, single-element array, or multi-value) to a string. */

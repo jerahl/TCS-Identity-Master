@@ -232,6 +232,7 @@ The final phase. IDM mints identity and creates the account.
 | 1 | disable / enable | `AdaxesWriter::disable/enable`, `bin/adaxes_sync.php` |
 | 2 | + attribute edits | `AdaxesWriter::modify`, delta from `compareToGolden()` |
 | 3 | + create + minting → **OneSync off for AD** | `AdaxesWriter::create`, `UsernameMinter`, OU resolution |
+| 4 | + group membership | `GroupPolicy`, `AdaxesService::memberOf`, `AdaxesWriter::add/removeFromGroup`, reconciler `groups` phase |
 
 ---
 
@@ -316,34 +317,36 @@ default `OU=Faculty`), and per-type leaf OUs `AD_OU_CONTRACTOR` / `AD_OU_SUB` /
 title-driven Bus Driver / SRO placement (`AD_OU_BUS_DRIVER` / `AD_DEPT_BUS_DRIVER`
 / `AD_OU_SRO`).
 
-## Group membership (Phase 4 — the largest unowned replication job)
+### Phase 4 — Group membership
 
-OneSync's Faculty AD destination carries **~31 group mappings** that nothing in
-IDM or Adaxes owns yet. This is the single biggest replication job before the AD
-destination can be turned off:
+IDM owns group membership directly (the source-of-truth approach), replacing
+OneSync's Faculty AD group mappings. `GroupPolicy` (pure, unit-tested) computes
+the group set a person *should* be in from the structured truth IDM already
+holds; the reconciler's `groups` phase reads live `memberOf`, diffs, adds what's
+missing, and removes memberships **IDM manages** that the person no longer
+qualifies for (groups outside the managed set are never touched — so a school
+move correctly drops the old Everyone group).
 
-- **Per-school "Everyone" groups** (22) — membership matched on the AD
-  `department` (why IDM now writes/synchronizes `department` rigorously).
-- **All-Faculty** and **Transportation**.
-- **Keyword-driven Microsoft 365 A1/A3 licensing groups** — membership derived
-  from title/department keyword rules.
-- **Five Raptor role groups.**
-- **Move semantics:** on a school move OneSync *removes* the old groups and adds
-  the new — replication must own removal, not just addition.
+Rules (from the OneSync destination):
 
-Two ways to own it (decide before cutover):
+- **All-Faculty** — everyone.
+- **Per-school Everyone group** — from the building OU token: `OU=CO` →
+  `CO-Everyone`. Naming exceptions: `RQES → RQS`, `UPE → UP`.
+- **Transportation** — everyone in transportation (Bus Drivers).
+- **Microsoft 365 license** (exactly one): the **A1** group if the title contains
+  `CNP` / `custodian` / `bus driver` / `aide` / `sub` / `intern` / `SRO`, or the
+  person is a contractor / sub / intern; otherwise the **A3** group.
+- **Raptor role** (exactly one, first match wins):
+  - `Raptor_BuildingAdmin` — title contains *Principal* or *IT Computer Tech*
+  - `Raptor_ClientAdmin` — *IT Technician Supervisor*, *Safety Contractor*, or *Director of Technology*
+  - `Raptor_EntryAdmin` — *Secretary* or *bookkeeper*
+  - `Raptor_GlobalAdmin` — *Network Administrator* or *Security Specialist*
+  - `Raptor_EmergencyManagementUser` — everyone else
 
-1. **Adaxes Business Rules** — server-side rules keyed off `department`/`title`
-   on create + modify. Keeps IDM identity-only, but re-encodes the keyword soup
-   in Adaxes where IDM can't see or test it.
-2. **A Phase 4 group reconciler in IDM** *(recommended)* — IDM already knows the
-   structured truth (building, title, person_type) that the keyword rules
-   approximate; a `group` phase in `bin/adaxes_sync.php` computing desired
-   memberships and diffing against `memberOf` fits the golden-record philosophy,
-   is dry-runnable, and testable like the rest of the reconciler.
-
-Either way, the first step is exporting the actual 31 mappings (group DNs +
-matching conditions) from the OneSync destination as the spec.
+Group **names** are configurable (`AD_GROUP_*`); the exact AD names + the
+membership-write endpoints must be confirmed before enabling (see Open items).
+Until `ADAXES_GROUP_ADD_PATH` / `_REMOVE_PATH` are set, the `groups` phase is
+report-only (dry-run shows the intended add/remove per person).
 
 ## Adaxes-side setup (not code)
 
@@ -438,9 +441,15 @@ destination. IDM state is unchanged; no data migration to reverse.
   yet — neither the reconciler nor a Business Rule sends the credentials /
   welcome notification. `NotifyTemplateService` is the natural hook if IDM owns
   it; decide IDM-vs-Adaxes alongside the password BR.
-- **Group membership (Phase 4)** — see the dedicated section above; export the
-  ~31 mappings from the OneSync destination as the spec, then choose Business
-  Rules vs. an IDM group reconciler (recommended).
+- **Group membership (Phase 4)** — the matching rules are implemented
+  (`GroupPolicy`). Before enabling: (a) confirm the exact AD group **names**
+  (`AD_GROUP_ALL_FACULTY` / `_TRANSPORTATION` / `_M365_A1` / `_M365_A3`, the
+  `-Everyone` suffix, and the Everyone-token remaps `RQES→RQS` / `UPE→UP`); and
+  (b) confirm the group-membership **write endpoints** the deployed Adaxes build
+  exposes (`ADAXES_GROUP_ADD_PATH` / `_REMOVE_PATH` + the group/member param
+  names) — the phase is report-only until they are set. The `sub` (A1) keyword
+  and the `Secretary` spelling were normalized from OneSync's rules; spot-check
+  against the live destination.
 - Confirm `AD_DEPT_BUS_DRIVER` — IDM defaults the Bus Driver department override
   to `Transportation`; verify the exact string OneSync writes (group matching is
   string-sensitive).

@@ -40,6 +40,10 @@ final class AdaxesWriter
     private string $modifyPath;
     private string $disablePath;
     private string $enablePath;
+    private string $groupAddPath;
+    private string $groupRemovePath;
+    private string $groupParam;
+    private string $memberParam;
     private string $createObjectType;
 
     /**
@@ -74,6 +78,12 @@ final class AdaxesWriter
         // set an explicit operation path if your Adaxes build exposes one.
         $this->disablePath      = trim((string) Config::get('ADAXES_DISABLE_PATH', ''), '/');
         $this->enablePath       = trim((string) Config::get('ADAXES_ENABLE_PATH', ''), '/');
+        // Group membership endpoints are version-specific — no default; the group
+        // reconciler phase reports (dry-run) until these are configured.
+        $this->groupAddPath     = trim((string) Config::get('ADAXES_GROUP_ADD_PATH', ''), '/');
+        $this->groupRemovePath  = trim((string) Config::get('ADAXES_GROUP_REMOVE_PATH', ''), '/');
+        $this->groupParam       = trim((string) Config::get('ADAXES_GROUP_PARAM', 'group')) ?: 'group';
+        $this->memberParam      = trim((string) Config::get('ADAXES_MEMBER_PARAM', 'member')) ?: 'member';
         $this->createObjectType = trim((string) Config::get('ADAXES_CREATE_OBJECT_TYPE', 'user')) ?: 'user';
 
         $this->sessionPath = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
@@ -193,7 +203,57 @@ final class AdaxesWriter
         return $this->setDisabled($objectGuid, false, $this->enablePath);
     }
 
+    /**
+     * Add a member (by objectGUID) to a group (by DN, GUID, or cn — whatever the
+     * configured endpoint accepts). Requires ADAXES_GROUP_ADD_PATH; without it the
+     * group reconciler stays in report-only mode.
+     *
+     * @return ToggleResult
+     */
+    public function addToGroup(string $group, string $memberGuid): array
+    {
+        return $this->groupOp($this->groupAddPath, 'ADAXES_GROUP_ADD_PATH', $group, $memberGuid);
+    }
+
+    /** Remove a member from a group (the inverse of addToGroup). @return ToggleResult */
+    public function removeFromGroup(string $group, string $memberGuid): array
+    {
+        return $this->groupOp($this->groupRemovePath, 'ADAXES_GROUP_REMOVE_PATH', $group, $memberGuid);
+    }
+
     // ---- internals ----------------------------------------------------------
+
+    /**
+     * POST a membership change to a configurable endpoint, passing the group and
+     * member both as query params and in the JSON body (endpoints differ on which
+     * they read). No-op with a clear error when the path isn't configured.
+     *
+     * @return ToggleResult
+     */
+    private function groupOp(string $path, string $envName, string $group, string $memberGuid): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        }
+        $group = trim($group);
+        $memberGuid = trim($memberGuid);
+        if ($group === '' || $memberGuid === '') {
+            return ['ok' => false, 'error' => 'Group and member are both required.', 'changed' => false];
+        }
+        if ($path === '') {
+            return ['ok' => false, 'error' => "Group membership endpoint is not configured (set {$envName}).", 'changed' => false];
+        }
+
+        $url = $this->baseUrl . '/' . $path
+             . '?' . $this->groupParam . '=' . rawurlencode($group)
+             . '&' . $this->memberParam . '=' . rawurlencode($memberGuid);
+        $body = (string) json_encode([$this->groupParam => $group, $this->memberParam => $memberGuid]);
+        $res = $this->request('POST', $url, $body);
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => true]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => false];
+    }
+
 
     /**
      * Set/clear accountDisabled. Uses a dedicated operation endpoint when one is

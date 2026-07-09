@@ -628,6 +628,85 @@ final class AdaxesReconcilerTest extends TestCase
         }
     }
 
+    // ---- groups (Phase 4) ---------------------------------------------------
+
+    public function testGroupsPhaseAddsMissingAndRemovesManagedOnlyWithinTheSet(): void
+    {
+        putenv('ADAXES_GROUP_ADD_PATH=api/group/add');
+        putenv('ADAXES_GROUP_REMOVE_PATH=api/group/remove');
+        try {
+            $db = $this->db();
+            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO')");
+            $this->seedPerson($db, [
+                'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
+                'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,
+            ]);
+            $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 30, 'Teacher - Math', 1)");
+            $this->link($db, 1, self::GUID1);
+
+            // Live memberOf: keep All-Faculty; EMS-Everyone is managed but no longer
+            // desired (→ remove); Domain Users is unmanaged (→ never touch).
+            $readFetch = function (string $method, string $url, array $headers, ?string $body): ?array {
+                return ['status' => 200, 'body' => json_encode(['properties' => [
+                    ['name' => 'memberOf', 'values' => [
+                        'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                        'CN=EMS-Everyone,OU=Groups,DC=example,DC=org',
+                        'CN=Domain Users,CN=Users,DC=example,DC=org',
+                    ]],
+                ]])];
+            };
+            $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+
+            $calls = [];
+            $writerFetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+                $calls[] = ['url' => $url, 'body' => $body];
+                return ['status' => 200, 'body' => '{}'];
+            };
+            $writer = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $writerFetch, 'write-token', true);
+
+            $rec = new AdaxesReconciler($db, $read, $writer);
+            $res = $rec->run(dryRun: false, phases: ['groups']);
+
+            self::assertSame(1, $res['groups']['applied']);
+            // desired = All-Faculty, CO-Everyone, M365 A3 License, Raptor_EmergencyManagementUser.
+            // All-Faculty already present → 3 adds; EMS-Everyone removed; Domain Users kept.
+            self::assertSame(3, $res['groups']['added']);
+            self::assertSame(1, $res['groups']['removed']);
+
+            $bodies = array_map(static fn($c) => (string) $c['body'], $calls);
+            $joined = implode(' | ', $bodies);
+            self::assertStringContainsString('CO-Everyone', $joined);
+            self::assertStringContainsString('EMS-Everyone', $joined);          // the managed removal
+            self::assertStringNotContainsString('Domain Users', $joined);       // unmanaged, untouched
+            self::assertStringNotContainsString('All-Faculty', $joined);        // already a member, no re-add
+        } finally {
+            putenv('ADAXES_GROUP_ADD_PATH');
+            putenv('ADAXES_GROUP_REMOVE_PATH');
+        }
+    }
+
+    public function testGroupsPhaseDryRunReportsButDoesNotWrite(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
+            'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $readFetch = fn(string $m, string $u, array $h, ?string $b): array =>
+            ['status' => 200, 'body' => json_encode(['properties' => [['name' => 'memberOf', 'values' => []]]])];
+        $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: true, phases: ['groups']);
+
+        self::assertSame('would-sync', $res['groups']['items'][0]['outcome']);
+        self::assertSame([], $calls); // read-only preview
+    }
+
     // ---- dry run & off ------------------------------------------------------
 
     public function testDryRunWritesNothing(): void

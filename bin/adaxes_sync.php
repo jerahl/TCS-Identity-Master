@@ -61,12 +61,12 @@ $log = $verbose ? static function (string $event, array $d): void {
     fflush(STDOUT);
 } : null;
 
-$phases = ['disable', 'edit', 'create'];
+$phases = ['disable', 'edit', 'create', 'groups'];
 if (isset($opts['phases'])) {
     $requested = array_values(array_filter(array_map('trim', explode(',', (string) $opts['phases']))));
     $unknown = array_diff($requested, $phases);
     if ($unknown !== []) {
-        fwrite(STDERR, 'Unknown phase(s): ' . implode(', ', $unknown) . ". Valid: disable, edit, create.\n");
+        fwrite(STDERR, 'Unknown phase(s): ' . implode(', ', $unknown) . ". Valid: disable, edit, create, groups.\n");
         exit(2);
     }
     $phases = $requested;
@@ -87,7 +87,7 @@ foreach ($result['notes'] as $note) {
     echo "  note: {$note}\n";
 }
 
-foreach (['disable', 'edit', 'create'] as $phase) {
+foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
     if (!isset($result[$phase])) {
         continue;
     }
@@ -104,7 +104,7 @@ foreach (['disable', 'edit', 'create'] as $phase) {
         }
     }
     $summary = [];
-    foreach (['candidates', 'applied', 'edited', 'created', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
+    foreach (['candidates', 'applied', 'added', 'removed', 'edited', 'created', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
         if (isset($r[$k])) {
             $summary[] = "{$k} {$r[$k]}";
         }
