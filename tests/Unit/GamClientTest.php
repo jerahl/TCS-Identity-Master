@@ -203,4 +203,43 @@ final class GamClientTest extends TestCase
         self::assertFalse($res['ok']);
         self::assertStringContainsString('GAM did not run', (string) $res['error']);
     }
+
+    public function testExit127ReportsBinaryNotFound(): void
+    {
+        // exit 127 = the gam binary couldn't be executed (not on PATH / wrong
+        // GAM_PATH). The message must say so and surface GAM_PATH, not leave a
+        // bare "(exit 127): no output".
+        $svc = $this->client([['status' => 127, 'stdout' => '', 'stderr' => '']]);
+
+        $res = $svc->getUser('jsmith@x.org');
+
+        self::assertFalse($res['ok']);
+        self::assertStringContainsString('exit 127', (string) $res['error']);
+        self::assertStringContainsString('not found or is not executable', (string) $res['error']);
+        self::assertStringContainsString('/usr/local/bin/gam', (string) $res['error']);
+    }
+
+    public function testUnreachableMessageNamesProcFunctionsWhenDisabled(): void
+    {
+        // A host with any of the proc_* family in disable_functions can never
+        // launch GAM — the message must point at that (and the API-backend escape
+        // hatch), not at GAM_PATH.
+        $msg = GamClient::unreachableMessage(false, '/usr/local/bin/gam');
+        self::assertStringContainsString('proc_close', $msg);   // not just proc_open
+        self::assertStringContainsString('GOOGLE_BACKEND=api', $msg);
+        self::assertStringNotContainsString('GAM_PATH', $msg);
+    }
+
+    public function testUnreachableMessageNamesGamPathWhenProcessesRun(): void
+    {
+        $msg = GamClient::unreachableMessage(true, '/usr/local/bin/gam');
+        self::assertStringContainsString('GAM did not run', $msg);
+        self::assertStringContainsString('/usr/local/bin/gam', $msg);
+    }
+
+    public function testCanRunProcessesTrueInTestEnvironment(): void
+    {
+        // The test runner has the proc_* family enabled; the guard must not misreport it.
+        self::assertTrue(GamClient::canRunProcesses());
+    }
 }

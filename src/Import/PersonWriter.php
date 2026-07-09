@@ -173,13 +173,16 @@ final class PersonWriter
     }
 
     /**
-     * Backfill a person's golden record from a matched AD account (live
-     * verification): record the objectGUID in the crosswalk and fill the
-     * username (set + LOCKED), email and UPN — but ONLY where the golden record
-     * is currently empty, so an existing value is never overwritten. Setting a
-     * username activates a pending person. Idempotent: a fully-populated record
-     * yields no writes. Unique clashes (username/email already used) leave the
-     * golden record untouched; the GUID link still stands. Returns change notes.
+     * Adopt a matched AD account's identity as the golden record (live
+     * verification): record the objectGUID in the crosswalk and write the AD
+     * username (set + LOCKED), email and UPN. Each field is written when AD
+     * carries a value that DIFFERS from the golden record (case-insensitively) —
+     * so a blank golden value is filled AND a differing one is overwritten to
+     * match AD. Setting the username activates a pending person (a no-op for an
+     * already-active one). Idempotent: a record that already matches AD yields no
+     * writes. Unique clashes (username/email already used by another record)
+     * leave the golden record untouched; the GUID link still stands. Returns
+     * change notes.
      *
      * @param array{guid?:?string, username?:?string, email?:?string, upn?:?string} $ad
      * @return list<string>
@@ -210,29 +213,31 @@ final class PersonWriter
         $after = [];
         $setUsername = false;
 
-        if ($username !== '' && trim((string) $p['username']) === '') {
+        if ($username !== '' && !self::sameCi($username, (string) $p['username'])) {
             $sets[] = 'username = :u';
             $sets[] = 'username_assigned_at = CURRENT_TIMESTAMP';
             $sets[] = 'username_locked = 1';
             $params[':u'] = $username;
             $before['username'] = $p['username'];
             $after['username'] = $username;
-            $notes[] = "username set to {$username} (locked)";
+            $notes[] = trim((string) $p['username']) === ''
+                ? "username set to {$username} (locked)"
+                : "username changed to {$username} (locked)";
             $setUsername = true;
         }
-        if ($email !== '' && trim((string) $p['email']) === '') {
+        if ($email !== '' && !self::sameCi($email, (string) $p['email'])) {
             $sets[] = 'email = :e';
             $params[':e'] = $email;
             $before['email'] = $p['email'];
             $after['email'] = $email;
-            $notes[] = "email set to {$email}";
+            $notes[] = trim((string) $p['email']) === '' ? "email set to {$email}" : "email changed to {$email}";
         }
-        if ($upn !== '' && trim((string) $p['upn']) === '') {
+        if ($upn !== '' && !self::sameCi($upn, (string) $p['upn'])) {
             $sets[] = 'upn = :pn';
             $params[':pn'] = $upn;
             $before['upn'] = $p['upn'];
             $after['upn'] = $upn;
-            $notes[] = "UPN set to {$upn}";
+            $notes[] = trim((string) $p['upn']) === '' ? "UPN set to {$upn}" : "UPN changed to {$upn}";
         }
 
         if ($sets !== []) {
@@ -262,6 +267,12 @@ final class PersonWriter
         }
 
         return $notes;
+    }
+
+    /** Case-insensitive equality of two trimmed values (matches the AD comparison). */
+    private static function sameCi(string $a, string $b): bool
+    {
+        return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
     }
 
     /**

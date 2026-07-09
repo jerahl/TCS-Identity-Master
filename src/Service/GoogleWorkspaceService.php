@@ -154,6 +154,82 @@ final class GoogleWorkspaceService
         return $this->domain;
     }
 
+    /**
+     * A step-by-step health check of the API backend's authorization, for the
+     * bin/google_auth_check.php setup script. Walks the same path a real call
+     * takes — feature flag → credentials → JWT signing → token exchange → a
+     * delegated Directory API read — and stops at the first failure so the
+     * script can point at exactly what to fix. Never throws.
+     *
+     * @return array{backend:string, enabled:bool, clientEmail:string, clientId:string,
+     *   adminSubject:string, domain:string, scopes:string, keySource:string,
+     *   steps:list<array{name:string, ok:bool, detail:string}>, ok:bool}
+     */
+    public function diagnose(): array
+    {
+        $meta = self::serviceAccountMeta();
+        $out = [
+            'backend'      => $this->backend,
+            'enabled'      => $this->enabled,
+            'clientEmail'  => $this->clientEmail,
+            'clientId'     => $meta['client_id'],
+            'adminSubject' => $this->adminSubject,
+            'domain'       => $this->domain,
+            'scopes'       => $this->scopes,
+            'keySource'    => $meta['source'],
+            'steps'        => [],
+            'ok'           => false,
+        ];
+        $steps = [];
+        $add = static function (string $name, bool $ok, string $detail) use (&$steps): bool {
+            $steps[] = ['name' => $name, 'ok' => $ok, 'detail' => $detail];
+            return $ok;
+        };
+        $finish = static function (array $out, array $steps): array {
+            $out['steps'] = $steps;
+            $out['ok'] = $steps !== [] && array_reduce($steps, static fn(bool $c, array $s): bool => $c && $s['ok'], true);
+            return $out;
+        };
+
+        if (!$add('Feature flag', $this->enabled, $this->enabled ? 'GOOGLE_DIRECT_ENABLED is on.' : 'GOOGLE_DIRECT_ENABLED is not true — direct provisioning is off.')) {
+            return $finish($out, $steps);
+        }
+        if ($this->backend !== 'api') {
+            $add('Backend', false, "GOOGLE_BACKEND is '{$this->backend}', not 'api'. This check is for the API backend; the GAM backend authenticates through gam itself.");
+            return $finish($out, $steps);
+        }
+        $add('Backend', true, 'GOOGLE_BACKEND=api (built-in Directory API client).');
+
+        $haveCreds = $this->clientEmail !== '' && $this->privateKey !== '' && $this->adminSubject !== '';
+        if (!$add('Credentials present', $haveCreds, $haveCreds
+            ? "service account {$this->clientEmail}, impersonating {$this->adminSubject}."
+            : 'missing one of GOOGLE_SA_CLIENT_EMAIL / GOOGLE_SA_PRIVATE_KEY / GOOGLE_ADMIN_SUBJECT (a GOOGLE_SA_KEY_FILE supplies the first two).')) {
+            return $finish($out, $steps);
+        }
+
+        if (!$add('Sign JWT', $this->buildAssertion() !== null, $this->authError === null
+            ? 'signed a test assertion with the SA private key.'
+            : ('could not sign the assertion — ' . $this->authError))) {
+            return $finish($out, $steps);
+        }
+
+        if (!$add('Token exchange', $this->authToken() !== null, $this->authError === null
+            ? 'obtained an OAuth access token from Google.'
+            : ('the token endpoint rejected the assertion — ' . $this->authError))) {
+            return $finish($out, $steps);
+        }
+
+        // A delegated read of the impersonated admin's own account: the first call
+        // that actually exercises domain-wide delegation, the scopes, and that the
+        // admin subject is a real user Google will let the SA act as.
+        $res = $this->request('GET', $this->apiBase . '/users/' . rawurlencode($this->adminSubject) . '?projection=basic');
+        $add('Directory API (delegated)', $res['ok'], $res['ok']
+            ? "read {$this->adminSubject} over the Directory API — domain-wide delegation, scopes, and admin subject all check out."
+            : (string) $res['error']);
+
+        return $finish($out, $steps);
+    }
+
     // ---- correlation (read) -------------------------------------------------
 
     /**
@@ -192,12 +268,11 @@ final class GoogleWorkspaceService
             // A stale/renamed id falls through to the attribute lookups below.
         }
 
-        // Tier 2 — primary email (golden email, then UPN).
-        foreach (['email', 'upn'] as $field) {
-            $value = trim((string) ($person[$field] ?? ''));
-            if ($value === '') {
-                continue;
-            }
+        // Tier 2 — primary email. The golden email/UPN sit in the district's
+        // on-prem domain (e.g. @tusc.k12.al.us), but the Google account lives
+        // under GOOGLE_DOMAIN (e.g. @tuscaloosacityschools.com) — so the local
+        // part re-homed to GOOGLE_DOMAIN is tried first, then the raw values.
+        foreach ($this->primaryEmailCandidates($person) as $value) {
             $res = $this->getUser($value);
             if (!$res['ok']) {
                 return self::envelope(ok: false, configured: true, error: $res['error'], by: 'email', identifier: $value);
@@ -234,6 +309,92 @@ final class GoogleWorkspaceService
         }
 
         return self::envelope(ok: true, configured: true, found: false);
+    }
+
+    /**
+     * Ordered, de-duplicated primaryEmail candidates to correlate a person by.
+     *
+     * A person's golden email/UPN are typically in the district's on-prem domain,
+     * while their Google account is under GOOGLE_DOMAIN — so the strongest
+     * candidates are the local part re-homed to GOOGLE_DOMAIN: the AD username
+     * first (the Google account convention), then the email/UPN local parts. The
+     * raw golden email and UPN follow, for records that already carry a
+     * Google-domain (or otherwise directly matching) address. De-duplicated
+     * case-insensitively; only well-formed addresses are kept.
+     *
+     * @param array<string,mixed> $person
+     * @return list<string>
+     */
+    private function primaryEmailCandidates(array $person): array
+    {
+        $username = trim((string) ($person['username'] ?? ''));
+        $email    = trim((string) ($person['email'] ?? ''));
+        $upn      = trim((string) ($person['upn'] ?? ''));
+
+        $localParts = [];
+        if ($username !== '') {
+            $localParts[] = $username;
+        }
+        foreach ([$email, $upn] as $addr) {
+            $at = strpos($addr, '@');
+            if ($at !== false && $at > 0) {
+                $localParts[] = substr($addr, 0, $at);
+            }
+        }
+
+        $candidates = [];
+        if ($this->domain !== '') {
+            foreach ($localParts as $lp) {
+                $candidates[] = $lp . '@' . $this->domain;
+            }
+        }
+        $candidates[] = $email;
+        $candidates[] = $upn;
+
+        $seen = [];
+        $out = [];
+        foreach ($candidates as $c) {
+            $c = trim($c);
+            if ($c === '' || !str_contains($c, '@')) {
+                continue;
+            }
+            $key = mb_strtolower($c);
+            if (!isset($seen[$key])) {
+                $seen[$key] = true;
+                $out[] = $c;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * The person's derived Google Workspace email — the account convention used
+     * across the app (person page, comparison panel, notify page). It is
+     * <username>@GOOGLE_DOMAIN; with no username it re-homes the golden email/UPN
+     * local part to GOOGLE_DOMAIN. Returns '' when GOOGLE_DOMAIN isn't configured
+     * (callers fall back to the golden email). $domain is injectable and defaults
+     * to GOOGLE_DOMAIN so templates can call this statically.
+     *
+     * @param array<string,mixed> $person
+     */
+    public static function googleEmailFor(array $person, ?string $domain = null): string
+    {
+        $domain = trim($domain ?? (string) Config::get('GOOGLE_DOMAIN', ''));
+        if ($domain === '') {
+            return '';
+        }
+        $username = trim((string) ($person['username'] ?? ''));
+        if ($username !== '') {
+            return $username . '@' . $domain;
+        }
+        foreach (['email', 'upn'] as $f) {
+            $addr = trim((string) ($person[$f] ?? ''));
+            $at = strpos($addr, '@');
+            if ($at !== false && $at > 0) {
+                return substr($addr, 0, $at) . '@' . $domain;
+            }
+        }
+        return '';
     }
 
     /**
@@ -400,7 +561,14 @@ final class GoogleWorkspaceService
     public static function compareToGolden(array $person, array $attrs): array
     {
         $rows = [];
-        $rows[] = self::compareRow('primaryEmail', 'Primary email', (string) ($person['email'] ?? ''), $attrs['primaryemail'] ?? null, caseInsensitive: true);
+        // Compare the golden Google email (<username>@GOOGLE_DOMAIN) against the
+        // account's primaryEmail. Fall back to the golden email only when no
+        // Google email could be derived (GOOGLE_DOMAIN unset).
+        $goldenGoogleEmail = trim((string) ($person['google_email'] ?? ''));
+        if ($goldenGoogleEmail === '') {
+            $goldenGoogleEmail = trim((string) ($person['email'] ?? ''));
+        }
+        $rows[] = self::compareRow('primaryEmail', 'Google email', $goldenGoogleEmail, $attrs['primaryemail'] ?? null, caseInsensitive: true);
         $rows[] = self::compareRow('givenName', 'First name', (string) ($person['first_name'] ?? ''), $attrs['givenname'] ?? null);
         $rows[] = self::compareRow('familyName', 'Last name', (string) ($person['last_name'] ?? ''), $attrs['familyname'] ?? null);
 
@@ -527,6 +695,9 @@ final class GoogleWorkspaceService
      */
     private function foundEnvelope(array $person, array $attrs, string $by, string $identifier, bool $auto): array
     {
+        // Carry the derived Google email so the comparison compares like-for-like
+        // (golden Google email vs the account's primaryEmail), not the on-prem email.
+        $person['google_email'] = self::googleEmailFor($person, $this->domain);
         return self::envelope(
             ok: true,
             configured: true,
@@ -861,6 +1032,35 @@ final class GoogleWorkspaceService
             return ['', ''];
         }
         return [(string) ($data['client_email'] ?? ''), (string) ($data['private_key'] ?? '')];
+    }
+
+    /**
+     * Where the SA key came from, and its client_id — the numeric "OAuth client
+     * ID" an admin pastes into Admin console → API controls → Domain-wide
+     * delegation. Used by the setup script to print exact instructions.
+     *
+     * @return array{client_id:string, source:string}
+     */
+    private static function serviceAccountMeta(): array
+    {
+        $file = trim((string) Config::get('GOOGLE_SA_KEY_FILE', ''));
+        $json = '';
+        $source = 'GOOGLE_SA_CLIENT_EMAIL / GOOGLE_SA_PRIVATE_KEY (explicit env)';
+        if ($file !== '' && is_file($file) && is_readable($file)) {
+            $json = (string) file_get_contents($file);
+            $source = $file;
+        } elseif (trim((string) Config::get('GOOGLE_SA_JSON', '')) !== '') {
+            $json = trim((string) Config::get('GOOGLE_SA_JSON', ''));
+            $source = 'GOOGLE_SA_JSON (inline)';
+        }
+        $clientId = '';
+        if ($json !== '') {
+            $data = json_decode($json, true);
+            if (is_array($data)) {
+                $clientId = (string) ($data['client_id'] ?? '');
+            }
+        }
+        return ['client_id' => $clientId, 'source' => $source];
     }
 
     /**

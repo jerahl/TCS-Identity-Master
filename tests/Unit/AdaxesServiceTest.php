@@ -38,6 +38,23 @@ final class AdaxesServiceTest extends TestCase
         return ['status' => 200, 'body' => json_encode(['properties' => $list])];
     }
 
+    /** The Windows FILETIME (100-ns ticks since 1601) for a Y-m-d at 00:00 UTC. */
+    private static function filetime(string $ymd): string
+    {
+        return (string) (((int) strtotime($ymd . ' 00:00:00 UTC') + 11644473600) * 10000000);
+    }
+
+    /** The account-expiration comparison row from a verify() result, or null. */
+    private static function expiryRowOf(array $res): ?array
+    {
+        foreach ($res['comparison'] ?? [] as $row) {
+            if ($row['field'] === 'accountExpires') {
+                return $row;
+            }
+        }
+        return null;
+    }
+
     public function testNotConfiguredReturnsDisabledEnvelope(): void
     {
         $svc = new AdaxesService('', '', '', 5, fn() => null);
@@ -118,6 +135,79 @@ final class AdaxesServiceTest extends TestCase
             }
         }
         self::assertSame('differ', $state);
+    }
+
+    public function testExpiredAccountForActivePersonDiffers(): void
+    {
+        $svc = $this->service($this->objectResponse([
+            'sAMAccountName' => 'jsmith',
+            'accountExpires' => self::filetime('2000-06-15'),   // long past
+        ]));
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+
+        $row = self::expiryRowOf($res);
+        self::assertNotNull($row);
+        self::assertSame('2000-06-15', $row['ad']);
+        self::assertSame('differ', $row['state']);   // active but the AD account already expired
+    }
+
+    public function testNeverExpiresWithNoGoldenEndDateMatches(): void
+    {
+        $svc = $this->service($this->objectResponse([
+            'sAMAccountName' => 'jsmith',
+            'accountExpires' => '0',                  // 0 = never expires
+        ]));
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+
+        $row = self::expiryRowOf($res);
+        self::assertNotNull($row);
+        self::assertSame('Never', $row['ad']);
+        self::assertSame('', $row['golden']);
+        self::assertSame('match', $row['state']);
+    }
+
+    public function testExpirationMatchesGoldenEndDate(): void
+    {
+        $svc = $this->service($this->objectResponse([
+            'sAMAccountName' => 'jsmith',
+            'accountExpires' => self::filetime('2099-06-30'),
+        ]));
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active', 'end_date' => '2099-06-30'],
+            [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+
+        $row = self::expiryRowOf($res);
+        self::assertNotNull($row);
+        self::assertSame('2099-06-30', $row['ad']);
+        self::assertSame('2099-06-30', $row['golden']);
+        self::assertSame('match', $row['state']);
+    }
+
+    public function testFriendlyExpirationDateDiffersFromGoldenEndDate(): void
+    {
+        $svc = $this->service($this->objectResponse([
+            'sAMAccountName'        => 'jsmith',
+            'accountExpirationDate' => '2099-06-30T00:00:00Z',   // friendly form
+        ]));
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active', 'end_date' => '2098-01-01'],
+            [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+
+        $row = self::expiryRowOf($res);
+        self::assertNotNull($row);
+        self::assertSame('2099-06-30', $row['ad']);
+        self::assertSame('differ', $row['state']);   // AD expiry doesn't line up with the golden end date
+    }
+
+    public function testNoExpirationAttributeOmitsTheRow(): void
+    {
+        $svc = $this->service($this->objectResponse(['sAMAccountName' => 'jsmith']));
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+
+        self::assertNull(self::expiryRowOf($res));   // AD returned no expiration -> no row
     }
 
     public function testUserAccountControlDisableBitIsHonored(): void

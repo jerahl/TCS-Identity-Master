@@ -10,11 +10,12 @@ use PDO;
 use PHPUnit\Framework\TestCase;
 
 /**
- * PersonWriter::linkAdAccount — backfilling username/email/UPN from a matched AD
- * account. Fill-only (never overwrites a present value), locks the username,
- * activates a pending person, and leaves the record untouched on a unique clash.
- * (The objectGUID crosswalk write uses MySQL-only SQL, so these tests drive the
- * field-fill logic with no GUID.)
+ * PersonWriter::linkAdAccount — adopting username/email/UPN from a matched AD
+ * account. Fills a blank golden value AND overwrites a differing one so the
+ * record matches AD (case-insensitive, so a casing-only difference is a no-op),
+ * locks the username, activates a pending person, and leaves the record
+ * untouched on a unique clash. (The objectGUID crosswalk write uses MySQL-only
+ * SQL, so these tests drive the field logic with no GUID.)
  */
 final class AdLinkAccountTest extends TestCase
 {
@@ -63,34 +64,55 @@ final class AdLinkAccountTest extends TestCase
         self::assertNotEmpty($notes);
     }
 
-    public function testNeverOverwritesPresentValues(): void
+    public function testOverwritesDifferingValuesToMatchAd(): void
     {
         $db = $this->db();
         $db->exec("INSERT INTO person (person_id, username, email, upn, username_locked, status)
-                   VALUES (1, 'existing', 'keep@tusc.k12.al.us', 'keep@tusc.k12.al.us', 1, 'active')");
+                   VALUES (1, 'existing', 'old@tusc.k12.al.us', 'old@tusc.k12.al.us', 1, 'active')");
 
         $notes = $this->writer($db)->linkAdAccount(1, [
             'username' => 'adname', 'email' => 'ad@tusc.k12.al.us', 'upn' => 'ad@tusc.k12.al.us',
         ], 'tester');
 
         $p = $this->person($db, 1);
-        self::assertSame('existing', $p['username']);       // untouched
-        self::assertSame('keep@tusc.k12.al.us', $p['email']);
-        self::assertSame([], $notes);                       // nothing changed
+        self::assertSame('adname', $p['username']);            // overwritten to AD
+        self::assertSame('ad@tusc.k12.al.us', $p['email']);
+        self::assertSame('ad@tusc.k12.al.us', $p['upn']);
+        self::assertSame(1, (int) $p['username_locked']);      // stays locked
+        self::assertSame('active', $p['status']);              // active is not re-activated
+        self::assertNotEmpty($notes);
+        self::assertStringContainsString('username changed to adname', implode('; ', $notes));
     }
 
-    public function testFillsOnlyTheMissingField(): void
+    public function testMatchingValuesAreNoOpCaseInsensitively(): void
     {
         $db = $this->db();
-        // username already set; email empty -> only email filled.
+        // Golden already matches AD apart from casing -> nothing to write.
+        $db->exec("INSERT INTO person (person_id, username, email, upn, username_locked, status)
+                   VALUES (1, 'jsmith', 'jsmith@tusc.k12.al.us', 'jsmith@tusc.k12.al.us', 1, 'active')");
+
+        $notes = $this->writer($db)->linkAdAccount(1, [
+            'username' => 'JSmith', 'email' => 'JSmith@tusc.k12.al.us', 'upn' => 'JSmith@tusc.k12.al.us',
+        ], 'tester');
+
+        $p = $this->person($db, 1);
+        self::assertSame('jsmith', $p['username']);            // unchanged (casing-only diff)
+        self::assertSame([], $notes);
+    }
+
+    public function testFillsBlankAndLeavesMatchingFieldAlone(): void
+    {
+        $db = $this->db();
+        // username already matches AD; email empty -> only email filled.
         $db->exec("INSERT INTO person (person_id, username, email, upn, username_locked, status)
                    VALUES (1, 'jsmith', '', '', 1, 'active')");
 
-        $this->writer($db)->linkAdAccount(1, ['username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us'], 'tester');
+        $notes = $this->writer($db)->linkAdAccount(1, ['username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us'], 'tester');
 
         $p = $this->person($db, 1);
         self::assertSame('jsmith', $p['username']);
         self::assertSame('jsmith@tusc.k12.al.us', $p['email']);
+        self::assertSame(['email set to jsmith@tusc.k12.al.us'], $notes);
     }
 
     public function testUniqueClashLeavesRecordUnchanged(): void

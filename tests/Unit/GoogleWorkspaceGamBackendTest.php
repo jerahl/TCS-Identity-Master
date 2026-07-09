@@ -80,6 +80,82 @@ final class GoogleWorkspaceGamBackendTest extends TestCase
         self::assertSame(['gam', 'info', 'user', 'jsmith@x.org', 'formatjson'], $calls[0]);
     }
 
+    public function testCorrelatesByGoogleDomainEmailDerivedFromUsername(): void
+    {
+        // Golden email/UPN are on-prem (@tusc.k12.al.us); the Google account is
+        // username@GOOGLE_DOMAIN. Correlation must try the re-homed address FIRST.
+        $calls = [];
+        $runner = function (array $argv) use (&$calls): ?array {
+            $calls[] = $argv;
+            return ($argv[3] ?? '') === 'jsmith@tuscaloosacityschools.com'
+                ? self::ok((string) json_encode($this->user(['primaryEmail' => 'jsmith@tuscaloosacityschools.com'])))
+                : ['status' => 60, 'stdout' => '', 'stderr' => 'ERROR: Does not exist'];
+        };
+        $gam = new GamClient(gamPath: 'gam', configDir: '', timeout: 5, runner: $runner);
+        $svc = new GoogleWorkspaceService(enabled: true, domain: 'tuscaloosacityschools.com',
+            fetch: fn() => self::fail('gam mode must not use HTTP'), gam: $gam);
+
+        $res = $svc->correlate([
+            'username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us', 'upn' => 'jsmith@tusc.k12.al.us',
+            'first_name' => 'John', 'last_name' => 'Smith', 'status' => 'active',
+        ], []);
+
+        self::assertTrue($res['found']);
+        self::assertSame('email', $res['by']);
+        self::assertTrue($res['auto']);
+        self::assertSame('jsmith@tuscaloosacityschools.com', $res['primaryEmail']);
+        // First lookup used the Google-domain address, not the on-prem golden email.
+        self::assertSame(['gam', 'info', 'user', 'jsmith@tuscaloosacityschools.com', 'formatjson'], $calls[0]);
+    }
+
+    public function testDerivesGoogleEmailFromLocalPartWhenNoUsername(): void
+    {
+        // No username on the record — the golden email's local part is re-homed
+        // to GOOGLE_DOMAIN so correlation still targets the real Google account.
+        $calls = [];
+        $runner = function (array $argv) use (&$calls): ?array {
+            $calls[] = $argv;
+            return ($argv[3] ?? '') === 'jdoe@tuscaloosacityschools.com'
+                ? self::ok((string) json_encode($this->user(['primaryEmail' => 'jdoe@tuscaloosacityschools.com'])))
+                : ['status' => 60, 'stdout' => '', 'stderr' => 'ERROR: Does not exist'];
+        };
+        $gam = new GamClient(gamPath: 'gam', configDir: '', timeout: 5, runner: $runner);
+        $svc = new GoogleWorkspaceService(enabled: true, domain: 'tuscaloosacityschools.com',
+            fetch: fn() => self::fail('gam mode must not use HTTP'), gam: $gam);
+
+        $res = $svc->correlate(['email' => 'jdoe@tusc.k12.al.us', 'status' => 'active'], []);
+
+        self::assertTrue($res['found']);
+        self::assertSame('jdoe@tuscaloosacityschools.com', $calls[0][3]);
+    }
+
+    public function testComparisonUsesGoogleEmailNotOnPremEmail(): void
+    {
+        $runner = fn(array $argv): ?array => ($argv[3] ?? '') === 'jsmith@tuscaloosacityschools.com'
+            ? self::ok((string) json_encode($this->user(['primaryEmail' => 'jsmith@tuscaloosacityschools.com'])))
+            : ['status' => 60, 'stdout' => '', 'stderr' => 'ERROR: Does not exist'];
+        $gam = new GamClient(gamPath: 'gam', configDir: '', timeout: 5, runner: $runner);
+        $svc = new GoogleWorkspaceService(enabled: true, domain: 'tuscaloosacityschools.com',
+            fetch: fn() => self::fail('gam mode must not use HTTP'), gam: $gam);
+
+        $res = $svc->correlate([
+            'username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us', 'upn' => 'jsmith@tusc.k12.al.us',
+            'first_name' => 'John', 'last_name' => 'Smith', 'status' => 'active',
+        ], []);
+
+        $emailRow = null;
+        foreach ($res['comparison'] as $row) {
+            if ($row['field'] === 'primaryEmail') {
+                $emailRow = $row;
+            }
+        }
+        self::assertNotNull($emailRow);
+        self::assertSame('Google email', $emailRow['label']);
+        // Golden side is the derived Google email, not the on-prem @tusc.k12.al.us.
+        self::assertSame('jsmith@tuscaloosacityschools.com', $emailRow['golden']);
+        self::assertSame('match', $emailRow['state']);
+    }
+
     public function testExternalIdTierRoutesThroughGamPrint(): void
     {
         $json = str_replace('"', '""', (string) json_encode($this->user()));

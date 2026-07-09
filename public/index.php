@@ -97,6 +97,7 @@ try {
     $router->get('/people', $guard('view', static fn() => $person->index()));
     $router->get('/people/{id}', $guard('view', static fn(array $p) => $person->show($p)));
     $router->get('/people/{id}/adaxes', $guard('view', static fn(array $p) => $person->adaxes($p)));
+    $router->get('/people/{id}/google', $guard('view', static fn(array $p) => $person->google($p)));
     $router->get('/review', $guard('view', static fn() => $review->index()));
     $router->get('/reference', $guard('view', static fn() => $reference->index()));
     $router->get('/reference/data-flow', $guard('view', static fn() => $reference->dataflow()));

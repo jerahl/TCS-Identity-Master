@@ -287,12 +287,57 @@ final class GamClient
 
     private function unreachable(): string
     {
-        return 'GAM did not run (check GAM_PATH=' . ($this->gamPath !== '' ? $this->gamPath : 'unset') . ' and GAM_TIMEOUT).';
+        return self::unreachableMessage(self::canRunProcesses(), $this->gamPath);
+    }
+
+    /**
+     * The "GAM couldn't run" message. Split out (and pure) so the two causes are
+     * explicit: a host that has disabled the proc_* functions — where GAM can
+     * never run and the fix is a config change — versus a missing binary / timeout.
+     */
+    public static function unreachableMessage(bool $canRunProcesses, string $gamPath): string
+    {
+        if (!$canRunProcesses) {
+            return 'GAM backend can’t run: this host has disabled the PHP proc_* functions '
+                . '(proc_open, proc_get_status, proc_terminate, proc_close) needed to launch GAM. '
+                . 'Switch to the built-in API backend (GOOGLE_BACKEND=api) or have the host allow them.';
+        }
+        return 'GAM did not run (check GAM_PATH=' . ($gamPath !== '' ? $gamPath : 'unset') . ' and GAM_TIMEOUT).';
+    }
+
+    /**
+     * Whether this host can spawn AND manage a subprocess. GAM's runner needs the
+     * whole proc_* family — proc_open, proc_get_status, proc_terminate,
+     * proc_close — not just proc_open. Managed/hardened PHP builds routinely
+     * disable them via php.ini disable_functions, sometimes only some of them, so
+     * a partial re-enable (proc_open on, proc_close still off) must still count as
+     * unavailable. Calling any disabled function is a fatal "undefined function",
+     * so the default runner checks the full set first and degrades to an error
+     * envelope. (function_exists() already returns false for a disabled function
+     * on PHP 8; the disable_functions parse is belt-and-braces.)
+     */
+    public static function canRunProcesses(): bool
+    {
+        $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+        foreach (['proc_open', 'proc_get_status', 'proc_terminate', 'proc_close'] as $fn) {
+            if (!function_exists($fn) || in_array($fn, $disabled, true)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** @param array{status:int,stdout:string,stderr:string} $res */
     private function gamError(array $res, string $what): string
     {
+        // Exit 127 is the shell/exec "command not found": GAM never actually ran,
+        // so there's typically no output. Point at the binary rather than leaving
+        // a bare "(exit 127): no output".
+        if ((int) $res['status'] === 127) {
+            return 'GAM ' . $what . ' failed (exit 127): the gam binary was not found or is not executable. '
+                . 'Check GAM_PATH (' . ($this->gamPath !== '' ? $this->gamPath : 'unset')
+                . ') is gam’s absolute path and is executable by the web/app user.';
+        }
         $detail = trim($res['stderr']) !== '' ? trim($res['stderr']) : trim($res['stdout']);
         $detail = trim((string) preg_replace('/\s+/', ' ', $detail));
         if (strlen($detail) > 300) {
@@ -324,41 +369,57 @@ final class GamClient
      */
     private function exec(array $argv): ?array
     {
-        $env = null;
-        if ($this->configDir !== '') {
-            $env = getenv() + ['GAMCFGDIR' => $this->configDir];
-        }
-        $proc = @proc_open($argv, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
-        if (!is_resource($proc)) {
+        // The runner needs the whole proc_* family, not just proc_open. Managed
+        // hosts often disable these via php.ini disable_functions — sometimes only
+        // some of them — and calling any disabled function is an uncatchable
+        // "undefined function" fatal. Bail before touching any of them so run()'s
+        // callers report the real cause via unreachable() instead of the page
+        // going down.
+        if (!self::canRunProcesses()) {
             return null;
         }
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
+        // Belt-and-braces: any unexpected failure (a stream function disabled,
+        // a resource error) degrades to "couldn't run" rather than escaping
+        // GamClient's never-throws contract.
+        try {
+            $env = null;
+            if ($this->configDir !== '') {
+                $env = getenv() + ['GAMCFGDIR' => $this->configDir];
+            }
+            $proc = @proc_open($argv, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
+            if (!is_resource($proc)) {
+                return null;
+            }
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
 
-        $stdout = '';
-        $stderr = '';
-        $deadline = microtime(true) + $this->timeout;
-        while (true) {
-            $status = proc_get_status($proc);
-            $stdout .= (string) stream_get_contents($pipes[1]);
-            $stderr .= (string) stream_get_contents($pipes[2]);
-            if (!$status['running']) {
-                fclose($pipes[1]);
-                fclose($pipes[2]);
-                proc_close($proc);
-                return ['status' => (int) $status['exitcode'], 'stdout' => $stdout, 'stderr' => $stderr];
+            $stdout = '';
+            $stderr = '';
+            $deadline = microtime(true) + $this->timeout;
+            while (true) {
+                $status = proc_get_status($proc);
+                $stdout .= (string) stream_get_contents($pipes[1]);
+                $stderr .= (string) stream_get_contents($pipes[2]);
+                if (!$status['running']) {
+                    fclose($pipes[1]);
+                    fclose($pipes[2]);
+                    proc_close($proc);
+                    return ['status' => (int) $status['exitcode'], 'stdout' => $stdout, 'stderr' => $stderr];
+                }
+                if (microtime(true) >= $deadline) {
+                    proc_terminate($proc, 9);
+                    fclose($pipes[1]);
+                    fclose($pipes[2]);
+                    proc_close($proc);
+                    return null; // timed out — treated as unreachable
+                }
+                $read = [$pipes[1], $pipes[2]];
+                $write = null;
+                $except = null;
+                @stream_select($read, $write, $except, 0, 200_000);
             }
-            if (microtime(true) >= $deadline) {
-                proc_terminate($proc, 9);
-                fclose($pipes[1]);
-                fclose($pipes[2]);
-                proc_close($proc);
-                return null; // timed out — treated as unreachable
-            }
-            $read = [$pipes[1], $pipes[2]];
-            $write = null;
-            $except = null;
-            @stream_select($read, $write, $except, 0, 200_000);
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 }

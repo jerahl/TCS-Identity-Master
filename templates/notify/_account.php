@@ -5,7 +5,7 @@
  */
 $dash = static fn($v): string => trim((string) $v) === '' ? '—' : (string) $v;
 $username = trim((string) ($person['username'] ?? ''));
-$googleEmail = $username !== '' ? $username . '@tuscaloosacityschools.com' : '';
+$googleEmail = \App\Service\GoogleWorkspaceService::googleEmailFor($person);
 ?>
 <div class="acct">
   <h2>Your account</h2>

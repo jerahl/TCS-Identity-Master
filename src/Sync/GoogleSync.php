@@ -42,7 +42,11 @@ final class GoogleSync
         ?float $maxRatio = null,
         ?int $guardMinLinked = null,
     ) {
-        $this->db = $db ?? Db::connect(Db::ROLE_WRITEBACK);
+        // The app role: this reads the golden record (person, person_source_id)
+        // and writes the crosswalk + audit + account_sync_status via
+        // GoogleProvisioner — the same role the per-person Google buttons use.
+        // The narrow onesync write-back role can't SELECT person_source_id.
+        $this->db = $db ?? Db::connect(Db::ROLE_APP);
         $this->provisioner = $provisioner ?? new GoogleProvisioner($this->db);
         $this->google = $this->provisioner->service();
         $this->maxRatio = $maxRatio ?? max(0.0, (float) Config::get('GOOGLE_SYNC_MAX_RATIO', '0.2'));
@@ -57,9 +61,20 @@ final class GoogleSync
     /**
      * Plan and (unless dry-run) apply the reconciliation.
      *
+     * $log, when given, is a streaming progress hook for the CLI's --verbose mode
+     * (uncapped, unlike the returned `actions` list; never affects the return
+     * value). Signature: fn(string $event, array $data), where $event is:
+     *   - 'start'  once before the scan — data: total (eligible count)
+     *   - 'scan'   once per person as it's correlated — data: person_id, email,
+     *              bucket, action (null when nothing to do), message (error text
+     *              when bucket='error'). Emitting per person, not just per action,
+     *              keeps the (slow, one-remote-lookup-per-person) scan visibly live.
+     *   - 'result' once per applied action on a real run — adds ok, message
+     *
+     * @param callable(string,array<string,mixed>):void|null $log
      * @return array{dry_run:bool, blocked:bool, configured:bool, counts:array<string,int>, actions:array<int,array<string,mixed>>, note:?string}
      */
-    public function run(bool $dryRun = false, ?string $actor = null): array
+    public function run(bool $dryRun = false, ?string $actor = null, ?callable $log = null): array
     {
         $actor ??= 'system:google_sync';
         $counts = [
@@ -77,11 +92,20 @@ final class GoogleSync
         $linked = 0;          // people with a live Google account (denominator for the guard)
         $suspendPlanned = 0;
 
-        foreach ($this->eligiblePeople() as $person) {
+        $people = $this->eligiblePeople();
+        if ($log !== null) {
+            $log('start', ['total' => count($people)]);
+        }
+        foreach ($people as $person) {
             $counts['eligible']++;
-            $corr = $this->google->correlate($person, $this->sourceIds((int) $person['person_id']));
+            $pid = (int) $person['person_id'];
+            $corr = $this->google->correlate($person, $this->sourceIds($pid));
             if (!$corr['ok']) {
                 $counts['errors']++;
+                if ($log !== null) {
+                    $log('scan', ['person_id' => $pid, 'email' => (string) ($person['email'] ?? ''),
+                        'bucket' => 'error', 'action' => null, 'message' => (string) ($corr['error'] ?? '')]);
+                }
                 continue;
             }
             if (!empty($corr['found'])) {
@@ -89,11 +113,15 @@ final class GoogleSync
             }
             $decision = $this->decide($person, $corr);
             $counts[$decision['bucket']]++;
+            if ($log !== null) {
+                $log('scan', ['person_id' => $pid, 'email' => $decision['email'],
+                    'bucket' => $decision['bucket'], 'action' => $decision['action'], 'message' => '']);
+            }
             if ($decision['action'] !== null) {
                 if ($decision['action'] === 'suspend') {
                     $suspendPlanned++;
                 }
-                $plan[] = ['person_id' => (int) $person['person_id'], 'action' => $decision['action'], 'email' => $decision['email']];
+                $plan[] = ['person_id' => $pid, 'action' => $decision['action'], 'email' => $decision['email']];
             }
         }
 
@@ -117,6 +145,9 @@ final class GoogleSync
             $res = $this->provisioner->provision($item['person_id'], $item['action'], $actor);
             if (!$res['ok']) {
                 $counts['errors']++;
+            }
+            if ($log !== null) {
+                $log('result', $item + ['ok' => (bool) $res['ok'], 'message' => (string) ($res['message'] ?? '')]);
             }
         }
 
@@ -179,7 +210,7 @@ final class GoogleSync
     private function eligiblePeople(): array
     {
         return $this->db->query(
-            "SELECT person_id, person_uuid, first_name, last_name, email, upn, employee_id,
+            "SELECT person_id, person_uuid, username, first_name, last_name, email, upn, employee_id,
                     status, person_type, primary_school_id
              FROM person
              WHERE status IN ('active','pending','disabled','terminated')

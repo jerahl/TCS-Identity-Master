@@ -4,7 +4,7 @@
  *
  * Rendered two ways: server-side into the page when Adaxes isn't configured
  * (nothing to look up, so no round trip), and on demand by GET /people/{id}/adaxes
- * — the AJAX endpoint that person-adaxes.js swaps into the loading placeholder so
+ * — the AJAX endpoint that person-live-panels.js swaps into the loading placeholder so
  * the detail page renders immediately instead of blocking on the AD call.
  *
  * @var array $adaxes  the AdaxesService::verify() envelope
@@ -66,29 +66,34 @@ $adId = $adaxes['identifier'] ?? null;
   <?php endif; ?>
 
   <?php
-    // "Accept AD as the golden record" — only offered for a pending person, to
-    // an editor, and only when AD holds a Username/UPN/Email the golden record
-    // is still missing (the values linkAdAccount() would fill). An active
-    // record's identity is OneSync's to own, so the action never appears there.
+    // "Accept AD as the golden record" — offered to an editor for a pending or
+    // active person, whenever AD holds a Username/UPN/Email that DIFFERS from the
+    // golden record (a blank golden value counts as differing). Accepting fills a
+    // blank and overwrites a differing value so the record matches AD; the
+    // username is locked, and a pending person is activated. Not offered on
+    // disabled/terminated records.
     $adAttrs = $adaxes['attributes'] ?? [];
     $isPending = (string) ($p['status'] ?? '') === 'pending';
-    $fillable = [];
+    $canAdopt = in_array((string) ($p['status'] ?? ''), ['pending', 'active'], true);
+    $adoptable = [];
     foreach (['Username' => ['samaccountname', 'username'], 'UPN' => ['userprincipalname', 'upn'], 'Email' => ['mail', 'email']] as $lbl => $keys) {
-        if (trim((string) ($adAttrs[$keys[0]] ?? '')) !== '' && trim((string) ($p[$keys[1]] ?? '')) === '') {
-            $fillable[] = $lbl;
+        $adVal = trim((string) ($adAttrs[$keys[0]] ?? ''));
+        $goldVal = trim((string) ($p[$keys[1]] ?? ''));
+        if ($adVal !== '' && mb_strtolower($adVal) !== mb_strtolower($goldVal)) {
+            $adoptable[] = $lbl;
         }
     }
   ?>
-  <?php if ($canEdit && $isPending && $fillable !== []): ?>
+  <?php if ($canEdit && $canAdopt && $adoptable !== []): ?>
     <div class="identity-note" style="margin-bottom:14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <form method="post" action="<?= e(url('/people/' . ($p['person_id'] ?? '') . '/adaxes/accept')) ?>" style="display:inline; margin:0;">
         <input type="hidden" name="_csrf" value="<?= e($csrf) ?>">
-        <button type="submit" title="Write the AD Username, UPN and Email to the golden record and activate this pending person"
+        <button type="submit" title="Write the AD Username, UPN and Email to the golden record, overwriting any differing value<?= $isPending ? ' and activating this pending person' : '' ?>"
           style="cursor:pointer; font-size:11.5px; font-weight:600; color:#1F7A3D; background:#E7F4EC; border:1px solid #B7E0C6; border-radius:9px; padding:3px 12px;">
           Accept AD as golden record
         </button>
       </form>
-      <span style="color:#52677A;">Adopts the AD <?= e(implode(', ', $fillable)) ?> for this pending person — the username is locked and the record is activated.</span>
+      <span style="color:#52677A;">Adopts the AD <?= e(implode(', ', $adoptable)) ?> for this <?= $isPending ? 'pending ' : '' ?>person, overwriting any differing value — the username is locked<?= $isPending ? ' and the record is activated' : '' ?>.</span>
     </div>
   <?php endif; ?>
 
