@@ -42,7 +42,11 @@ final class GoogleSync
         ?float $maxRatio = null,
         ?int $guardMinLinked = null,
     ) {
-        $this->db = $db ?? Db::connect(Db::ROLE_WRITEBACK);
+        // The app role: this reads the golden record (person, person_source_id)
+        // and writes the crosswalk + audit + account_sync_status via
+        // GoogleProvisioner — the same role the per-person Google buttons use.
+        // The narrow onesync write-back role can't SELECT person_source_id.
+        $this->db = $db ?? Db::connect(Db::ROLE_APP);
         $this->provisioner = $provisioner ?? new GoogleProvisioner($this->db);
         $this->google = $this->provisioner->service();
         $this->maxRatio = $maxRatio ?? max(0.0, (float) Config::get('GOOGLE_SYNC_MAX_RATIO', '0.2'));
