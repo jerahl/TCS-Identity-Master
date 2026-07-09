@@ -34,18 +34,31 @@ foreach (array_slice($_SERVER['argv'] ?? [], 1) as $arg) {
 $dryRun = isset($opts['dry-run']);
 $verbose = isset($opts['verbose']);
 
-// --verbose: stream each planned action, and (on a real run) its result. The
-// callback is uncapped, unlike the summary's 50-row `actions` list.
+// --verbose: stream one line per person as it's scanned (the scan is slow — a
+// live remote lookup each — so we show progress rather than sit silent), plus
+// each action's result on a real run. Each line is flushed immediately so it
+// appears live even when stdout is piped/redirected (block-buffered).
 $log = $verbose ? static function (string $event, array $d) use ($dryRun): void {
-    $email = ($d['email'] ?? '') !== '' ? (string) $d['email'] : '(no email)';
-    if ($event === 'plan') {
-        fwrite(STDOUT, sprintf("  %-6s %-8s %s  (person #%d)\n",
-            $dryRun ? 'would' : 'plan', (string) $d['action'], $email, (int) $d['person_id']));
+    if ($event === 'start') {
+        $n = (int) $d['total'];
+        fwrite(STDOUT, "Scanning {$n} eligible " . ($n === 1 ? 'person' : 'people') . "…\n");
+    } elseif ($event === 'scan') {
+        $email = ($d['email'] ?? '') !== '' ? (string) $d['email'] : '(no email)';
+        if (($d['bucket'] ?? '') === 'error') {
+            $note = 'ERROR' . (($d['message'] ?? '') !== '' ? ': ' . (string) $d['message'] : '');
+        } elseif (($d['action'] ?? null) !== null) {
+            $note = $dryRun ? 'would ' . (string) $d['action'] : (string) $d['action'] . ' (planned)';
+        } else {
+            $note = str_replace('_', '-', (string) $d['bucket']);
+        }
+        fwrite(STDOUT, sprintf("  #%-6d %-30s %s\n", (int) $d['person_id'], $email, $note));
     } elseif ($event === 'result') {
+        $email = ($d['email'] ?? '') !== '' ? (string) $d['email'] : '(no email)';
         $status = !empty($d['ok']) ? 'ok' : 'FAILED';
         $msg = ($d['message'] ?? '') !== '' ? ' — ' . (string) $d['message'] : '';
         fwrite(STDOUT, sprintf("    -> %-8s %s: %s%s\n", (string) $d['action'], $email, $status, $msg));
     }
+    fflush(STDOUT);
 } : null;
 
 try {

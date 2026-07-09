@@ -61,11 +61,15 @@ final class GoogleSync
     /**
      * Plan and (unless dry-run) apply the reconciliation.
      *
-     * $log, when given, is called as each action is planned and (on a real run)
-     * applied — a streaming progress hook for the CLI's --verbose mode, uncapped
-     * unlike the returned `actions` list. Signature: fn(string $event, array $data)
-     * where $event is 'plan' (data: person_id, action, email) or 'result' (adds
-     * ok, message). It never affects the return value.
+     * $log, when given, is a streaming progress hook for the CLI's --verbose mode
+     * (uncapped, unlike the returned `actions` list; never affects the return
+     * value). Signature: fn(string $event, array $data), where $event is:
+     *   - 'start'  once before the scan — data: total (eligible count)
+     *   - 'scan'   once per person as it's correlated — data: person_id, email,
+     *              bucket, action (null when nothing to do), message (error text
+     *              when bucket='error'). Emitting per person, not just per action,
+     *              keeps the (slow, one-remote-lookup-per-person) scan visibly live.
+     *   - 'result' once per applied action on a real run — adds ok, message
      *
      * @param callable(string,array<string,mixed>):void|null $log
      * @return array{dry_run:bool, blocked:bool, configured:bool, counts:array<string,int>, actions:array<int,array<string,mixed>>, note:?string}
@@ -88,11 +92,20 @@ final class GoogleSync
         $linked = 0;          // people with a live Google account (denominator for the guard)
         $suspendPlanned = 0;
 
-        foreach ($this->eligiblePeople() as $person) {
+        $people = $this->eligiblePeople();
+        if ($log !== null) {
+            $log('start', ['total' => count($people)]);
+        }
+        foreach ($people as $person) {
             $counts['eligible']++;
-            $corr = $this->google->correlate($person, $this->sourceIds((int) $person['person_id']));
+            $pid = (int) $person['person_id'];
+            $corr = $this->google->correlate($person, $this->sourceIds($pid));
             if (!$corr['ok']) {
                 $counts['errors']++;
+                if ($log !== null) {
+                    $log('scan', ['person_id' => $pid, 'email' => (string) ($person['email'] ?? ''),
+                        'bucket' => 'error', 'action' => null, 'message' => (string) ($corr['error'] ?? '')]);
+                }
                 continue;
             }
             if (!empty($corr['found'])) {
@@ -100,15 +113,15 @@ final class GoogleSync
             }
             $decision = $this->decide($person, $corr);
             $counts[$decision['bucket']]++;
+            if ($log !== null) {
+                $log('scan', ['person_id' => $pid, 'email' => $decision['email'],
+                    'bucket' => $decision['bucket'], 'action' => $decision['action'], 'message' => '']);
+            }
             if ($decision['action'] !== null) {
                 if ($decision['action'] === 'suspend') {
                     $suspendPlanned++;
                 }
-                $item = ['person_id' => (int) $person['person_id'], 'action' => $decision['action'], 'email' => $decision['email']];
-                $plan[] = $item;
-                if ($log !== null) {
-                    $log('plan', $item);
-                }
+                $plan[] = ['person_id' => $pid, 'action' => $decision['action'], 'email' => $decision['email']];
             }
         }
 
