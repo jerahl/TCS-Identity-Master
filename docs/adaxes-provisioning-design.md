@@ -1,9 +1,18 @@
 # Adaxes provisioning — direct AD create / edit / disable (bypassing ClassLink)
 
-> **Status:** design / plan. No write code exists yet — `AdaxesService` is
-> strictly read-only today. This document is the spec for making IDM the
-> authoritative writer of Active Directory accounts through the Adaxes REST API,
-> phase by phase, ending with **OneSync fully retired as the AD provisioner**.
+> **Status:** implemented, gated off. The write path now exists in code —
+> `AdaxesWriter` (create/modify/disable/enable), `UsernameMinter` (the Phase-3
+> identity policy), and the `AdaxesReconciler` behind `bin/adaxes_sync.php` — all
+> unit/integration tested and **off by default** (`ADAXES_WRITE_ENABLED=false`);
+> `AdaxesService` stays read-only and now shares its auth/transport via the
+> `AdaxesHttp` trait. This document is the spec for making IDM the authoritative
+> writer of Active Directory accounts through the Adaxes REST API, phase by phase,
+> ending with **OneSync fully retired as the AD provisioner**.
+>
+> **Before enabling in production** (tracked in *Open items* below): confirm the
+> exact REST create/modify/disable endpoints + payload shapes against the deployed
+> Adaxes build (the `ADAXES_*_PATH` knobs), stand up the least-privilege write
+> service account + Business Rules, and complete the correlation/cutover runbook.
 
 ## Goal & end-state
 

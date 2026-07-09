@@ -82,21 +82,28 @@ final class PersonWriter
         return $personId;
     }
 
-    /** Ensure the (system, source_key) crosswalk points at this person. */
+    /**
+     * Ensure the (system, source_key) crosswalk points at this person and is
+     * active. Portable upsert (select → insert or update) so it runs on both the
+     * app's MySQL and the sqlite used by the test suite; a brand-new link is
+     * audited, an existing one is refreshed quietly.
+     */
     public function attachSourceId(int $personId, string $system, string $sourceKey, string $actor): void
     {
         $before = $this->findSourceId($system, $sourceKey);
-        $stmt = $this->db->prepare(
-            'INSERT INTO person_source_id (person_id, system, source_key, is_active, last_seen)
-             VALUES (:pid, :system, :key, 1, CURRENT_TIMESTAMP)
-             ON DUPLICATE KEY UPDATE person_id = VALUES(person_id), is_active = 1, last_seen = CURRENT_TIMESTAMP'
-        );
-        $stmt->execute([':pid' => $personId, ':system' => $system, ':key' => $sourceKey]);
-
         if ($before === null) {
+            $this->db->prepare(
+                'INSERT INTO person_source_id (person_id, system, source_key, is_active, last_seen)
+                 VALUES (:pid, :system, :key, 1, CURRENT_TIMESTAMP)'
+            )->execute([':pid' => $personId, ':system' => $system, ':key' => $sourceKey]);
             $this->audit->log('source_id', (int) $this->db->lastInsertId(), 'insert', null,
                 ['person_id' => $personId, 'system' => $system, 'source_key' => $sourceKey], $actor);
+            return;
         }
+        $this->db->prepare(
+            'UPDATE person_source_id SET person_id = :pid, is_active = 1, last_seen = CURRENT_TIMESTAMP
+             WHERE system = :system AND source_key = :key'
+        )->execute([':pid' => $personId, ':system' => $system, ':key' => $sourceKey]);
     }
 
     /**
