@@ -51,6 +51,9 @@ final class AdaxesReconcilerTest extends TestCase
             id INTEGER PRIMARY KEY, person_id INTEGER, system TEXT, source_key TEXT,
             is_active INTEGER DEFAULT 1, first_seen TEXT, last_seen TEXT)');
         $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, ad_ou TEXT)');
+        $db->exec('CREATE TABLE assignment (
+            id INTEGER PRIMARY KEY, person_id INTEGER, school_id INTEGER, title TEXT,
+            is_primary INTEGER DEFAULT 1)');
         $db->exec('CREATE TABLE audit_log (id INTEGER PRIMARY KEY, entity TEXT, entity_id INTEGER, action TEXT,
             before_json TEXT, after_json TEXT, actor TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)');
         $db->exec('CREATE TABLE lifecycle_event (id INTEGER PRIMARY KEY, person_id INTEGER, event_type TEXT,
@@ -359,9 +362,167 @@ final class AdaxesReconcilerTest extends TestCase
             'faculty'    => ['faculty', $base],
             'staff'      => ['staff', $base],
             'contractor' => ['contractor', 'OU=PTC,' . $base],
-            'sub'        => ['sub', 'OU=Sub,' . $base],
+            'sub'        => ['sub', 'OU=Subs,' . $base],
             'intern'     => ['intern', 'OU=Interns,' . $base],
         ];
+    }
+
+    public function testCreateSendsCnTitleAndDepartment(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+            'first_name' => 'John', 'last_name' => 'Smith', 'primary_school_id' => 5,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Teacher - Math', 1)");
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        self::assertNotNull($create);
+        $body = json_decode((string) $create['body'], true);
+        // CN rides top-level as the object name (the RDN), not as a property.
+        self::assertSame('John Smith', $body['name']);
+        $props = [];
+        foreach ($body['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        self::assertArrayNotHasKey('cn', $props);
+        self::assertSame('Teacher - Math', $props['title']);
+        self::assertSame('Central Office', $props['department']); // building name
+    }
+
+    public function testCnCollisionFallsBackToUsernameSuffixedForm(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+            'first_name' => 'John', 'last_name' => 'Smith', 'primary_school_id' => 5,
+        ]);
+
+        // The read fake: net-new confirmation + username-mint searches miss, but
+        // the cn search hits (another John Smith already exists in AD).
+        $readFetch = function (string $method, string $url, array $headers, ?string $body): ?array {
+            if (str_contains($url, '/search')) {
+                $hit = str_contains((string) $body, '"cn"');
+                return ['status' => 200, 'body' => json_encode(['objects' => $hit ? [['properties' => ['cn' => 'John Smith']]] : []])];
+            }
+            return ['status' => 404, 'body' => 'not found'];
+        };
+        $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        self::assertNotNull($create);
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('John Smith (jsmith)', $body['name']); // unique via the username
+    }
+
+    public function testBusDriverPlacedInTransOuWithDepartmentOverride(): void
+    {
+        $db = $this->db();
+        // Deliberately NO school row: bus drivers don't need a building OU.
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'staff', 'status' => 'pending',
+            'first_name' => 'Bud', 'last_name' => 'Driver',
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 99, 'Bus Driver', 1)");
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['applied']);
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path']); // no school OU
+        $props = [];
+        foreach ($body['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        self::assertSame('Transportation', $props['department']); // override, not a building
+    }
+
+    public function testSroGetsSroLeafAboveTheBuildingOu(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (7, 'Paul W. Bryant High School', 'OU=BHS')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'contractor', 'status' => 'pending',
+            'first_name' => 'Sam', 'last_name' => 'Officer', 'primary_school_id' => 7,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 7, 'School Resource Officer', 1)");
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        $body = json_decode((string) $create['body'], true);
+        // The SRO rule trumps the contractor type leaf (no OU=PTC).
+        self::assertSame('OU=SRO,OU=BHS,OU=Faculty,DC=example,DC=org', $body['path']);
+    }
+
+    public function testEditPushesTitleAndDepartmentDrift(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Moved', 'last_name' => 'Person',
+            'username' => 'mperson', 'email' => 'mperson@tusc.k12.al.us', 'upn' => 'mperson@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Coordinator', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // AD still shows the OLD building/title — a school move that must propagate.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'mperson',
+            'userPrincipalName' => 'mperson@tusc.k12.al.us',
+            'mail'              => 'mperson@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Eastwood Middle School',
+            'title'             => 'Teacher',
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['applied']);
+        $body = json_decode((string) $calls[0]['body'], true);
+        $props = [];
+        foreach ($body['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        self::assertSame('Central Office', $props['department']);
+        self::assertSame('Coordinator', $props['title']);
     }
 
     public function testTypeLeafOuIsOverridableViaEnv(): void

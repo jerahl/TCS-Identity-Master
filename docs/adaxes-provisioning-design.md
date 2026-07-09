@@ -162,6 +162,12 @@ Push the diffs the verification panel already computes.
 - Reconciler extends to compute the delta from `compareToGolden()` and apply only
   fields that `differ`/`missing` on the AD side (never touch `sAMAccountName` —
   immutable).
+- **Also kept in sync: `title` and `department`.** OneSync writes both on every
+  account and `department` is load-bearing — all 22 per-school *Everyone* groups
+  match on it. Desired department = the building name (Bus Drivers override to
+  the transportation department); desired title = the primary assignment title.
+  A school move therefore propagates to `department`, or the Everyone-group
+  logic breaks downstream.
 - Same GUID-required rule.
 
 ### Phase 3 — Create + minting (retire OneSync for AD)
@@ -175,12 +181,20 @@ The final phase. IDM mints identity and creates the account.
   **no** linked GUID, and whose AD search returns **no** hit (a true net-new hire).
 - Attributes IDM sends on create: `sAMAccountName`, `userPrincipalName`, `mail`,
   `displayName` (preferred-or-legal first + last), `givenName`, `sn`, `employeeID`,
-  and — when `person.end_date` is set — `accountExpires` (the position end date as
-  a Windows FILETIME at midnight UTC, so it round-trips through the verify panel).
+  `title` (primary assignment title), `department` (building name; Bus Driver
+  override — see Phase 2 note on why department matters), and — when
+  `person.end_date` is set — `accountExpires` (the position end date as a Windows
+  FILETIME at midnight UTC, so it round-trips through the verify panel).
+- **CN / name:** the object's name is sent top-level (it becomes the RDN), as
+  `"First Last"` — OneSync's rule. CN must be unique within an OU, so on a live-AD
+  `cn` hit the reconciler falls back to `"First Last (username)"`, which is
+  guaranteed unique because the username is. (Exact payload field for the name is
+  part of the "confirm payload shapes" open item.)
   **Everything operational** (home dir, groups, licensing, initial password policy)
   is left to **Adaxes Business Rules** — IDM does not replicate OneSync's full
   provisioning; that logic moves server-side into Adaxes, where the write account
-  triggers it.
+  triggers it. (The password + must-change-at-logon + userAccountControl Business
+  Rule does not exist yet — it is a **Phase 3 cutover blocker**; see Open items.)
 - **Container / OU:** the full container DN is assembled most-specific first:
 
   ```
@@ -190,11 +204,22 @@ The final phase. IDM mints identity and creates the account.
   `school.ad_ou` holds the *relative* building OU (e.g. `OU=CO`). Every
   provisioned account nests under a shared parent OU (`AD_PARENT_OU`, default
   `OU=Faculty`) and its building OU. Contractors/subs/interns get an extra
-  innermost **type leaf** OU (`AD_OU_CONTRACTOR=OU=PTC`, `AD_OU_SUB=OU=Sub`,
-  `AD_OU_INTERN=OU=Interns` by default); faculty and staff have none. Examples:
-  a contractor at Central Office → `OU=PTC,OU=CO,OU=Faculty,<AD_BASE_DN>`; a
-  faculty/staff member there → `OU=CO,OU=Faculty,<AD_BASE_DN>`. `AD_BASE_DN` is
-  required for create (people are routed to review until it is set).
+  innermost **type leaf** OU (`AD_OU_CONTRACTOR=OU=PTC`, `AD_OU_SUB=OU=Subs` —
+  plural, matching OneSync's existing placement — `AD_OU_INTERN=OU=Interns` by
+  default); faculty and staff have none. Examples: a contractor at Central Office
+  → `OU=PTC,OU=CO,OU=Faculty,<AD_BASE_DN>`; a faculty/staff member there →
+  `OU=CO,OU=Faculty,<AD_BASE_DN>`. `AD_BASE_DN` is required for create (people
+  are routed to review until it is set).
+
+  Two **title-driven rules** (mirroring OneSync's custom mappings) trump the type
+  leaf:
+
+  - **Bus Driver** (title matches *bus driver*) → `{AD_OU_BUS_DRIVER},OU=Faculty,
+    <base>` (default `OU=trans`) with **no building segment**, and the AD
+    `department` is overridden (`AD_DEPT_BUS_DRIVER`, default `Transportation`).
+  - **SRO** (title matches *SRO* / *school resource officer*) →
+    `{AD_OU_SRO},{school.ad_ou},OU=Faculty,<base>` (default `OU=SRO`), e.g.
+    `OU=SRO,OU=BHS,OU=Faculty,<base>`.
 - After create: set `username`/`email`/`upn` on the golden record, `username_locked=1`,
   activate a `pending` person, write `create` + `username_assigned` lifecycle events.
 - **OneSync cutover:** disable OneSync's AD destination (its `destinations/{id}/status`).
@@ -287,7 +312,38 @@ AD_UPN_SUFFIX=tusc.k12.al.us        # usually identical to AD_EMAIL_DOMAIN
 Placement config: `AD_BASE_DN` (domain base appended to the relative
 `school.ad_ou`), `AD_PARENT_OU` (shared parent OU every account nests under,
 default `OU=Faculty`), and per-type leaf OUs `AD_OU_CONTRACTOR` / `AD_OU_SUB` /
-`AD_OU_INTERN` (defaults `OU=PTC` / `OU=Sub` / `OU=Interns`).
+`AD_OU_INTERN` (defaults `OU=PTC` / `OU=Subs` / `OU=Interns`), plus the
+title-driven Bus Driver / SRO placement (`AD_OU_BUS_DRIVER` / `AD_DEPT_BUS_DRIVER`
+/ `AD_OU_SRO`).
+
+## Group membership (Phase 4 — the largest unowned replication job)
+
+OneSync's Faculty AD destination carries **~31 group mappings** that nothing in
+IDM or Adaxes owns yet. This is the single biggest replication job before the AD
+destination can be turned off:
+
+- **Per-school "Everyone" groups** (22) — membership matched on the AD
+  `department` (why IDM now writes/synchronizes `department` rigorously).
+- **All-Faculty** and **Transportation**.
+- **Keyword-driven Microsoft 365 A1/A3 licensing groups** — membership derived
+  from title/department keyword rules.
+- **Five Raptor role groups.**
+- **Move semantics:** on a school move OneSync *removes* the old groups and adds
+  the new — replication must own removal, not just addition.
+
+Two ways to own it (decide before cutover):
+
+1. **Adaxes Business Rules** — server-side rules keyed off `department`/`title`
+   on create + modify. Keeps IDM identity-only, but re-encodes the keyword soup
+   in Adaxes where IDM can't see or test it.
+2. **A Phase 4 group reconciler in IDM** *(recommended)* — IDM already knows the
+   structured truth (building, title, person_type) that the keyword rules
+   approximate; a `group` phase in `bin/adaxes_sync.php` computing desired
+   memberships and diffing against `memberOf` fits the golden-record philosophy,
+   is dry-runnable, and testable like the rest of the reconciler.
+
+Either way, the first step is exporting the actual 31 mappings (group DNs +
+matching conditions) from the OneSync destination as the spec.
 
 ## Adaxes-side setup (not code)
 
@@ -363,10 +419,29 @@ destination. IDM state is unchanged; no data migration to reverse.
 
 ## Open items
 
-- Confirm exact Adaxes REST create/modify/disable endpoints + payload shapes for the
-  deployed version (only unknown that blocks `AdaxesWriter`).
+- Confirm exact Adaxes REST create/modify/disable endpoints + payload shapes for
+  the deployed version — including the field name the create takes for the
+  object's **name/CN** (IDM sends top-level `name`).
 - Confirm the staff OU layout so `school.ad_ou` values are complete/correct for
-  every building before enabling create.
+  every building before enabling create. The 22 per-school Everyone groups give
+  the authoritative building list to validate against.
+- **Verify the real leaf OU names in AD** before enabling create: IDM defaults
+  `AD_OU_SUB=OU=Subs` (OneSync's placement); a mismatch double-trees the
+  directory. Also confirm `OU=PTC` for contractors — it has **no OneSync
+  counterpart** and is intentional new design; sign off (or change it) before
+  cutover.
+- **Password + UAC Business Rule (Phase 3 cutover blocker).** OneSync does
+  generated-password + must-change-at-next-logon + Normal Account on create.
+  The design defers this to an Adaxes Business Rule so IDM never handles
+  secrets — that BR must be authored and tested before any real create.
+- **Welcome email on create.** OneSync's "Email on Create" has no equivalent
+  yet — neither the reconciler nor a Business Rule sends the credentials /
+  welcome notification. `NotifyTemplateService` is the natural hook if IDM owns
+  it; decide IDM-vs-Adaxes alongside the password BR.
+- **Group membership (Phase 4)** — see the dedicated section above; export the
+  ~31 mappings from the OneSync destination as the spec, then choose Business
+  Rules vs. an IDM group reconciler (recommended).
+- Confirm `AD_DEPT_BUS_DRIVER` — IDM defaults the Bus Driver department override
+  to `Transportation`; verify the exact string OneSync writes (group matching is
+  string-sensitive).
 - Decide whether to add `person.username_source` provenance (reporting only).
-- Password on create: rely on an Adaxes Business Rule (recommended) vs. IDM sending
-  an initial password — recommend the Business Rule so IDM never handles secrets.

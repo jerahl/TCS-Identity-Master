@@ -255,6 +255,10 @@ final class AdaxesReconciler
             }
 
             $attrs = self::editDelta($env['comparison'] ?? []);
+            // Operational drift beyond the identity comparison: title and
+            // department (department drives the per-school Everyone groups, so a
+            // school move MUST propagate or downstream group logic breaks).
+            $attrs += $this->operationalDrift($p, is_array($env['attributes'] ?? null) ? $env['attributes'] : []);
             if ($attrs === []) {
                 $out['noop']++;
                 continue;
@@ -316,18 +320,18 @@ final class AdaxesReconciler
                 continue;
             }
 
-            $adOu = $this->schoolAdOu($p);
-            if ($adOu === '') {
-                $out['skipped']++;
-                $this->item($out, $pid, $name, 'create', 'review', 'no AD OU for the building (school.ad_ou) — cannot place');
-                continue;
-            }
             if ($this->baseDn === '') {
                 $out['skipped']++;
                 $this->item($out, $pid, $name, 'create', 'review', 'AD_BASE_DN is not set — cannot form a full container DN');
                 continue;
             }
-            $ou = $this->containerDn($p, $adOu);
+            $placement = $this->placement($p);
+            if ($placement === null) {
+                $out['skipped']++;
+                $this->item($out, $pid, $name, 'create', 'review', 'no AD OU for the building (school.ad_ou) — cannot place');
+                continue;
+            }
+            $ou = $placement;
 
             // Confirm net-new: an AD search must return nothing. A hit means the
             // account exists but isn't linked → correlation task, not a create.
@@ -354,6 +358,7 @@ final class AdaxesReconciler
             $email = UsernameMinter::emailFor($username, $this->emailDomain);
             $upn   = UsernameMinter::emailFor($username, $this->upnSuffix);
             $attrs = $this->createAttrs($p, $username, $email, $upn);
+            $attrs['cn'] = $this->uniqueCn($p, $username);
 
             if (!$apply) {
                 $this->item($out, $pid, $name, 'create', 'would-create', "as {$username} ({$email}) in {$ou}");
@@ -460,6 +465,18 @@ final class AdaxesReconciler
         if ($empId !== '') {
             $attrs['employeeID'] = $empId;
         }
+        // Title + department mirror OneSync's default mappings. Department is
+        // load-bearing downstream — the per-school "Everyone" groups match on it —
+        // so it is always the building name (Bus Drivers override to the
+        // transportation department).
+        $title = $this->desiredTitle($p);
+        if ($title !== '') {
+            $attrs['title'] = $title;
+        }
+        $dept = $this->desiredDepartment($p);
+        if ($dept !== '') {
+            $attrs['department'] = $dept;
+        }
         // Account expiration = the position end date, when one is set. AD's
         // accountExpires is a Windows FILETIME; midnight UTC of the end date reads
         // back as that date in the verify panel (compareToGolden), so the two agree.
@@ -470,57 +487,163 @@ final class AdaxesReconciler
         return $attrs;
     }
 
-    /**
-     * The (relative) school.ad_ou for a person's building, or '' when unresolved.
-     * The stored value is a partial path (e.g. "OU=CO" or "OU=STC,OU=CO") — the
-     * full container DN is assembled by containerDn().
-     *
-     * @param array<string,mixed> $p
-     */
-    private function schoolAdOu(array $p): string
+    /** The person's job title (primary assignment first), '' when none. */
+    private function desiredTitle(array $p): string
     {
-        $schoolId = $p['primary_school_id'] ?? null;
-        if ($schoolId === null || $schoolId === '') {
-            return '';
-        }
-        $stmt = $this->db->prepare('SELECT ad_ou FROM school WHERE school_id = :id');
-        $stmt->execute([':id' => (int) $schoolId]);
-        return trim((string) ($stmt->fetchColumn() ?: ''), " ,");
+        return trim((string) ($p['title'] ?? ''));
     }
 
     /**
-     * The full container DN a new account is created in, most-specific first:
+     * The AD `department`: the building name — except Bus Drivers, whose
+     * department is overridden (AD_DEPT_BUS_DRIVER) because they belong to
+     * transportation rather than any one school. '' when unresolvable (never
+     * blank out AD's value).
+     */
+    private function desiredDepartment(array $p): string
+    {
+        if (self::isBusDriver($p)) {
+            return trim((string) Config::get('AD_DEPT_BUS_DRIVER', 'Transportation'));
+        }
+        return $this->schoolRow($p)['name'];
+    }
+
+    /**
+     * Title/department drift for the edit phase: the desired values that are
+     * non-empty and differ (case-insensitively) from what live AD holds. Kept in
+     * sync because a school move must update department or the per-school
+     * Everyone-group logic breaks downstream.
      *
-     *     [OU=<type leaf>,] {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
-     *
-     * All provisioned accounts nest under a shared parent OU (AD_PARENT_OU,
-     * "OU=Faculty" at TCS) and then their building OU (the relative school.ad_ou).
-     * Contractors/subs/interns get an extra type-specific leaf OU as the innermost
-     * segment; faculty and staff have none (placed directly in the building OU).
-     * e.g. a contractor at Central Office → OU=PTC,OU=CO,OU=Faculty,<base>; a
-     * faculty member there → OU=CO,OU=Faculty,<base>. Callers guarantee $adOu and
-     * $baseDn are non-empty before calling.
+     * @param array<string,mixed>  $p
+     * @param array<string,string> $envAttrs normalized (lowercase-keyed) AD attributes
+     * @return array<string,string>
+     */
+    private function operationalDrift(array $p, array $envAttrs): array
+    {
+        $out = [];
+        $desired = ['title' => $this->desiredTitle($p), 'department' => $this->desiredDepartment($p)];
+        foreach ($desired as $attr => $want) {
+            if ($want === '') {
+                continue; // nothing authoritative to push
+            }
+            $have = trim((string) ($envAttrs[$attr] ?? ''));
+            if (mb_strtolower($want) !== mb_strtolower($have)) {
+                $out[$attr] = $want;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * The account's CN (its name/RDN): "First Last" — matching OneSync's rule —
+     * made unique when necessary. CN is the RDN, so two same-named people in the
+     * same OU would fail the create; on a live-AD cn hit (anywhere — cheaper and
+     * stricter than per-OU) fall back to "First Last (username)", which is
+     * guaranteed unique because the username is. A search error also falls back —
+     * never risk a create we couldn't verify.
      *
      * @param array<string,mixed> $p
      */
-    private function containerDn(array $p, string $adOu): string
+    private function uniqueCn(array $p, string $username): string
     {
+        $cn = trim(trim((string) ($p['first_name'] ?? '')) . ' ' . trim((string) ($p['last_name'] ?? '')));
+        if ($cn === '') {
+            return $username;
+        }
+        $res = $this->read->searchByCriteria([['attr' => 'cn', 'value' => $cn]]);
+        if ($res['ok'] && !$res['found']) {
+            return $cn;
+        }
+        return $cn . ' (' . $username . ')';
+    }
+
+    /**
+     * The full container DN a new account is created in, or null when it cannot
+     * be resolved (no school.ad_ou for a placement that needs one). Assembled
+     * most-specific first; $baseDn is checked by the caller.
+     *
+     *   default     : [OU=<type leaf>,] {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
+     *   Bus Driver  : {AD_OU_BUS_DRIVER} , {AD_PARENT_OU} , {AD_BASE_DN}   (no school OU)
+     *   SRO         : {AD_OU_SRO} , {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
+     *
+     * All provisioned accounts nest under a shared parent OU (AD_PARENT_OU,
+     * "OU=Faculty" at TCS). Contractors/subs/interns get a type-specific leaf OU
+     * as the innermost segment (faculty/staff none); two title-driven rules trump
+     * the type leaf: Bus Drivers live in a transportation OU with NO building
+     * segment, and SROs get an SRO leaf above their building. e.g. a contractor
+     * at Central Office → OU=PTC,OU=CO,OU=Faculty,<base>; a bus driver →
+     * OU=trans,OU=Faculty,<base>; an SRO at BHS → OU=SRO,OU=BHS,OU=Faculty,<base>.
+     *
+     * @param array<string,mixed> $p
+     */
+    private function placement(array $p): ?string
+    {
+        $tail = array_values(array_filter([$this->parentOu, $this->baseDn], static fn($s) => $s !== ''));
+
+        if (self::isBusDriver($p)) {
+            $transOu = trim((string) Config::get('AD_OU_BUS_DRIVER', 'OU=trans'), ' ,');
+            return implode(',', array_merge([$transOu], $tail));
+        }
+
+        $adOu = $this->schoolRow($p)['ad_ou'];
+        if ($adOu === '') {
+            return null; // every non-bus-driver placement needs the building OU
+        }
+
+        if (self::isSro($p)) {
+            $sroOu = trim((string) Config::get('AD_OU_SRO', 'OU=SRO'), ' ,');
+            return implode(',', array_merge([$sroOu, $adOu], $tail));
+        }
+
         $parts = [];
         $leaf = $this->typeLeafOu((string) ($p['person_type'] ?? ''));
         if ($leaf !== '') {
             $parts[] = $leaf;
         }
         $parts[] = $adOu;
-        if ($this->parentOu !== '') {
-            $parts[] = $this->parentOu;
+        return implode(',', array_merge($parts, $tail));
+    }
+
+    /** Bus Driver title rule (see placement/desiredDepartment). */
+    private static function isBusDriver(array $p): bool
+    {
+        return (bool) preg_match('/bus\s*driver/i', (string) ($p['title'] ?? ''));
+    }
+
+    /** School Resource Officer title rule (see placement). */
+    private static function isSro(array $p): bool
+    {
+        return (bool) preg_match('/\bSRO\b|school\s+resource\s+officer/i', (string) ($p['title'] ?? ''));
+    }
+
+    /**
+     * The person's building row (name + relative ad_ou), both '' when the person
+     * has no resolvable school. school.ad_ou is a partial path (e.g. "OU=CO" or
+     * "OU=STC,OU=CO") — placement() assembles the full DN.
+     *
+     * @param array<string,mixed> $p
+     * @return array{name:string, ad_ou:string}
+     */
+    private function schoolRow(array $p): array
+    {
+        $schoolId = $p['primary_school_id'] ?? null;
+        if ($schoolId === null || $schoolId === '') {
+            return ['name' => '', 'ad_ou' => ''];
         }
-        $parts[] = $this->baseDn;
-        return implode(',', $parts);
+        $stmt = $this->db->prepare('SELECT name, ad_ou FROM school WHERE school_id = :id');
+        $stmt->execute([':id' => (int) $schoolId]);
+        $row = $stmt->fetch();
+        if ($row === false) {
+            return ['name' => '', 'ad_ou' => ''];
+        }
+        return [
+            'name'  => trim((string) ($row['name'] ?? '')),
+            'ad_ou' => trim((string) ($row['ad_ou'] ?? ''), ' ,'),
+        ];
     }
 
     /**
      * The type-specific leaf OU prepended to the container, by person_type.
-     * Defaults follow TCS's layout (contractor→PTC, sub→Sub, intern→Interns;
+     * Defaults follow TCS's layout (contractor→PTC, sub→Subs, intern→Interns;
      * faculty/staff/other have none) and each is overridable via AD_OU_<TYPE>
      * (e.g. AD_OU_CONTRACTOR=OU=Vendors).
      */
@@ -539,7 +662,7 @@ final class AdaxesReconciler
         'faculty'    => '',
         'staff'      => '',
         'contractor' => 'OU=PTC',
-        'sub'        => 'OU=Sub',
+        'sub'        => 'OU=Subs',   // matches OneSync's existing placement (plural)
         'intern'     => 'OU=Interns',
         'other'      => '',
     ];
@@ -637,7 +760,9 @@ final class AdaxesReconciler
     {
         $sql = 'SELECT p.person_id, p.person_type, p.status, p.first_name, p.last_name, p.preferred_name,
                        p.username, p.username_locked, p.email, p.upn, p.employee_id,
-                       p.primary_school_id, p.end_date
+                       p.primary_school_id, p.end_date,
+                       (SELECT a.title FROM assignment a WHERE a.person_id = p.person_id
+                         ORDER BY a.is_primary DESC, a.id LIMIT 1) AS title
                 FROM person p
                 WHERE ' . $where . '
                 ORDER BY p.person_id';

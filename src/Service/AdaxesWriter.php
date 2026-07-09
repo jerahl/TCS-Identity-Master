@@ -113,11 +113,21 @@ final class AdaxesWriter
             return ['ok' => false, 'error' => 'No target OU (containerDn) for create.', 'guid' => null, 'created' => false];
         }
 
+        // The object's name (its CN / RDN) rides top-level, not as a property —
+        // lift a 'cn' attribute out of the map. AD derives cn from the name, and
+        // the CALLER owns making it unique within the container (CN is the RDN,
+        // so a duplicate in the same OU fails the create).
+        $name = trim((string) ($attrs['cn'] ?? $attrs['name'] ?? ''));
+        unset($attrs['cn'], $attrs['name']);
+
         $body = [
             'objectType' => $this->createObjectType,
             'path'       => $containerDn,
             'properties' => self::propertyList($attrs),
         ];
+        if ($name !== '') {
+            $body['name'] = $name;
+        }
 
         $url = $this->baseUrl . '/' . $this->createPath;
         $res = $this->request('POST', $url, (string) json_encode($body));
