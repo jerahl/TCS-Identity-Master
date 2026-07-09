@@ -4,7 +4,7 @@
  *
  * Rendered two ways: server-side into the page when Adaxes isn't configured
  * (nothing to look up, so no round trip), and on demand by GET /people/{id}/adaxes
- * — the AJAX endpoint that person-adaxes.js swaps into the loading placeholder so
+ * — the AJAX endpoint that person-live-panels.js swaps into the loading placeholder so
  * the detail page renders immediately instead of blocking on the AD call.
  *
  * @var array $adaxes  the AdaxesService::verify() envelope

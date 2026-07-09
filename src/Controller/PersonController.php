@@ -96,7 +96,13 @@ final class PersonController extends Controller
         // reports none) and compares it to the golden record; the write actions
         // (link/create/push/suspend/restore) are separate POST routes. Off unless
         // GOOGLE_DIRECT_ENABLED + the GOOGLE_SA_* credentials are configured.
-        $google = $this->google->correlate($person, $sourceIds);
+        //
+        // Like the AD panel, the correlation is a live remote lookup (GAM / the
+        // Directory API) that can be slow, so it's fetched over AJAX from google()
+        // below and the page renders immediately with a loading indicator. Only
+        // the off-state (nothing to look up) is resolved inline for the template.
+        $googleConfigured = $this->google->configured();
+        $google = $googleConfigured ? null : $this->google->correlate($person, $sourceIds);
 
         // Per-person NextGen↔PowerSchool verification: compare what each system
         // actually staged (assignments come back primary-first, so [0] is primary).
@@ -114,6 +120,8 @@ final class PersonController extends Controller
             'adaxesConfigured' => $adaxesConfigured,
             'adaxesUrl'  => url('/people/' . $id . '/adaxes'),
             'google'     => $google,
+            'googleConfigured' => $googleConfigured,
+            'googleUrl'  => url('/people/' . $id . '/google'),
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
@@ -129,7 +137,7 @@ final class PersonController extends Controller
 
     /**
      * AJAX fragment: the live Active Directory verification panel for a person,
-     * fetched by public/assets/js/person-adaxes.js after the detail page renders
+     * fetched by public/assets/js/person-live-panels.js after the detail page renders
      * so the (potentially slow) Adaxes REST call never blocks the page load.
      *
      * Returns just the panel's inner HTML (no layout) for insertion into the
@@ -149,6 +157,35 @@ final class PersonController extends Controller
 
         return \App\View\View::partial('people/_adaxes', [
             'adaxes'  => $adaxes,
+            'p'       => $person,
+            'canEdit' => $this->auth()->can('edit'),
+            'csrf'    => Csrf::token(),
+        ]);
+    }
+
+    /**
+     * AJAX fragment: the live Google Workspace correlation panel for a person,
+     * fetched by public/assets/js/person-live-panels.js after the detail page
+     * renders so the (potentially slow) GAM / Directory API lookup never blocks
+     * the page load.
+     *
+     * Returns just the panel's inner HTML (no layout) for insertion into the
+     * #google-live placeholder. Read-only and config-gated, same never-mutating
+     * contract as show(); 404s a missing person so the client shows an error.
+     */
+    public function google(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            http_response_code(404);
+            return '';
+        }
+
+        $google = $this->google->correlate($person, $this->people->sourceIds($id));
+
+        return \App\View\View::partial('people/_google', [
+            'google'  => $google,
             'p'       => $person,
             'canEdit' => $this->auth()->can('edit'),
             'csrf'    => Csrf::token(),
