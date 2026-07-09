@@ -61,9 +61,16 @@ final class GoogleSync
     /**
      * Plan and (unless dry-run) apply the reconciliation.
      *
+     * $log, when given, is called as each action is planned and (on a real run)
+     * applied — a streaming progress hook for the CLI's --verbose mode, uncapped
+     * unlike the returned `actions` list. Signature: fn(string $event, array $data)
+     * where $event is 'plan' (data: person_id, action, email) or 'result' (adds
+     * ok, message). It never affects the return value.
+     *
+     * @param callable(string,array<string,mixed>):void|null $log
      * @return array{dry_run:bool, blocked:bool, configured:bool, counts:array<string,int>, actions:array<int,array<string,mixed>>, note:?string}
      */
-    public function run(bool $dryRun = false, ?string $actor = null): array
+    public function run(bool $dryRun = false, ?string $actor = null, ?callable $log = null): array
     {
         $actor ??= 'system:google_sync';
         $counts = [
@@ -97,7 +104,11 @@ final class GoogleSync
                 if ($decision['action'] === 'suspend') {
                     $suspendPlanned++;
                 }
-                $plan[] = ['person_id' => (int) $person['person_id'], 'action' => $decision['action'], 'email' => $decision['email']];
+                $item = ['person_id' => (int) $person['person_id'], 'action' => $decision['action'], 'email' => $decision['email']];
+                $plan[] = $item;
+                if ($log !== null) {
+                    $log('plan', $item);
+                }
             }
         }
 
@@ -121,6 +132,9 @@ final class GoogleSync
             $res = $this->provisioner->provision($item['person_id'], $item['action'], $actor);
             if (!$res['ok']) {
                 $counts['errors']++;
+            }
+            if ($log !== null) {
+                $log('result', $item + ['ok' => (bool) $res['ok'], 'message' => (string) ($res['message'] ?? '')]);
             }
         }
 
