@@ -824,7 +824,9 @@ directory calls swap:
   SA key (native `openssl_sign`, no vendored dependency) and exchanged at
   Google's OAuth2 endpoint for an access token that impersonates
   `GOOGLE_ADMIN_SUBJECT`. In the Google Admin console, authorize the SA client
-  ID for the `admin.directory.user` scope.
+  ID for the `admin.directory.user` scope. Run `php bin/google_auth_check.php`
+  to verify the whole chain (key → token → a delegated API call) and print the
+  exact client ID + scope to authorize when a step is still outstanding.
 - **`gam`** — shell out to [GAM](https://github.com/GAM-team/GAM) (GAM7), the
   CLI most Workspace admins already run (`App\Service\GamClient`). Auth lives
   entirely in GAM's own project/config, so **the app holds no Google key at
@@ -866,8 +868,9 @@ placement comes from `school.google_ou` — district convention
 `/tcs/faculty/{school}`, editable on `/reference` (Schools tab, admin only); a
 school with no mapping places new accounts in the root OU, so the reference page
 flags unmapped rows in amber. Full `GOOGLE_*` reference in
-`.env.example`. The batch runs as the `idm_writeback` role (see the added
-`person_source_id` / `school` grants below).
+`.env.example`. The batch runs as the `idm_app` role — it reads the golden
+record and `person_source_id` and writes the crosswalk, audit, and
+`account_sync_status`, the same as the per-person "Sync to Google" buttons.
 
 ```sh
 php bin/sync_google.php --dry-run   # plan; then drop --dry-run to apply

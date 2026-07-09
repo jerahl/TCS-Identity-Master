@@ -154,6 +154,82 @@ final class GoogleWorkspaceService
         return $this->domain;
     }
 
+    /**
+     * A step-by-step health check of the API backend's authorization, for the
+     * bin/google_auth_check.php setup script. Walks the same path a real call
+     * takes — feature flag → credentials → JWT signing → token exchange → a
+     * delegated Directory API read — and stops at the first failure so the
+     * script can point at exactly what to fix. Never throws.
+     *
+     * @return array{backend:string, enabled:bool, clientEmail:string, clientId:string,
+     *   adminSubject:string, domain:string, scopes:string, keySource:string,
+     *   steps:list<array{name:string, ok:bool, detail:string}>, ok:bool}
+     */
+    public function diagnose(): array
+    {
+        $meta = self::serviceAccountMeta();
+        $out = [
+            'backend'      => $this->backend,
+            'enabled'      => $this->enabled,
+            'clientEmail'  => $this->clientEmail,
+            'clientId'     => $meta['client_id'],
+            'adminSubject' => $this->adminSubject,
+            'domain'       => $this->domain,
+            'scopes'       => $this->scopes,
+            'keySource'    => $meta['source'],
+            'steps'        => [],
+            'ok'           => false,
+        ];
+        $steps = [];
+        $add = static function (string $name, bool $ok, string $detail) use (&$steps): bool {
+            $steps[] = ['name' => $name, 'ok' => $ok, 'detail' => $detail];
+            return $ok;
+        };
+        $finish = static function (array $out, array $steps): array {
+            $out['steps'] = $steps;
+            $out['ok'] = $steps !== [] && array_reduce($steps, static fn(bool $c, array $s): bool => $c && $s['ok'], true);
+            return $out;
+        };
+
+        if (!$add('Feature flag', $this->enabled, $this->enabled ? 'GOOGLE_DIRECT_ENABLED is on.' : 'GOOGLE_DIRECT_ENABLED is not true — direct provisioning is off.')) {
+            return $finish($out, $steps);
+        }
+        if ($this->backend !== 'api') {
+            $add('Backend', false, "GOOGLE_BACKEND is '{$this->backend}', not 'api'. This check is for the API backend; the GAM backend authenticates through gam itself.");
+            return $finish($out, $steps);
+        }
+        $add('Backend', true, 'GOOGLE_BACKEND=api (built-in Directory API client).');
+
+        $haveCreds = $this->clientEmail !== '' && $this->privateKey !== '' && $this->adminSubject !== '';
+        if (!$add('Credentials present', $haveCreds, $haveCreds
+            ? "service account {$this->clientEmail}, impersonating {$this->adminSubject}."
+            : 'missing one of GOOGLE_SA_CLIENT_EMAIL / GOOGLE_SA_PRIVATE_KEY / GOOGLE_ADMIN_SUBJECT (a GOOGLE_SA_KEY_FILE supplies the first two).')) {
+            return $finish($out, $steps);
+        }
+
+        if (!$add('Sign JWT', $this->buildAssertion() !== null, $this->authError === null
+            ? 'signed a test assertion with the SA private key.'
+            : ('could not sign the assertion — ' . $this->authError))) {
+            return $finish($out, $steps);
+        }
+
+        if (!$add('Token exchange', $this->authToken() !== null, $this->authError === null
+            ? 'obtained an OAuth access token from Google.'
+            : ('the token endpoint rejected the assertion — ' . $this->authError))) {
+            return $finish($out, $steps);
+        }
+
+        // A delegated read of the impersonated admin's own account: the first call
+        // that actually exercises domain-wide delegation, the scopes, and that the
+        // admin subject is a real user Google will let the SA act as.
+        $res = $this->request('GET', $this->apiBase . '/users/' . rawurlencode($this->adminSubject) . '?projection=basic');
+        $add('Directory API (delegated)', $res['ok'], $res['ok']
+            ? "read {$this->adminSubject} over the Directory API — domain-wide delegation, scopes, and admin subject all check out."
+            : (string) $res['error']);
+
+        return $finish($out, $steps);
+    }
+
     // ---- correlation (read) -------------------------------------------------
 
     /**
@@ -956,6 +1032,35 @@ final class GoogleWorkspaceService
             return ['', ''];
         }
         return [(string) ($data['client_email'] ?? ''), (string) ($data['private_key'] ?? '')];
+    }
+
+    /**
+     * Where the SA key came from, and its client_id — the numeric "OAuth client
+     * ID" an admin pastes into Admin console → API controls → Domain-wide
+     * delegation. Used by the setup script to print exact instructions.
+     *
+     * @return array{client_id:string, source:string}
+     */
+    private static function serviceAccountMeta(): array
+    {
+        $file = trim((string) Config::get('GOOGLE_SA_KEY_FILE', ''));
+        $json = '';
+        $source = 'GOOGLE_SA_CLIENT_EMAIL / GOOGLE_SA_PRIVATE_KEY (explicit env)';
+        if ($file !== '' && is_file($file) && is_readable($file)) {
+            $json = (string) file_get_contents($file);
+            $source = $file;
+        } elseif (trim((string) Config::get('GOOGLE_SA_JSON', '')) !== '') {
+            $json = trim((string) Config::get('GOOGLE_SA_JSON', ''));
+            $source = 'GOOGLE_SA_JSON (inline)';
+        }
+        $clientId = '';
+        if ($json !== '') {
+            $data = json_decode($json, true);
+            if (is_array($data)) {
+                $clientId = (string) ($data['client_id'] ?? '');
+            }
+        }
+        return ['client_id' => $clientId, 'source' => $source];
     }
 
     /**

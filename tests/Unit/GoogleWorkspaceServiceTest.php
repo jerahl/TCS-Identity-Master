@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Unit;
 
+use App\Service\GamClient;
 use App\Service\GoogleWorkspaceService;
 use PHPUnit\Framework\TestCase;
 
@@ -228,6 +229,87 @@ final class GoogleWorkspaceServiceTest extends TestCase
             ['email' => 'jdoe@tusc.k12.al.us'], 'tuscaloosacityschools.com'));
         // No GOOGLE_DOMAIN → '' (callers fall back to the golden email).
         self::assertSame('', GoogleWorkspaceService::googleEmailFor(['username' => 'jsmith'], ''));
+    }
+
+    public function testDiagnosePassesThroughTheDelegatedApiCall(): void
+    {
+        // Token endpoint mints a token; the delegated Directory read of the admin
+        // user succeeds — so every step passes.
+        $fetch = static function (string $m, string $url, array $h, ?string $b): ?array {
+            if (str_contains($url, '/token')) {
+                return ['status' => 200, 'body' => (string) json_encode(['access_token' => 'tok', 'expires_in' => 3600])];
+            }
+            return ['status' => 200, 'body' => (string) json_encode(['id' => '1', 'primaryEmail' => 'admin@x.org'])];
+        };
+        $svc = new GoogleWorkspaceService(
+            enabled: true, clientEmail: 'svc@x.iam', privateKey: 'k', adminSubject: 'admin@x.org', domain: 'x.org',
+            fetch: $fetch, signer: static fn(string $i): string => 'sig',
+            apiBase: 'https://admin.example/admin/directory/v1', tokenUri: 'https://oauth.example/token', backend: 'api',
+        );
+
+        $d = $svc->diagnose();
+
+        self::assertTrue($d['ok']);
+        self::assertSame('api', $d['backend']);
+        $byName = array_column($d['steps'], 'ok', 'name');
+        self::assertTrue($byName['Token exchange']);
+        self::assertTrue($byName['Directory API (delegated)']);
+    }
+
+    public function testDiagnoseFlagsDelegationFailureFromA403(): void
+    {
+        $fetch = static function (string $m, string $url, array $h, ?string $b): ?array {
+            if (str_contains($url, '/token')) {
+                return ['status' => 200, 'body' => (string) json_encode(['access_token' => 'tok'])];
+            }
+            return ['status' => 403, 'body' => (string) json_encode(['error' => ['message' => 'Not Authorized to access this resource/api']])];
+        };
+        $svc = new GoogleWorkspaceService(
+            enabled: true, clientEmail: 'svc@x.iam', privateKey: 'k', adminSubject: 'admin@x.org', domain: 'x.org',
+            fetch: $fetch, signer: static fn(string $i): string => 'sig',
+            apiBase: 'https://admin.example/admin/directory/v1', tokenUri: 'https://oauth.example/token', backend: 'api',
+        );
+
+        $d = $svc->diagnose();
+
+        self::assertFalse($d['ok']);
+        $api = null;
+        foreach ($d['steps'] as $s) {
+            if ($s['name'] === 'Directory API (delegated)') {
+                $api = $s;
+            }
+        }
+        self::assertNotNull($api);
+        self::assertFalse($api['ok']);
+        self::assertStringContainsString('delegation', (string) $api['detail']);
+    }
+
+    public function testDiagnoseStopsAtMissingCredentialsWithoutAnyHttp(): void
+    {
+        $svc = new GoogleWorkspaceService(
+            enabled: true, clientEmail: 'svc@x.iam', privateKey: 'k', adminSubject: '', domain: 'x.org',
+            fetch: static fn() => self::fail('must not hit the network before credentials are present'),
+            signer: static fn(string $i): string => 'sig', backend: 'api',
+        );
+
+        $d = $svc->diagnose();
+
+        self::assertFalse($d['ok']);
+        $byName = array_column($d['steps'], 'ok', 'name');
+        self::assertFalse($byName['Credentials present']);
+    }
+
+    public function testDiagnoseReportsGamBackendAsNotApplicable(): void
+    {
+        $gam = new GamClient(gamPath: 'gam', configDir: '', timeout: 5, runner: static fn() => null);
+        $svc = new GoogleWorkspaceService(enabled: true, fetch: static fn() => self::fail('gam backend uses no HTTP here'), gam: $gam);
+
+        $d = $svc->diagnose();
+
+        self::assertFalse($d['ok']);
+        self::assertSame('gam', $d['backend']);
+        $byName = array_column($d['steps'], 'ok', 'name');
+        self::assertFalse($byName['Backend']);
     }
 
     public function testSuspendedVsActiveStatusDiffers(): void
