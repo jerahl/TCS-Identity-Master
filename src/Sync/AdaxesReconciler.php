@@ -51,6 +51,9 @@ final class AdaxesReconciler
     private string $emailDomain;
     private string $upnSuffix;
 
+    /** Optional live-progress callback: fn(string $event, array $data): void. */
+    private $log = null;
+
     public function __construct(
         private readonly PDO $db,
         private readonly AdaxesService $read,
@@ -72,10 +75,15 @@ final class AdaxesReconciler
      * Run the reconciler.
      *
      * @param list<string> $phases any of 'disable','edit','create'
+     * @param callable(string,array<string,mixed>):void|null $log optional live-progress
+     *        callback: fires 'phase' (with the phase name + people count) as each phase
+     *        starts and 'item' as each person's outcome is decided. Lets a CLI stream
+     *        progress instead of waiting for the batch summary.
      * @return array<string,mixed>
      */
-    public function run(bool $dryRun = true, array $phases = ['disable', 'edit', 'create'], ?int $limit = null): array
+    public function run(bool $dryRun = true, array $phases = ['disable', 'edit', 'create'], ?int $limit = null, ?callable $log = null): array
     {
+        $this->log = $log;
         $writeEnabled = $this->writer->configured();
         $apply = !$dryRun && $writeEnabled;
 
@@ -126,6 +134,7 @@ final class AdaxesReconciler
         $out = ['blocked' => false, 'candidates' => 0, 'applied' => 0, 'noop' => 0, 'skipped' => 0, 'errors' => 0, 'items' => []];
 
         $people = $this->fetchPeople("status = 'disabled'", $limit);
+        $this->emit('phase', ['phase' => 'disable', 'total' => count($people)]);
         $candidates = [];   // [personId => [person, guid, name]]
 
         foreach ($people as $p) {
@@ -136,31 +145,31 @@ final class AdaxesReconciler
 
             if ($guid === null) {
                 $out['skipped']++;
-                $out['items'][] = self::item($pid, $name, 'disable', 'review', 'no linked objectGUID — correlation task, not a write');
+                $this->item($out, $pid, $name, 'disable', 'review', 'no linked objectGUID — correlation task, not a write');
                 continue;
             }
 
             $env = $this->read->verify($p, $sourceIds);
             if (!$env['ok']) {
                 $out['errors']++;
-                $out['items'][] = self::item($pid, $name, 'disable', 'error', (string) $env['error']);
+                $this->item($out, $pid, $name, 'disable', 'error', (string) $env['error']);
                 continue;
             }
             if (!$env['found']) {
                 $out['skipped']++;
-                $out['items'][] = self::item($pid, $name, 'disable', 'skip', 'no live AD account found');
+                $this->item($out, $pid, $name, 'disable', 'skip', 'no live AD account found');
                 continue;
             }
 
             $enabled = AdaxesService::accountEnabledFromEnvelope($env);
             if ($enabled === null) {
                 $out['skipped']++;
-                $out['items'][] = self::item($pid, $name, 'disable', 'skip', 'AD did not report account state — not acting');
+                $this->item($out, $pid, $name, 'disable', 'skip', 'AD did not report account state — not acting');
                 continue;
             }
             if ($enabled === false) {
                 $out['noop']++;
-                $out['items'][] = self::item($pid, $name, 'disable', 'noop', 'already disabled in AD');
+                $this->item($out, $pid, $name, 'disable', 'noop', 'already disabled in AD');
                 continue;
             }
             $candidates[$pid] = ['person' => $p, 'guid' => $guid, 'name' => $name];
@@ -176,7 +185,7 @@ final class AdaxesReconciler
         if ($linkedTotal >= $this->disableGuardMin && ($out['candidates'] / $linkedTotal) > $this->maxDisableRatio) {
             $out['blocked'] = true;
             foreach ($candidates as $pid => $c) {
-                $out['items'][] = self::item($pid, $c['name'], 'disable', 'blocked',
+                $this->item($out, $pid, $c['name'], 'disable', 'blocked',
                     sprintf('would disable %d of %d linked (> %.0f%%) — blocked; investigate the feed', $out['candidates'], $linkedTotal, $this->maxDisableRatio * 100));
             }
             return $out;
@@ -184,19 +193,19 @@ final class AdaxesReconciler
 
         foreach ($candidates as $pid => $c) {
             if (!$apply) {
-                $out['items'][] = self::item($pid, $c['name'], 'disable', 'would-disable', 'AD account enabled; would disable');
+                $this->item($out, $pid, $c['name'], 'disable', 'would-disable', 'AD account enabled; would disable');
                 continue;
             }
             $res = $this->writer->disable($c['guid']);
             if (!$res['ok']) {
                 $out['errors']++;
-                $out['items'][] = self::item($pid, $c['name'], 'disable', 'error', (string) $res['error']);
+                $this->item($out, $pid, $c['name'], 'disable', 'error', (string) $res['error']);
                 continue;
             }
             $this->audit->log('person', $pid, 'update', ['ad_account' => 'enabled'], ['ad_account' => 'disabled'], self::ACTOR);
             $this->audit->lifecycle($pid, 'disable', ['summary' => 'AD account disabled via Adaxes (objectGUID ' . $c['guid'] . ').'], self::ACTOR);
             $out['applied']++;
-            $out['items'][] = self::item($pid, $c['name'], 'disable', 'disabled', 'AD account disabled');
+            $this->item($out, $pid, $c['name'], 'disable', 'disabled', 'AD account disabled');
         }
 
         return $out;
@@ -216,6 +225,7 @@ final class AdaxesReconciler
         $out = ['applied' => 0, 'noop' => 0, 'skipped' => 0, 'errors' => 0, 'items' => []];
 
         $people = $this->fetchPeople("status IN ('active','pending')", $limit);
+        $this->emit('phase', ['phase' => 'edit', 'total' => count($people)]);
         foreach ($people as $p) {
             $pid = (int) $p['person_id'];
             $name = self::displayName($p);
@@ -228,12 +238,12 @@ final class AdaxesReconciler
             $env = $this->read->verify($p, $sourceIds);
             if (!$env['ok']) {
                 $out['errors']++;
-                $out['items'][] = self::item($pid, $name, 'edit', 'error', (string) $env['error']);
+                $this->item($out, $pid, $name, 'edit', 'error', (string) $env['error']);
                 continue;
             }
             if (!$env['found']) {
                 $out['skipped']++;
-                $out['items'][] = self::item($pid, $name, 'edit', 'skip', 'no live AD account found');
+                $this->item($out, $pid, $name, 'edit', 'skip', 'no live AD account found');
                 continue;
             }
 
@@ -244,19 +254,19 @@ final class AdaxesReconciler
             }
 
             if (!$apply) {
-                $out['items'][] = self::item($pid, $name, 'edit', 'would-edit', 'push ' . self::attrsSummary($attrs));
+                $this->item($out, $pid, $name, 'edit', 'would-edit', 'push ' . self::attrsSummary($attrs));
                 continue;
             }
             $res = $this->writer->modify($guid, $attrs);
             if (!$res['ok']) {
                 $out['errors']++;
-                $out['items'][] = self::item($pid, $name, 'edit', 'error', (string) $res['error']);
+                $this->item($out, $pid, $name, 'edit', 'error', (string) $res['error']);
                 continue;
             }
             $this->audit->log('person', $pid, 'update', ['ad_attrs' => 'drift'], $res['changed'], self::ACTOR);
             $this->audit->lifecycle($pid, 'update', ['summary' => 'AD attributes updated via Adaxes: ' . self::attrsSummary($res['changed']) . '.'], self::ACTOR);
             $out['applied']++;
-            $out['items'][] = self::item($pid, $name, 'edit', 'edited', self::attrsSummary($res['changed']));
+            $this->item($out, $pid, $name, 'edit', 'edited', self::attrsSummary($res['changed']));
         }
 
         return $out;
@@ -283,6 +293,7 @@ final class AdaxesReconciler
              AND p.person_id NOT IN (SELECT person_id FROM person_source_id WHERE system = 'ad' AND is_active = 1)",
             $limit
         );
+        $this->emit('phase', ['phase' => 'create', 'total' => count($people)]);
 
         foreach ($people as $p) {
             $pid = (int) $p['person_id'];
@@ -294,14 +305,14 @@ final class AdaxesReconciler
             // task. Route to review.
             if (!empty($p['username_locked'])) {
                 $out['review']++;
-                $out['items'][] = self::item($pid, $name, 'create', 'review', 'locked username but no AD link — correlate the existing account, do not create');
+                $this->item($out, $pid, $name, 'create', 'review', 'locked username but no AD link — correlate the existing account, do not create');
                 continue;
             }
 
             $ou = $this->ouFor($p);
             if ($ou === '') {
                 $out['skipped']++;
-                $out['items'][] = self::item($pid, $name, 'create', 'review', 'no AD OU for the building (school.ad_ou) — cannot place');
+                $this->item($out, $pid, $name, 'create', 'review', 'no AD OU for the building (school.ad_ou) — cannot place');
                 continue;
             }
 
@@ -310,12 +321,12 @@ final class AdaxesReconciler
             $search = $this->read->search($p);
             if (!$search['ok']) {
                 $out['errors']++;
-                $out['items'][] = self::item($pid, $name, 'create', 'error', (string) $search['error']);
+                $this->item($out, $pid, $name, 'create', 'error', (string) $search['error']);
                 continue;
             }
             if ($search['found']) {
                 $out['review']++;
-                $out['items'][] = self::item($pid, $name, 'create', 'review', 'AD account already exists but is unlinked — correlate, do not create');
+                $this->item($out, $pid, $name, 'create', 'review', 'AD account already exists but is unlinked — correlate, do not create');
                 continue;
             }
 
@@ -324,7 +335,7 @@ final class AdaxesReconciler
                 $username = $this->resolveUsername($p);
             } catch (\InvalidArgumentException $e) {
                 $out['skipped']++;
-                $out['items'][] = self::item($pid, $name, 'create', 'review', $e->getMessage());
+                $this->item($out, $pid, $name, 'create', 'review', $e->getMessage());
                 continue;
             }
             $email = UsernameMinter::emailFor($username, $this->emailDomain);
@@ -332,21 +343,21 @@ final class AdaxesReconciler
             $attrs = $this->createAttrs($p, $username, $email, $upn);
 
             if (!$apply) {
-                $out['items'][] = self::item($pid, $name, 'create', 'would-create', "as {$username} ({$email}) in {$ou}");
+                $this->item($out, $pid, $name, 'create', 'would-create', "as {$username} ({$email}) in {$ou}");
                 continue;
             }
 
             // Per-run absolute cap on real creates.
             if ($out['applied'] >= $this->maxCreates) {
                 $out['capped']++;
-                $out['items'][] = self::item($pid, $name, 'create', 'capped', "per-run create cap ({$this->maxCreates}) reached — deferred");
+                $this->item($out, $pid, $name, 'create', 'capped', "per-run create cap ({$this->maxCreates}) reached — deferred");
                 continue;
             }
 
             $res = $this->writer->create($ou, $attrs);
             if (!$res['ok']) {
                 $out['errors']++;
-                $out['items'][] = self::item($pid, $name, 'create', 'error', (string) $res['error']);
+                $this->item($out, $pid, $name, 'create', 'error', (string) $res['error']);
                 continue;
             }
 
@@ -368,7 +379,7 @@ final class AdaxesReconciler
             if ($guid === null) {
                 $out['errors']++;
             }
-            $out['items'][] = self::item($pid, $name, 'create', $guid !== null ? 'created' : 'created-unlinked', $detail);
+            $this->item($out, $pid, $name, 'create', $guid !== null ? 'created' : 'created-unlinked', $detail);
         }
 
         return $out;
@@ -552,9 +563,26 @@ final class AdaxesReconciler
         return implode(', ', $parts);
     }
 
-    /** @return Item */
-    private static function item(int $pid, string $name, string $action, string $outcome, string $detail): array
+    /**
+     * Record one decision: append it to the phase result AND stream it live to the
+     * progress callback (if any). Called at the moment each person's outcome is
+     * decided, so --verbose shows progress as the run happens rather than in one
+     * batch at the end.
+     *
+     * @param array<string,mixed> $out phase result accumulator (items appended by ref)
+     */
+    private function item(array &$out, int $pid, string $name, string $action, string $outcome, string $detail): void
     {
-        return ['person_id' => $pid, 'name' => $name, 'action' => $action, 'outcome' => $outcome, 'detail' => $detail];
+        $item = ['person_id' => $pid, 'name' => $name, 'action' => $action, 'outcome' => $outcome, 'detail' => $detail];
+        $out['items'][] = $item;
+        $this->emit('item', $item);
+    }
+
+    /** Fire a progress event on the callback, if one was supplied to run(). */
+    private function emit(string $event, array $data): void
+    {
+        if ($this->log !== null) {
+            ($this->log)($event, $data);
+        }
     }
 }

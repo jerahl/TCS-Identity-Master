@@ -378,6 +378,34 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(0, (int) $db->query('SELECT COUNT(*) FROM lifecycle_event')->fetchColumn());
     }
 
+    public function testProgressCallbackStreamsPhaseAndItemEvents(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Jo', 'last_name' => 'Leaver']);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountDisabled' => 'false']]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+
+        $events = [];
+        $log = static function (string $event, array $data) use (&$events): void {
+            $events[] = [$event, $data];
+        };
+        $rec->run(dryRun: true, phases: ['disable'], limit: null, log: $log);
+
+        // A 'phase' header fires first with the count of people to examine, then
+        // one 'item' per decided outcome — live, as it happens.
+        self::assertSame('phase', $events[0][0]);
+        self::assertSame('disable', $events[0][1]['phase']);
+        self::assertSame(1, $events[0][1]['total']);
+
+        $items = array_values(array_filter($events, static fn($e) => $e[0] === 'item'));
+        self::assertCount(1, $items);
+        self::assertSame('would-disable', $items[0][1]['outcome']);
+        self::assertSame(1, $items[0][1]['person_id']);
+    }
+
     public function testNonDryRunWithWritesOffChangesNothing(): void
     {
         $db = $this->db();
