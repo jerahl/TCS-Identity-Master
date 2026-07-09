@@ -192,12 +192,11 @@ final class GoogleWorkspaceService
             // A stale/renamed id falls through to the attribute lookups below.
         }
 
-        // Tier 2 — primary email (golden email, then UPN).
-        foreach (['email', 'upn'] as $field) {
-            $value = trim((string) ($person[$field] ?? ''));
-            if ($value === '') {
-                continue;
-            }
+        // Tier 2 — primary email. The golden email/UPN sit in the district's
+        // on-prem domain (e.g. @tusc.k12.al.us), but the Google account lives
+        // under GOOGLE_DOMAIN (e.g. @tuscaloosacityschools.com) — so the local
+        // part re-homed to GOOGLE_DOMAIN is tried first, then the raw values.
+        foreach ($this->primaryEmailCandidates($person) as $value) {
             $res = $this->getUser($value);
             if (!$res['ok']) {
                 return self::envelope(ok: false, configured: true, error: $res['error'], by: 'email', identifier: $value);
@@ -234,6 +233,62 @@ final class GoogleWorkspaceService
         }
 
         return self::envelope(ok: true, configured: true, found: false);
+    }
+
+    /**
+     * Ordered, de-duplicated primaryEmail candidates to correlate a person by.
+     *
+     * A person's golden email/UPN are typically in the district's on-prem domain,
+     * while their Google account is under GOOGLE_DOMAIN — so the strongest
+     * candidates are the local part re-homed to GOOGLE_DOMAIN: the AD username
+     * first (the Google account convention), then the email/UPN local parts. The
+     * raw golden email and UPN follow, for records that already carry a
+     * Google-domain (or otherwise directly matching) address. De-duplicated
+     * case-insensitively; only well-formed addresses are kept.
+     *
+     * @param array<string,mixed> $person
+     * @return list<string>
+     */
+    private function primaryEmailCandidates(array $person): array
+    {
+        $username = trim((string) ($person['username'] ?? ''));
+        $email    = trim((string) ($person['email'] ?? ''));
+        $upn      = trim((string) ($person['upn'] ?? ''));
+
+        $localParts = [];
+        if ($username !== '') {
+            $localParts[] = $username;
+        }
+        foreach ([$email, $upn] as $addr) {
+            $at = strpos($addr, '@');
+            if ($at !== false && $at > 0) {
+                $localParts[] = substr($addr, 0, $at);
+            }
+        }
+
+        $candidates = [];
+        if ($this->domain !== '') {
+            foreach ($localParts as $lp) {
+                $candidates[] = $lp . '@' . $this->domain;
+            }
+        }
+        $candidates[] = $email;
+        $candidates[] = $upn;
+
+        $seen = [];
+        $out = [];
+        foreach ($candidates as $c) {
+            $c = trim($c);
+            if ($c === '' || !str_contains($c, '@')) {
+                continue;
+            }
+            $key = mb_strtolower($c);
+            if (!isset($seen[$key])) {
+                $seen[$key] = true;
+                $out[] = $c;
+            }
+        }
+        return $out;
     }
 
     /**

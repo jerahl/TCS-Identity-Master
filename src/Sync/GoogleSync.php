@@ -179,7 +179,7 @@ final class GoogleSync
     private function eligiblePeople(): array
     {
         return $this->db->query(
-            "SELECT person_id, person_uuid, first_name, last_name, email, upn, employee_id,
+            "SELECT person_id, person_uuid, username, first_name, last_name, email, upn, employee_id,
                     status, person_type, primary_school_id
              FROM person
              WHERE status IN ('active','pending','disabled','terminated')

@@ -330,6 +330,14 @@ final class GamClient
     /** @param array{status:int,stdout:string,stderr:string} $res */
     private function gamError(array $res, string $what): string
     {
+        // Exit 127 is the shell/exec "command not found": GAM never actually ran,
+        // so there's typically no output. Point at the binary rather than leaving
+        // a bare "(exit 127): no output".
+        if ((int) $res['status'] === 127) {
+            return 'GAM ' . $what . ' failed (exit 127): the gam binary was not found or is not executable. '
+                . 'Check GAM_PATH (' . ($this->gamPath !== '' ? $this->gamPath : 'unset')
+                . ') is gam’s absolute path and is executable by the web/app user.';
+        }
         $detail = trim($res['stderr']) !== '' ? trim($res['stderr']) : trim($res['stdout']);
         $detail = trim((string) preg_replace('/\s+/', ' ', $detail));
         if (strlen($detail) > 300) {

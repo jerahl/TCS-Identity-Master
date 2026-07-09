@@ -306,7 +306,7 @@ final class GoogleProvisioner
     private function loadPerson(int $personId): ?array
     {
         $stmt = $this->db->prepare(
-            'SELECT person_id, person_uuid, first_name, last_name, email, upn, employee_id,
+            'SELECT person_id, person_uuid, username, first_name, last_name, email, upn, employee_id,
                     status, person_type, primary_school_id
              FROM person WHERE person_id = :id'
         );
