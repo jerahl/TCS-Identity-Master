@@ -59,6 +59,7 @@ final class AdaxesService
     private const DEFAULT_PROPERTIES = [
         'objectGUID', 'sAMAccountName', 'userPrincipalName', 'mail', 'displayName',
         'distinguishedName', 'accountDisabled', 'userAccountControl',
+        'accountExpires', 'accountExpirationDate',
         'department', 'title', 'whenChanged',
     ];
 
@@ -362,6 +363,11 @@ final class AdaxesService
             ];
         }
 
+        // Account expiration vs the golden end date.
+        if (($expiryRow = self::expiryRow($person, $attrs)) !== null) {
+            $rows[] = $expiryRow;
+        }
+
         // Context-only attributes (no golden equivalent to match against).
         foreach (['displayname' => 'Display name', 'distinguishedname' => 'OU / DN', 'department' => 'Department', 'title' => 'Title'] as $key => $label) {
             if (($attrs[$key] ?? '') !== '') {
@@ -465,6 +471,81 @@ final class AdaxesService
             return (((int) $attrs['useraccountcontrol']) & 0x2) === 0;
         }
         return null;
+    }
+
+    /**
+     * The AD account-expiration comparison row, or null when AD didn't return an
+     * expiration at all (nothing to show). Golden side is the person's end_date;
+     * AD side is the parsed expiration ('Never' or a date). The headline problem
+     * is an already-expired account for someone who should be active; otherwise
+     * it should line up with the golden end date (no end date ⇔ "Never").
+     *
+     * @param array<string,mixed>  $person
+     * @param array<string,string> $attrs
+     * @return array{field:string,label:string,golden:string,ad:string,state:string}|null
+     */
+    private static function expiryRow(array $person, array $attrs): ?array
+    {
+        $ad = self::accountExpiry($attrs);
+        if ($ad === null) {
+            return null; // AD didn't expose an expiration — no row
+        }
+        $goldenEnd = self::toDate((string) ($person['end_date'] ?? ''));
+        $activeish = in_array((string) ($person['status'] ?? ''), ['active', 'pending'], true);
+        $expiredNow = $ad !== 'Never' && $ad < gmdate('Y-m-d');
+
+        if ($activeish && $expiredNow) {
+            $state = 'differ';               // should be usable, but AD has locked it out
+        } elseif ($goldenEnd === '') {
+            $state = $ad === 'Never' ? 'match' : 'info';   // no golden end date to line up with
+        } else {
+            $state = ($ad !== 'Never' && $ad === $goldenEnd) ? 'match' : 'differ';
+        }
+
+        return ['field' => 'accountExpires', 'label' => 'Account expires', 'golden' => $goldenEnd, 'ad' => $ad, 'state' => $state];
+    }
+
+    /**
+     * Normalize AD's account expiration to 'Never' or a 'Y-m-d' date. Handles
+     * both a friendly `accountExpirationDate` and the raw `accountExpires`
+     * Windows FILETIME (100-ns ticks since 1601; 0 or the max value = never
+     * expires). Returns null when neither attribute was returned.
+     *
+     * @param array<string,string> $attrs
+     */
+    private static function accountExpiry(array $attrs): ?string
+    {
+        $friendly = trim((string) ($attrs['accountexpirationdate'] ?? ''));
+        if ($friendly !== '') {
+            return self::toDate($friendly) ?: $friendly;
+        }
+        if (!array_key_exists('accountexpires', $attrs)) {
+            return null;
+        }
+        $raw = trim((string) $attrs['accountexpires']);
+        if ($raw === '') {
+            return null;
+        }
+        if (is_numeric($raw) && ctype_digit(ltrim($raw, '-'))) {
+            $ft = (int) $raw;
+            if ($ft <= 0 || $ft === PHP_INT_MAX || $raw === '9223372036854775807') {
+                return 'Never';                       // 0 / max FILETIME = never expires
+            }
+            $unix = intdiv($ft, 10000000) - 11644473600;
+            return $unix > 0 ? gmdate('Y-m-d', $unix) : 'Never';
+        }
+        return self::toDate($raw) ?: $raw;
+    }
+
+    /** A date value normalized to 'Y-m-d', or '' when empty/unparseable. */
+    private static function toDate(string $v): string
+    {
+        $v = trim($v);
+        if ($v === '') {
+            return '';
+        }
+        $ts = strtotime($v);
+        return $ts !== false ? gmdate('Y-m-d', $ts) : '';
     }
 
     private static function truthy(string $v): bool
