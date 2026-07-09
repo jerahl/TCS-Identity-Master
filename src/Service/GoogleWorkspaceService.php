@@ -292,6 +292,36 @@ final class GoogleWorkspaceService
     }
 
     /**
+     * The person's derived Google Workspace email — the account convention used
+     * across the app (person page, comparison panel, notify page). It is
+     * <username>@GOOGLE_DOMAIN; with no username it re-homes the golden email/UPN
+     * local part to GOOGLE_DOMAIN. Returns '' when GOOGLE_DOMAIN isn't configured
+     * (callers fall back to the golden email). $domain is injectable and defaults
+     * to GOOGLE_DOMAIN so templates can call this statically.
+     *
+     * @param array<string,mixed> $person
+     */
+    public static function googleEmailFor(array $person, ?string $domain = null): string
+    {
+        $domain = trim($domain ?? (string) Config::get('GOOGLE_DOMAIN', ''));
+        if ($domain === '') {
+            return '';
+        }
+        $username = trim((string) ($person['username'] ?? ''));
+        if ($username !== '') {
+            return $username . '@' . $domain;
+        }
+        foreach (['email', 'upn'] as $f) {
+            $addr = trim((string) ($person[$f] ?? ''));
+            $at = strpos($addr, '@');
+            if ($at !== false && $at > 0) {
+                return substr($addr, 0, $at) . '@' . $domain;
+            }
+        }
+        return '';
+    }
+
+    /**
      * GET a single user by id or primaryEmail. A 404 is a clean not-found (so the
      * caller can fall through to the next correlation tier), not an error.
      *
@@ -455,7 +485,14 @@ final class GoogleWorkspaceService
     public static function compareToGolden(array $person, array $attrs): array
     {
         $rows = [];
-        $rows[] = self::compareRow('primaryEmail', 'Primary email', (string) ($person['email'] ?? ''), $attrs['primaryemail'] ?? null, caseInsensitive: true);
+        // Compare the golden Google email (<username>@GOOGLE_DOMAIN) against the
+        // account's primaryEmail. Fall back to the golden email only when no
+        // Google email could be derived (GOOGLE_DOMAIN unset).
+        $goldenGoogleEmail = trim((string) ($person['google_email'] ?? ''));
+        if ($goldenGoogleEmail === '') {
+            $goldenGoogleEmail = trim((string) ($person['email'] ?? ''));
+        }
+        $rows[] = self::compareRow('primaryEmail', 'Google email', $goldenGoogleEmail, $attrs['primaryemail'] ?? null, caseInsensitive: true);
         $rows[] = self::compareRow('givenName', 'First name', (string) ($person['first_name'] ?? ''), $attrs['givenname'] ?? null);
         $rows[] = self::compareRow('familyName', 'Last name', (string) ($person['last_name'] ?? ''), $attrs['familyname'] ?? null);
 
@@ -582,6 +619,9 @@ final class GoogleWorkspaceService
      */
     private function foundEnvelope(array $person, array $attrs, string $by, string $identifier, bool $auto): array
     {
+        // Carry the derived Google email so the comparison compares like-for-like
+        // (golden Google email vs the account's primaryEmail), not the on-prem email.
+        $person['google_email'] = self::googleEmailFor($person, $this->domain);
         return self::envelope(
             ok: true,
             configured: true,

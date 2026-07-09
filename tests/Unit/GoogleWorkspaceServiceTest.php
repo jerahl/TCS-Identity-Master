@@ -219,6 +219,17 @@ final class GoogleWorkspaceServiceTest extends TestCase
         self::assertSame('match', $byField['givenName']);
     }
 
+    public function testGoogleEmailForDerivesFromUsernameThenLocalPart(): void
+    {
+        self::assertSame('jsmith@tuscaloosacityschools.com', GoogleWorkspaceService::googleEmailFor(
+            ['username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us'], 'tuscaloosacityschools.com'));
+        // No username → re-home the golden email local part.
+        self::assertSame('jdoe@tuscaloosacityschools.com', GoogleWorkspaceService::googleEmailFor(
+            ['email' => 'jdoe@tusc.k12.al.us'], 'tuscaloosacityschools.com'));
+        // No GOOGLE_DOMAIN → '' (callers fall back to the golden email).
+        self::assertSame('', GoogleWorkspaceService::googleEmailFor(['username' => 'jsmith'], ''));
+    }
+
     public function testSuspendedVsActiveStatusDiffers(): void
     {
         $svc = $this->service($this->userResponse(['suspended' => true]));

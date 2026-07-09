@@ -77,6 +77,14 @@ $eventTitle = [
               <?php if ($locked): ?><?= $lockSvg ?><?php endif; ?>
             </div>
           </div>
+          <div>
+            <div class="kv__label" style="text-transform:uppercase; letter-spacing:.4px;">Google email</div>
+            <div class="id-field">
+              <?php $googleEmail = \App\Service\GoogleWorkspaceService::googleEmailFor($p); ?>
+              <?php if ($googleEmail !== ''): ?><span class="mono"><?= e($googleEmail) ?></span>
+              <?php else: ?><span class="mono value-missing">— not set —</span><?php endif; ?>
+            </div>
+          </div>
         </div>
         <div class="identity-note">
           <?= $lockSvg ?>
