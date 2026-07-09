@@ -32,21 +32,20 @@ final class UsernameMinterTest extends TestCase
 
     public function testBaseFormAndCasing(): void
     {
-        self::assertSame('JSmith', UsernameMinter::base('John', 'Smith'));
-        // Deterministic casing regardless of source casing.
-        self::assertSame('JSmith', UsernameMinter::base('john', 'SMITH'));
-        self::assertSame('JSmith', UsernameMinter::base('jOHN', 'smith'));
+        self::assertSame('jsmith', UsernameMinter::base('John', 'Smith'));
+        // Deterministic lowercase regardless of source casing.
+        self::assertSame('jsmith', UsernameMinter::base('john', 'SMITH'));
+        self::assertSame('jsmith', UsernameMinter::base('jOHN', 'smith'));
     }
 
     public function testStripsPunctuationAndSpaces(): void
     {
-        // Punctuation/spaces are stripped, then casing is normalized to
-        // ucfirst(strtolower()) — deterministic regardless of source casing.
-        self::assertSame('SObrien', UsernameMinter::base('Sean', "O'Brien"));
-        self::assertSame('MDelacruz', UsernameMinter::base('Maria', 'De La Cruz'));
-        self::assertSame('MMaryjane', UsernameMinter::base('Mary', 'Mary-Jane'));
+        // Punctuation/spaces are stripped, then lowercased — deterministic.
+        self::assertSame('sobrien', UsernameMinter::base('Sean', "O'Brien"));
+        self::assertSame('mdelacruz', UsernameMinter::base('Maria', 'De La Cruz'));
+        self::assertSame('mmaryjane', UsernameMinter::base('Mary', 'Mary-Jane'));
         // A period after the first initial is stripped; the first letter wins.
-        self::assertSame('JSmith', UsernameMinter::base('J.', 'Smith'));
+        self::assertSame('jsmith', UsernameMinter::base('J.', 'Smith'));
     }
 
     public function testEmptyOrAllStrippedNameThrows(): void
@@ -63,42 +62,41 @@ final class UsernameMinterTest extends TestCase
 
     public function testFirstHolderGetsBareBase(): void
     {
-        self::assertSame('JSmith', UsernameMinter::mint('John', 'Smith', self::free()));
+        self::assertSame('jsmith', UsernameMinter::mint('John', 'Smith', self::free()));
     }
 
     public function testCollisionIncrementsFromOne(): void
     {
-        self::assertSame('JSmith1', UsernameMinter::mint('James', 'Smith', self::taken('JSmith')));
-        self::assertSame('JSmith2', UsernameMinter::mint('Jane', 'Smith', self::taken('JSmith', 'JSmith1')));
+        self::assertSame('jsmith1', UsernameMinter::mint('James', 'Smith', self::taken('jsmith')));
+        self::assertSame('jsmith2', UsernameMinter::mint('Jane', 'Smith', self::taken('jsmith', 'jsmith1')));
     }
 
     public function testCollisionCheckIsCaseInsensitiveViaCaller(): void
     {
         // The caller's $isTaken folds case (as the DB/AD checks do).
-        self::assertSame('JSmith1', UsernameMinter::mint('John', 'Smith', self::taken('jsmith')));
+        self::assertSame('jsmith1', UsernameMinter::mint('John', 'Smith', self::taken('JSMITH')));
     }
 
     public function testLengthCapTruncatesLastNameKeepingInitial(): void
     {
         $u = UsernameMinter::mint('John', 'Superlonglastnamehere', self::free());
         self::assertSame(UsernameMinter::SAM_MAX_LENGTH, strlen($u));
-        self::assertSame('JSuperlonglastnamehe', $u); // J + 19 chars = 20
+        self::assertSame('jsuperlonglastnamehe', $u); // j + 19 chars = 20
     }
 
     public function testLengthCapPreservesSuffixByTruncatingMore(): void
     {
         // The base form is taken, so the suffix must survive at the cap: the
         // last-name portion loses a char to make room for the '1'.
-        $u = UsernameMinter::mint('John', 'Superlonglastnamehere', self::taken('JSuperlonglastnamehe'));
+        $u = UsernameMinter::mint('John', 'Superlonglastnamehere', self::taken('jsuperlonglastnamehe'));
         self::assertSame(UsernameMinter::SAM_MAX_LENGTH, strlen($u));
         self::assertSame('1', substr($u, -1));
-        self::assertSame('JSuperlonglastnameh1', $u); // J + 18 chars + "1" = 20
+        self::assertSame('jsuperlonglastnameh1', $u); // j + 18 chars + "1" = 20
     }
 
     public function testEmailAndUpnDerivation(): void
     {
-        self::assertSame('JSmith@tusc.k12.al.us', UsernameMinter::emailFor('JSmith', 'tusc.k12.al.us'));
-        // Casing of the username is preserved (email = upn = <username>@domain).
-        self::assertSame('JSmith1@tusc.k12.al.us', UsernameMinter::emailFor('JSmith1', 'tusc.k12.al.us'));
+        self::assertSame('jsmith@tusc.k12.al.us', UsernameMinter::emailFor('jsmith', 'tusc.k12.al.us'));
+        self::assertSame('jsmith1@tusc.k12.al.us', UsernameMinter::emailFor('jsmith1', 'tusc.k12.al.us'));
     }
 }

@@ -22,6 +22,18 @@ final class AdaxesReconcilerTest extends TestCase
     private const GUID1 = '11111111-1111-1111-1111-111111111111';
     private const GUID2 = '22222222-2222-2222-2222-222222222222';
     private const NEWGUID = '99999999-9999-9999-9999-999999999999';
+    private const BASE_DN = 'DC=example,DC=org';
+
+    protected function setUp(): void
+    {
+        // The reconciler forms container DNs as {ad_ou}[,OU=faculty],{AD_BASE_DN}.
+        putenv('AD_BASE_DN=' . self::BASE_DN);
+    }
+
+    protected function tearDown(): void
+    {
+        putenv('AD_BASE_DN');
+    }
 
     private function db(): PDO
     {
@@ -29,7 +41,8 @@ final class AdaxesReconcilerTest extends TestCase
         $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
         $db->exec('CREATE TABLE person (
-            person_id INTEGER PRIMARY KEY, status TEXT, first_name TEXT, last_name TEXT,
+            person_id INTEGER PRIMARY KEY, person_type TEXT DEFAULT \'faculty\', status TEXT,
+            first_name TEXT, last_name TEXT,
             preferred_name TEXT, username TEXT UNIQUE, email TEXT UNIQUE, upn TEXT,
             username_locked INTEGER DEFAULT 0, username_assigned_at TEXT,
             employee_id TEXT, primary_school_id INTEGER, end_date TEXT)');
@@ -257,13 +270,15 @@ final class AdaxesReconcilerTest extends TestCase
 
     // ---- create -------------------------------------------------------------
 
-    public function testCreatesNetNewHireLinksGuidAndStampsGolden(): void
+    public function testCreatesNetNewFacultyHireLinksGuidAndStampsGolden(): void
     {
         $db = $this->db();
-        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=Staff,DC=example,DC=org')");
+        // ad_ou is the relative building OU; the reconciler appends OU=faculty + base.
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
         $this->seedPerson($db, [
-            'person_id' => 1, 'status' => 'pending', 'first_name' => 'John', 'last_name' => 'Smith',
-            'employee_id' => 'E100', 'primary_school_id' => 5,
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+            'first_name' => 'John', 'last_name' => 'Smith',
+            'employee_id' => 'E100', 'primary_school_id' => 5, 'end_date' => '2027-05-31',
         ]);
 
         $calls = [];
@@ -274,9 +289,9 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(0, $res['create']['errors']);
 
         $p = $db->query('SELECT * FROM person WHERE person_id = 1')->fetch();
-        self::assertSame('JSmith', $p['username']);
-        self::assertSame('JSmith@tusc.k12.al.us', $p['email']);
-        self::assertSame('JSmith@tusc.k12.al.us', $p['upn']);
+        self::assertSame('jsmith', $p['username']);                 // lowercase
+        self::assertSame('jsmith@tusc.k12.al.us', $p['email']);
+        self::assertSame('jsmith@tusc.k12.al.us', $p['upn']);
         self::assertSame(1, (int) $p['username_locked']);
         self::assertSame('active', $p['status']); // pending → active
 
@@ -284,7 +299,7 @@ final class AdaxesReconcilerTest extends TestCase
         $guid = $db->query("SELECT source_key FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn();
         self::assertSame(self::NEWGUID, $guid);
 
-        // The create POST carried the identity core.
+        // The create POST carried the identity core + faculty container + expiry.
         $create = null;
         foreach ($calls as $c) {
             if ($c['method'] === 'POST') {
@@ -293,19 +308,66 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=Staff,DC=example,DC=org', $body['path']);
+        self::assertSame('OU=CO,OU=faculty,DC=example,DC=org', $body['path']);
         $props = [];
         foreach ($body['properties'] as $pr) {
             $props[$pr['name']] = $pr['value'];
         }
-        self::assertSame('JSmith', $props['sAMAccountName']);
+        self::assertSame('jsmith', $props['sAMAccountName']);
         self::assertSame('E100', $props['employeeID']);
+        // accountExpires = midnight UTC of the end date, as a FILETIME.
+        $expectFt = (string) ((strtotime('2027-05-31 00:00:00 UTC') + 11644473600) * 10000000);
+        self::assertSame($expectFt, $props['accountExpires']);
+    }
+
+    public function testNonFacultyIsPlacedDirectlyUnderBuildingOu(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'staff', 'status' => 'pending',
+            'first_name' => 'Sam', 'last_name' => 'Staff', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        self::assertNotNull($create);
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=CO,DC=example,DC=org', $body['path']); // no OU=faculty
+    }
+
+    public function testCreateSkippedWhenBaseDnMissing(): void
+    {
+        putenv('AD_BASE_DN'); // unset for this case
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+            'first_name' => 'John', 'last_name' => 'Smith', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(0, $res['create']['applied']);
+        self::assertSame(1, $res['create']['skipped']);
+        self::assertStringContainsString('AD_BASE_DN', $res['create']['items'][0]['detail']);
+        self::assertSame([], $calls);
     }
 
     public function testExistingAdAccountRoutesToReviewInsteadOfCreating(): void
     {
         $db = $this->db();
-        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=Staff,DC=example,DC=org')");
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
         $this->seedPerson($db, [
             'person_id' => 1, 'status' => 'active', 'first_name' => 'Jane', 'last_name' => 'Doe',
             'employee_id' => 'E200', 'primary_school_id' => 5,
@@ -324,7 +386,7 @@ final class AdaxesReconcilerTest extends TestCase
     public function testLockedPersonWithoutLinkIsSkippedToReview(): void
     {
         $db = $this->db();
-        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=Staff,DC=example,DC=org')");
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
         $this->seedPerson($db, [
             'person_id' => 1, 'status' => 'active', 'first_name' => 'Lock', 'last_name' => 'Ed',
             'username' => 'existing', 'username_locked' => 1, 'primary_school_id' => 5,
@@ -344,7 +406,7 @@ final class AdaxesReconcilerTest extends TestCase
         putenv('ADAXES_WRITE_MAX_CREATES=1');
         try {
             $db = $this->db();
-            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=Staff,DC=example,DC=org')");
+            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
             $this->seedPerson($db, ['person_id' => 1, 'status' => 'pending', 'first_name' => 'Aaa', 'last_name' => 'One', 'primary_school_id' => 5]);
             $this->seedPerson($db, ['person_id' => 2, 'status' => 'pending', 'first_name' => 'Bbb', 'last_name' => 'Two', 'primary_school_id' => 5]);
 

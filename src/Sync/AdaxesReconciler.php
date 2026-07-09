@@ -28,8 +28,9 @@ use PDO;
  *     well-formed objectGUID; a search hit without a stored GUID is a correlation
  *     task, routed to review, never a write.
  *  2. Create only when truly new — no linked GUID AND no AD search hit.
- *  3. Username immutability — a username_locked person is never re-minted; the
- *     minter is skipped and the locked name reused as-is on create.
+ *  3. Username immutability — a username_locked person is never re-minted; in the
+ *     create phase a locked-but-unlinked person is routed to review (correlate
+ *     their existing account) rather than minted a second identity.
  *  4. Threshold valves — a ratio cap on disables and an absolute cap on creates,
  *     so a truncated feed can't trigger a mass change.
  *  5. Audit everything (audit_log + lifecycle_event), actor system:adaxes_sync.
@@ -50,6 +51,8 @@ final class AdaxesReconciler
     private int $maxCreates;
     private string $emailDomain;
     private string $upnSuffix;
+    private string $baseDn;
+    private string $facultyOu;
 
     /** Optional live-progress callback: fn(string $event, array $data): void. */
     private $log = null;
@@ -69,6 +72,10 @@ final class AdaxesReconciler
         $this->maxCreates      = max(0, (int) Config::get('ADAXES_WRITE_MAX_CREATES', '50'));
         $this->emailDomain     = trim((string) Config::get('AD_EMAIL_DOMAIN', 'tusc.k12.al.us'));
         $this->upnSuffix       = trim((string) (Config::get('AD_UPN_SUFFIX', '') ?: $this->emailDomain));
+        // Domain base appended to the (relative) school.ad_ou to form a full
+        // container DN, and the parent OU faculty accounts nest under.
+        $this->baseDn          = trim((string) Config::get('AD_BASE_DN', ''), " ,");
+        $this->facultyOu       = trim((string) Config::get('AD_FACULTY_OU', 'OU=faculty'), " ,");
     }
 
     /**
@@ -309,12 +316,18 @@ final class AdaxesReconciler
                 continue;
             }
 
-            $ou = $this->ouFor($p);
-            if ($ou === '') {
+            $adOu = $this->schoolAdOu($p);
+            if ($adOu === '') {
                 $out['skipped']++;
                 $this->item($out, $pid, $name, 'create', 'review', 'no AD OU for the building (school.ad_ou) — cannot place');
                 continue;
             }
+            if ($this->baseDn === '') {
+                $out['skipped']++;
+                $this->item($out, $pid, $name, 'create', 'review', 'AD_BASE_DN is not set — cannot form a full container DN');
+                continue;
+            }
+            $ou = $this->containerDn($p, $adOu);
 
             // Confirm net-new: an AD search must return nothing. A hit means the
             // account exists but isn't linked → correlation task, not a create.
@@ -447,11 +460,24 @@ final class AdaxesReconciler
         if ($empId !== '') {
             $attrs['employeeID'] = $empId;
         }
+        // Account expiration = the position end date, when one is set. AD's
+        // accountExpires is a Windows FILETIME; midnight UTC of the end date reads
+        // back as that date in the verify panel (compareToGolden), so the two agree.
+        $expires = self::accountExpiresFileTime((string) ($p['end_date'] ?? ''));
+        if ($expires !== null) {
+            $attrs['accountExpires'] = $expires;
+        }
         return $attrs;
     }
 
-    /** The building OU for a person, from school.ad_ou, or '' when unresolved. */
-    private function ouFor(array $p): string
+    /**
+     * The (relative) school.ad_ou for a person's building, or '' when unresolved.
+     * The stored value is a partial path (e.g. "OU=CO" or "OU=STC,OU=CO") — the
+     * full container DN is assembled by containerDn().
+     *
+     * @param array<string,mixed> $p
+     */
+    private function schoolAdOu(array $p): string
     {
         $schoolId = $p['primary_school_id'] ?? null;
         if ($schoolId === null || $schoolId === '') {
@@ -459,7 +485,50 @@ final class AdaxesReconciler
         }
         $stmt = $this->db->prepare('SELECT ad_ou FROM school WHERE school_id = :id');
         $stmt->execute([':id' => (int) $schoolId]);
-        return trim((string) ($stmt->fetchColumn() ?: ''));
+        return trim((string) ($stmt->fetchColumn() ?: ''), " ,");
+    }
+
+    /**
+     * The full container DN a new account is created in. Faculty nest under the
+     * faculty parent OU (AD_FACULTY_OU) — "{ad_ou},OU=faculty,{AD_BASE_DN}"
+     * (e.g. OU=CO,OU=faculty,DC=…); everyone else is placed directly under the
+     * building OU — "{ad_ou},{AD_BASE_DN}". Callers guarantee $adOu and $baseDn
+     * are non-empty before calling.
+     *
+     * @param array<string,mixed> $p
+     */
+    private function containerDn(array $p, string $adOu): string
+    {
+        $parts = [$adOu];
+        if (self::isFaculty($p) && $this->facultyOu !== '') {
+            $parts[] = $this->facultyOu;
+        }
+        $parts[] = $this->baseDn;
+        return implode(',', $parts);
+    }
+
+    /** @param array<string,mixed> $p */
+    private static function isFaculty(array $p): bool
+    {
+        return strtolower(trim((string) ($p['person_type'] ?? ''))) === 'faculty';
+    }
+
+    /**
+     * The Windows FILETIME (100-ns ticks since 1601-01-01 UTC) for midnight UTC of
+     * a Y-m-d date, as a string — the inverse of AdaxesService's accountExpires
+     * decode. Returns null for an empty/unparseable date (leave AD's expiry alone).
+     */
+    private static function accountExpiresFileTime(string $endDate): ?string
+    {
+        $endDate = trim($endDate);
+        if ($endDate === '') {
+            return null;
+        }
+        $ts = strtotime($endDate . ' 00:00:00 UTC');
+        if ($ts === false) {
+            return null;
+        }
+        return (string) (($ts + 11644473600) * 10000000);
     }
 
     /**
@@ -535,7 +604,7 @@ final class AdaxesReconciler
      */
     private function fetchPeople(string $where, ?int $limit): array
     {
-        $sql = 'SELECT p.person_id, p.status, p.first_name, p.last_name, p.preferred_name,
+        $sql = 'SELECT p.person_id, p.person_type, p.status, p.first_name, p.last_name, p.preferred_name,
                        p.username, p.username_locked, p.email, p.upn, p.employee_id,
                        p.primary_school_id, p.end_date
                 FROM person p

@@ -18,12 +18,12 @@ use InvalidArgumentException;
  * collision domain — person.username, any locked username, and a live AD search.
  *
  * Policy (see the design doc for the rationale):
- *  - Format: first-name initial + last name — John Smith → JSmith.
+ *  - Format: first-name initial + last name, lowercase — John Smith → jsmith.
  *  - Uses the LEGAL first name, never preferred_name (AD convention).
  *  - Strips everything except [A-Za-z] from each part before assembling
- *    (O'Brien → OBrien, De La Cruz → DeLaCruz, Mary-Jane → MaryJane).
- *  - Deterministic casing: ucfirst(strtolower(initial)) . ucfirst(strtolower(last)).
- *  - Collisions append an integer starting at 1 to the base (JSmith, JSmith1, …).
+ *    (O'Brien → obrien, De La Cruz → delacruz, Mary-Jane → maryjane).
+ *  - Deterministic casing: all lowercase, regardless of source casing.
+ *  - Collisions append an integer starting at 1 to the base (jsmith, jsmith1, …).
  *  - sAMAccountName caps at 20 chars: the last-name portion is truncated so the
  *    initial and the numeric suffix always survive.
  *  - An empty/all-stripped first or last name is a data error → no mint (throws;
@@ -35,9 +35,9 @@ final class UsernameMinter
     public const SAM_MAX_LENGTH = 20;
 
     /**
-     * Deterministic base form, pre-collision: "JSmith". Throws when the name can't
-     * produce a valid base (empty after stripping non-letters) so the caller
-     * routes the person to review rather than minting junk.
+     * Deterministic base form, pre-collision: "jsmith" (lowercase). Throws when
+     * the name can't produce a valid base (empty after stripping non-letters) so
+     * the caller routes the person to review rather than minting junk.
      */
     public static function base(string $firstName, string $lastName): string
     {
@@ -49,8 +49,7 @@ final class UsernameMinter
                 . '(given first=' . var_export($firstName, true) . ', last=' . var_export($lastName, true) . ').'
             );
         }
-        $initial = self::ucfirstLower(substr($first, 0, 1));
-        return $initial . self::ucfirstLower($last);
+        return strtolower(substr($first, 0, 1) . $last);
     }
 
     /**
@@ -115,11 +114,5 @@ final class UsernameMinter
     private static function lettersOnly(string $value): string
     {
         return (string) preg_replace('/[^A-Za-z]/', '', $value);
-    }
-
-    /** First letter upper, rest lower — deterministic regardless of source casing. */
-    private static function ucfirstLower(string $value): string
-    {
-        return ucfirst(strtolower($value));
     }
 }

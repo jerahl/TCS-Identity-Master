@@ -47,7 +47,7 @@ The read-only leg already contains most of the machinery a writer needs:
 | Field-by-field golden↔AD diff | `AdaxesService::compareToGolden()` | drives the edit delta |
 | Username immutability + uniqueness | `person.username_locked`, `uq_person_username`, `uq_person_email` | mint collision guard |
 | Audit + lifecycle | `audit_log`, `lifecycle_event` (`create`/`update`/`disable`/`enable`) | every write |
-| OU placement | `school.ad_ou` (OU distinguishedName, per building) | create container |
+| OU placement | `school.ad_ou` (relative building OU, e.g. `OU=CO`) + `AD_BASE_DN` / `AD_FACULTY_OU` | create container |
 | Dry-run / idempotent importer conventions | every `bin/import_*.php` | the reconciler |
 
 The correlation model is a 1:1 analog of OneSync's `correlation` controller
@@ -68,31 +68,31 @@ The correlation model is a 1:1 analog of OneSync's `correlation` controller
 
 ### Username (`sAMAccountName`)
 
-**Format:** first-name initial + last name — `John Smith → JSmith`.
+**Format:** first-name initial + last name, **lowercase** — `John Smith → jsmith`.
 
 **Collisions:** append an integer starting at **1**, incrementing by 1, to the
 *base* form. The first holder gets the bare base; each subsequent collision gets
 the next free integer.
 
 ```
-John  Smith → JSmith
-James Smith → JSmith1     (JSmith taken)
-Jane  Smith → JSmith2     (JSmith, JSmith1 taken)
+John  Smith → jsmith
+James Smith → jsmith1     (jsmith taken)
+Jane  Smith → jsmith2     (jsmith, jsmith1 taken)
 ```
 
 **Normalization rules** (applied before assembling the base):
 
 1. Use the **legal `first_name`** (not `preferred_name`) and `last_name`.
 2. Strip everything except `[A-Za-z]` from each part (drops spaces, hyphens,
-   apostrophes, periods): `O'Brien → OBrien`, `De La Cruz → DeLaCruz`,
-   `Mary-Jane → MaryJane`.
-3. Base = `ucfirst(strtolower(firstInitial))` + `ucfirst(strtolower(lastName))`
-   → deterministic `JSmith` casing regardless of source casing.
-   (`sAMAccountName` is case-insensitive in AD; we store the cased form for display
-   and compare case-insensitively — `compareToGolden()` already does.)
+   apostrophes, periods): `O'Brien → obrien`, `De La Cruz → delacruz`,
+   `Mary-Jane → maryjane`.
+3. Base = `strtolower(firstInitial + lastName)` → deterministic lowercase
+   regardless of source casing. (`sAMAccountName` is case-insensitive in AD; we
+   store the lowercased form and compare case-insensitively — `compareToGolden()`
+   already does.)
 4. **Length cap:** `sAMAccountName` max is 20 chars. If base + suffix would exceed
    20, truncate the **last-name portion** (never the initial or the numeric suffix)
-   so the suffix always survives: `JVeryLongLastNam`, then `JVeryLongLastNa1`, …
+   so the suffix always survives: `jverylonglastnameh`, then `jverylonglastname1`, …
 5. Empty/all-stripped last name (data error) → do **not** mint; route to review.
 
 **Collision domain** — a candidate is free only when it collides with **nothing**
@@ -115,7 +115,7 @@ Both are derived directly from the final username with a fixed domain:
 email = upn = <username>@tusc.k12.al.us
 ```
 
-e.g. `JSmith → JSmith@tusc.k12.al.us`. `mail`, `userPrincipalName`, and
+e.g. `jsmith → jsmith@tusc.k12.al.us`. `mail`, `userPrincipalName`, and
 `person.email`/`person.upn` all take this value. Domain is config, not hard-coded
 (`AD_EMAIL_DOMAIN=tusc.k12.al.us`), so a future domain change is one env edit.
 `uq_person_email` guards email uniqueness; because email is a pure function of the
@@ -175,10 +175,19 @@ The final phase. IDM mints identity and creates the account.
   **no** linked GUID, and whose AD search returns **no** hit (a true net-new hire).
 - Attributes IDM sends on create: `sAMAccountName`, `userPrincipalName`, `mail`,
   `displayName` (preferred-or-legal first + last), `givenName`, `sn`, `employeeID`,
-  target OU. **Everything operational** (home dir, groups, licensing, initial
-  password policy) is left to **Adaxes Business Rules** — IDM does not replicate
-  OneSync's full provisioning; that logic moves server-side into Adaxes, where the
-  write account triggers it.
+  and — when `person.end_date` is set — `accountExpires` (the position end date as
+  a Windows FILETIME at midnight UTC, so it round-trips through the verify panel).
+  **Everything operational** (home dir, groups, licensing, initial password policy)
+  is left to **Adaxes Business Rules** — IDM does not replicate OneSync's full
+  provisioning; that logic moves server-side into Adaxes, where the write account
+  triggers it.
+- **Container / OU:** `school.ad_ou` holds the *relative* building OU (e.g.
+  `OU=CO`); the reconciler forms the full container DN by appending the domain base
+  `AD_BASE_DN`. **Faculty** (`person_type='faculty'`) additionally nest under a
+  parent faculty OU (`AD_FACULTY_OU`, default `OU=faculty`) →
+  `OU=CO,OU=faculty,<AD_BASE_DN>`; everyone else is placed directly under the
+  building OU → `OU=CO,<AD_BASE_DN>`. `AD_BASE_DN` is required for create (people
+  are routed to review until it is set).
 - After create: set `username`/`email`/`upn` on the golden record, `username_locked=1`,
   activate a `pending` person, write `create` + `username_assigned` lifecycle events.
 - **OneSync cutover:** disable OneSync's AD destination (its `destinations/{id}/status`).
@@ -268,7 +277,9 @@ AD_EMAIL_DOMAIN=tusc.k12.al.us      # email = upn = <username>@this
 AD_UPN_SUFFIX=tusc.k12.al.us        # usually identical to AD_EMAIL_DOMAIN
 ```
 
-OU per building already comes from `school.ad_ou`; no new config for placement.
+Placement config: `AD_BASE_DN` (domain base appended to the relative
+`school.ad_ou`) and `AD_FACULTY_OU` (parent OU faculty accounts nest under,
+default `OU=faculty`).
 
 ## Adaxes-side setup (not code)
 
