@@ -97,6 +97,23 @@ final class SettingsService
             ],
         ],
         [
+            'title' => 'Email & rename notifications',
+            'help'  => 'How IDM sends mail and the rename/alias timing. The SMTP password stays in .env; set it there, not here.',
+            'fields' => [
+                ['key' => 'MAIL_ENABLED', 'label' => 'Mail enabled', 'type' => 'bool', 'help' => 'Off = compose + queue but do not deliver.'],
+                ['key' => 'MAIL_FROM', 'label' => 'From address', 'type' => 'string', 'help' => 'Envelope/header From.'],
+                ['key' => 'MAIL_TRANSPORT', 'label' => 'Transport', 'type' => 'string', 'help' => 'null | sendmail | smtp.'],
+                ['key' => 'SMTP_HOST', 'label' => 'SMTP host', 'type' => 'string', 'help' => 'Relay host (smtp transport).'],
+                ['key' => 'SMTP_PORT', 'label' => 'SMTP port', 'type' => 'int', 'help' => 'Usually 587 (STARTTLS) or 465 (implicit TLS).'],
+                ['key' => 'SMTP_SECURITY', 'label' => 'SMTP security', 'type' => 'string', 'help' => 'none | tls | ssl.'],
+                ['key' => 'SMTP_USER', 'label' => 'SMTP username', 'type' => 'string', 'help' => 'Submission username (the password stays in .env).'],
+                ['key' => 'IT_NOTIFY_EMAIL', 'label' => 'IT notify address(es)', 'type' => 'string', 'help' => 'Comma-separated IT recipients for rename/alias notices.'],
+                ['key' => 'RENAME_NOTICE_DAYS', 'label' => 'Rename notice days', 'type' => 'int', 'help' => 'Days between a rename and the cutover (default 7).'],
+                ['key' => 'RENAME_ALIAS_DAYS', 'label' => 'Alias retention days', 'type' => 'int', 'help' => 'How long the old email keeps delivering as an alias (default 90).'],
+                ['key' => 'RENAME_ALIAS_REMINDER_DAYS', 'label' => 'Alias reminder days-before', 'type' => 'string', 'help' => 'Comma list of days-before-removal to remind (default 14,3).'],
+            ],
+        ],
+        [
             'title' => 'Adaxes — connection & verification (non-secret)',
             'help'  => 'The read/verify connection. The token and service username/password stay in .env.',
             'fields' => [

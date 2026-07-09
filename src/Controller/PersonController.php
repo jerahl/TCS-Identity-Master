@@ -385,6 +385,44 @@ final class PersonController extends Controller
      * form (no inline JS, CSP-safe). Idempotent-ish: a no-op if already
      * disabled/terminated. Always redirects back to the dashboard panel.
      */
+    /**
+     * Unlink a person's assigned identity (admin-only) — for a bad mint caused by
+     * a wrong name / employee id. Clears username/email/upn + the lock and
+     * deactivates the AD crosswalk, cancels any pending rename events, and lets the
+     * reconciler re-assign a corrected identity. Audited via the writer.
+     */
+    public function unlink(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $actor = $this->currentUser()['name'];
+            $reason = trim((string) ($_POST['reason'] ?? ''));
+            $notes = (new PersonWriter($db, new AuditService($db)))->unlinkUsername($id, $actor, $reason);
+            (new \App\Service\ScheduledEventService($db, new AuditService($db)))->cancelPending($id, $actor);
+
+            $this->flash($notes === []
+                ? 'Nothing was linked to unlink.'
+                : 'Username unlinked — ' . implode('; ', $notes) . '. The reconciler will re-assign on the next run.');
+        } catch (\Throwable $e) {
+            error_log('[idm] person unlink: ' . $e->getMessage());
+            $this->flash('Could not unlink the username.');
+        }
+        return $this->redirect($back);
+    }
+
     public function disable(array $params): string
     {
         $id = (int) ($params['id'] ?? 0);

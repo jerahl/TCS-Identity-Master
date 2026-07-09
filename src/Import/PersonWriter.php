@@ -276,6 +276,61 @@ final class PersonWriter
         return $notes;
     }
 
+    /**
+     * Unlink a person's assigned identity — for when the wrong name/employee id
+     * caused a bad username to be minted/linked. Clears username/email/upn and the
+     * lock (so the minter can re-assign a correct one), and deactivates the person's
+     * `ad` crosswalk row(s) so a stale objectGUID no longer points here. Does NOT
+     * touch the live AD account itself (IT deletes/renames that, or the reconciler
+     * creates a fresh corrected account). Audited + a lifecycle event. Returns the
+     * change notes (empty if there was nothing linked).
+     *
+     * @return list<string>
+     */
+    public function unlinkUsername(int $personId, string $actor, ?string $reason = null): array
+    {
+        $stmt = $this->db->prepare('SELECT username, email, upn, username_locked FROM person WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        $p = $stmt->fetch();
+        if ($p === false) {
+            return [];
+        }
+
+        $notes = [];
+        $hadIdentity = trim((string) $p['username']) !== '' || trim((string) $p['email']) !== '' || trim((string) $p['upn']) !== '';
+        if ($hadIdentity) {
+            $this->db->prepare(
+                'UPDATE person
+                    SET username = NULL, email = NULL, upn = NULL,
+                        username_assigned_at = NULL, username_locked = 0, updated_by = :actor
+                  WHERE person_id = :id'
+            )->execute([':actor' => $actor, ':id' => $personId]);
+            $this->audit->log('person', $personId, 'update',
+                ['username' => $p['username'], 'email' => $p['email'], 'upn' => $p['upn'], 'username_locked' => $p['username_locked']],
+                ['username' => null, 'email' => null, 'upn' => null, 'username_locked' => 0], $actor);
+            $notes[] = 'cleared username/email/UPN and unlocked';
+        }
+
+        // Deactivate the AD crosswalk so a stale objectGUID no longer resolves here.
+        $adRows = $this->db->prepare("SELECT id FROM person_source_id WHERE person_id = :id AND system = 'ad' AND is_active = 1");
+        $adRows->execute([':id' => $personId]);
+        $deact = 0;
+        foreach ($adRows->fetchAll() as $r) {
+            $this->db->prepare('UPDATE person_source_id SET is_active = 0 WHERE id = :rid')->execute([':rid' => (int) $r['id']]);
+            $this->audit->log('source_id', (int) $r['id'], 'update', ['is_active' => 1], ['is_active' => 0, 'reason' => 'username unlinked'], $actor);
+            $deact++;
+        }
+        if ($deact > 0) {
+            $notes[] = "deactivated {$deact} AD crosswalk link(s)";
+        }
+
+        if ($notes !== []) {
+            $summary = 'Username unlinked' . ($reason !== null && trim($reason) !== '' ? ' (' . trim($reason) . ')' : '') . ': ' . implode('; ', $notes) . '.';
+            $this->audit->lifecycle($personId, 'update', ['summary' => $summary], $actor);
+        }
+        return $notes;
+    }
+
     /** Case-insensitive equality of two trimmed values (matches the AD comparison). */
     private static function sameCi(string $a, string $b): bool
     {
