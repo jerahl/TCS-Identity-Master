@@ -203,4 +203,27 @@ final class GamClientTest extends TestCase
         self::assertFalse($res['ok']);
         self::assertStringContainsString('GAM did not run', (string) $res['error']);
     }
+
+    public function testUnreachableMessageNamesProcOpenWhenDisabled(): void
+    {
+        // A host with proc_open in disable_functions can never launch GAM — the
+        // message must point at that (and the API-backend escape hatch), not at GAM_PATH.
+        $msg = GamClient::unreachableMessage(false, '/usr/local/bin/gam');
+        self::assertStringContainsString('proc_open', $msg);
+        self::assertStringContainsString('GOOGLE_BACKEND=api', $msg);
+        self::assertStringNotContainsString('GAM_PATH', $msg);
+    }
+
+    public function testUnreachableMessageNamesGamPathWhenProcOpenAvailable(): void
+    {
+        $msg = GamClient::unreachableMessage(true, '/usr/local/bin/gam');
+        self::assertStringContainsString('GAM did not run', $msg);
+        self::assertStringContainsString('/usr/local/bin/gam', $msg);
+    }
+
+    public function testProcOpenAvailableTrueInTestEnvironment(): void
+    {
+        // The test runner has proc_open enabled; the guard must not misreport it.
+        self::assertTrue(GamClient::procOpenAvailable());
+    }
 }

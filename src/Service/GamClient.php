@@ -287,7 +287,37 @@ final class GamClient
 
     private function unreachable(): string
     {
-        return 'GAM did not run (check GAM_PATH=' . ($this->gamPath !== '' ? $this->gamPath : 'unset') . ' and GAM_TIMEOUT).';
+        return self::unreachableMessage(self::procOpenAvailable(), $this->gamPath);
+    }
+
+    /**
+     * The "GAM couldn't run" message. Split out (and pure) so the two causes are
+     * explicit: a host that has disabled proc_open — where GAM can never run and
+     * the fix is a config change — versus a missing binary / timeout.
+     */
+    public static function unreachableMessage(bool $procOpenAvailable, string $gamPath): string
+    {
+        if (!$procOpenAvailable) {
+            return 'GAM backend can’t run: this host has disabled PHP’s proc_open() function, '
+                . 'so the app cannot launch GAM. Switch to the built-in API backend (GOOGLE_BACKEND=api) '
+                . 'or have the host allow proc_open.';
+        }
+        return 'GAM did not run (check GAM_PATH=' . ($gamPath !== '' ? $gamPath : 'unset') . ' and GAM_TIMEOUT).';
+    }
+
+    /**
+     * Whether this host can spawn a subprocess at all: proc_open must be defined
+     * AND absent from php.ini's disable_functions. Managed/hardened PHP builds
+     * routinely disable it; calling it then is a fatal "undefined function", so
+     * the default runner checks first and degrades to an error envelope.
+     */
+    public static function procOpenAvailable(): bool
+    {
+        if (!function_exists('proc_open')) {
+            return false;
+        }
+        $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+        return !in_array('proc_open', $disabled, true);
     }
 
     /** @param array{status:int,stdout:string,stderr:string} $res */
@@ -324,6 +354,13 @@ final class GamClient
      */
     private function exec(array $argv): ?array
     {
+        // proc_open is commonly turned off (php.ini disable_functions) on managed
+        // hosts. Calling a disabled function is an uncatchable "undefined
+        // function" fatal, so bail here — run()'s callers report it via
+        // unreachable() (which names the real cause) instead of taking the page down.
+        if (!self::procOpenAvailable()) {
+            return null;
+        }
         $env = null;
         if ($this->configDir !== '') {
             $env = getenv() + ['GAMCFGDIR' => $this->configDir];
