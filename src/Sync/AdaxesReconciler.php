@@ -52,7 +52,7 @@ final class AdaxesReconciler
     private string $emailDomain;
     private string $upnSuffix;
     private string $baseDn;
-    private string $facultyOu;
+    private string $parentOu;
 
     /** Optional live-progress callback: fn(string $event, array $data): void. */
     private $log = null;
@@ -73,9 +73,9 @@ final class AdaxesReconciler
         $this->emailDomain     = trim((string) Config::get('AD_EMAIL_DOMAIN', 'tusc.k12.al.us'));
         $this->upnSuffix       = trim((string) (Config::get('AD_UPN_SUFFIX', '') ?: $this->emailDomain));
         // Domain base appended to the (relative) school.ad_ou to form a full
-        // container DN, and the parent OU faculty accounts nest under.
+        // container DN, and the shared parent OU every account nests under.
         $this->baseDn          = trim((string) Config::get('AD_BASE_DN', ''), " ,");
-        $this->facultyOu       = trim((string) Config::get('AD_FACULTY_OU', 'OU=faculty'), " ,");
+        $this->parentOu        = trim((string) Config::get('AD_PARENT_OU', 'OU=Faculty'), " ,");
     }
 
     /**
@@ -489,29 +489,60 @@ final class AdaxesReconciler
     }
 
     /**
-     * The full container DN a new account is created in. Faculty nest under the
-     * faculty parent OU (AD_FACULTY_OU) — "{ad_ou},OU=faculty,{AD_BASE_DN}"
-     * (e.g. OU=CO,OU=faculty,DC=…); everyone else is placed directly under the
-     * building OU — "{ad_ou},{AD_BASE_DN}". Callers guarantee $adOu and $baseDn
-     * are non-empty before calling.
+     * The full container DN a new account is created in, most-specific first:
+     *
+     *     [OU=<type leaf>,] {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
+     *
+     * All provisioned accounts nest under a shared parent OU (AD_PARENT_OU,
+     * "OU=Faculty" at TCS) and then their building OU (the relative school.ad_ou).
+     * Contractors/subs/interns get an extra type-specific leaf OU as the innermost
+     * segment; faculty and staff have none (placed directly in the building OU).
+     * e.g. a contractor at Central Office → OU=PTC,OU=CO,OU=Faculty,<base>; a
+     * faculty member there → OU=CO,OU=Faculty,<base>. Callers guarantee $adOu and
+     * $baseDn are non-empty before calling.
      *
      * @param array<string,mixed> $p
      */
     private function containerDn(array $p, string $adOu): string
     {
-        $parts = [$adOu];
-        if (self::isFaculty($p) && $this->facultyOu !== '') {
-            $parts[] = $this->facultyOu;
+        $parts = [];
+        $leaf = $this->typeLeafOu((string) ($p['person_type'] ?? ''));
+        if ($leaf !== '') {
+            $parts[] = $leaf;
+        }
+        $parts[] = $adOu;
+        if ($this->parentOu !== '') {
+            $parts[] = $this->parentOu;
         }
         $parts[] = $this->baseDn;
         return implode(',', $parts);
     }
 
-    /** @param array<string,mixed> $p */
-    private static function isFaculty(array $p): bool
+    /**
+     * The type-specific leaf OU prepended to the container, by person_type.
+     * Defaults follow TCS's layout (contractor→PTC, sub→Sub, intern→Interns;
+     * faculty/staff/other have none) and each is overridable via AD_OU_<TYPE>
+     * (e.g. AD_OU_CONTRACTOR=OU=Vendors).
+     */
+    private function typeLeafOu(string $personType): string
     {
-        return strtolower(trim((string) ($p['person_type'] ?? ''))) === 'faculty';
+        $type = strtolower(trim($personType));
+        $override = Config::get('AD_OU_' . strtoupper($type));
+        if ($override !== null && trim($override) !== '') {
+            return trim($override, " ,");
+        }
+        return self::DEFAULT_TYPE_LEAF_OU[$type] ?? '';
     }
+
+    /** Default innermost OU per person_type (see typeLeafOu). */
+    private const DEFAULT_TYPE_LEAF_OU = [
+        'faculty'    => '',
+        'staff'      => '',
+        'contractor' => 'OU=PTC',
+        'sub'        => 'OU=Sub',
+        'intern'     => 'OU=Interns',
+        'other'      => '',
+    ];
 
     /**
      * The Windows FILETIME (100-ns ticks since 1601-01-01 UTC) for midnight UTC of

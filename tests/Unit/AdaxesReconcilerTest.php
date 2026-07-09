@@ -8,6 +8,7 @@ use App\Service\AdaxesService;
 use App\Service\AdaxesWriter;
 use App\Sync\AdaxesReconciler;
 use PDO;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -308,7 +309,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=CO,OU=faculty,DC=example,DC=org', $body['path']);
+        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['path']);
         $props = [];
         foreach ($body['properties'] as $pr) {
             $props[$pr['name']] = $pr['value'];
@@ -320,13 +321,19 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame($expectFt, $props['accountExpires']);
     }
 
-    public function testNonFacultyIsPlacedDirectlyUnderBuildingOu(): void
+    /**
+     * The full type→container matrix: every type nests under the shared parent OU
+     * (OU=Faculty) and its building OU; contractor/sub/intern add an innermost
+     * type leaf, faculty/staff do not.
+     */
+    #[DataProvider('containerCases')]
+    public function testContainerDnByPersonType(string $type, string $expectedPath): void
     {
         $db = $this->db();
         $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
         $this->seedPerson($db, [
-            'person_id' => 1, 'person_type' => 'staff', 'status' => 'pending',
-            'first_name' => 'Sam', 'last_name' => 'Staff', 'primary_school_id' => 5,
+            'person_id' => 1, 'person_type' => $type, 'status' => 'pending',
+            'first_name' => 'Pat', 'last_name' => 'Person', 'primary_school_id' => 5,
         ]);
 
         $calls = [];
@@ -339,9 +346,48 @@ final class AdaxesReconcilerTest extends TestCase
                 $create = $c;
             }
         }
-        self::assertNotNull($create);
+        self::assertNotNull($create, "no create POST for {$type}");
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=CO,DC=example,DC=org', $body['path']); // no OU=faculty
+        self::assertSame($expectedPath, $body['path']);
+    }
+
+    /** @return array<string,array{0:string,1:string}> */
+    public static function containerCases(): array
+    {
+        $base = 'OU=CO,OU=Faculty,DC=example,DC=org';
+        return [
+            'faculty'    => ['faculty', $base],
+            'staff'      => ['staff', $base],
+            'contractor' => ['contractor', 'OU=PTC,' . $base],
+            'sub'        => ['sub', 'OU=Sub,' . $base],
+            'intern'     => ['intern', 'OU=Interns,' . $base],
+        ];
+    }
+
+    public function testTypeLeafOuIsOverridableViaEnv(): void
+    {
+        putenv('AD_OU_CONTRACTOR=OU=Vendors');
+        try {
+            $db = $this->db();
+            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+            $this->seedPerson($db, [
+                'person_id' => 1, 'person_type' => 'contractor', 'status' => 'pending',
+                'first_name' => 'Con', 'last_name' => 'Tractor', 'primary_school_id' => 5,
+            ]);
+            $calls = [];
+            $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+            $rec->run(dryRun: false, phases: ['create']);
+            $create = null;
+            foreach ($calls as $c) {
+                if ($c['method'] === 'POST') {
+                    $create = $c;
+                }
+            }
+            $body = json_decode((string) $create['body'], true);
+            self::assertSame('OU=Vendors,OU=CO,OU=Faculty,DC=example,DC=org', $body['path']);
+        } finally {
+            putenv('AD_OU_CONTRACTOR');
+        }
     }
 
     public function testCreateSkippedWhenBaseDnMissing(): void

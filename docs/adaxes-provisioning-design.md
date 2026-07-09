@@ -47,7 +47,7 @@ The read-only leg already contains most of the machinery a writer needs:
 | Field-by-field golden↔AD diff | `AdaxesService::compareToGolden()` | drives the edit delta |
 | Username immutability + uniqueness | `person.username_locked`, `uq_person_username`, `uq_person_email` | mint collision guard |
 | Audit + lifecycle | `audit_log`, `lifecycle_event` (`create`/`update`/`disable`/`enable`) | every write |
-| OU placement | `school.ad_ou` (relative building OU, e.g. `OU=CO`) + `AD_BASE_DN` / `AD_FACULTY_OU` | create container |
+| OU placement | `school.ad_ou` (relative building OU, e.g. `OU=CO`) + `AD_BASE_DN` / `AD_PARENT_OU` / per-type leaf | create container |
 | Dry-run / idempotent importer conventions | every `bin/import_*.php` | the reconciler |
 
 The correlation model is a 1:1 analog of OneSync's `correlation` controller
@@ -181,13 +181,20 @@ The final phase. IDM mints identity and creates the account.
   is left to **Adaxes Business Rules** — IDM does not replicate OneSync's full
   provisioning; that logic moves server-side into Adaxes, where the write account
   triggers it.
-- **Container / OU:** `school.ad_ou` holds the *relative* building OU (e.g.
-  `OU=CO`); the reconciler forms the full container DN by appending the domain base
-  `AD_BASE_DN`. **Faculty** (`person_type='faculty'`) additionally nest under a
-  parent faculty OU (`AD_FACULTY_OU`, default `OU=faculty`) →
-  `OU=CO,OU=faculty,<AD_BASE_DN>`; everyone else is placed directly under the
-  building OU → `OU=CO,<AD_BASE_DN>`. `AD_BASE_DN` is required for create (people
-  are routed to review until it is set).
+- **Container / OU:** the full container DN is assembled most-specific first:
+
+  ```
+  [OU=<type leaf>,]  {school.ad_ou}  ,  {AD_PARENT_OU}  ,  {AD_BASE_DN}
+  ```
+
+  `school.ad_ou` holds the *relative* building OU (e.g. `OU=CO`). Every
+  provisioned account nests under a shared parent OU (`AD_PARENT_OU`, default
+  `OU=Faculty`) and its building OU. Contractors/subs/interns get an extra
+  innermost **type leaf** OU (`AD_OU_CONTRACTOR=OU=PTC`, `AD_OU_SUB=OU=Sub`,
+  `AD_OU_INTERN=OU=Interns` by default); faculty and staff have none. Examples:
+  a contractor at Central Office → `OU=PTC,OU=CO,OU=Faculty,<AD_BASE_DN>`; a
+  faculty/staff member there → `OU=CO,OU=Faculty,<AD_BASE_DN>`. `AD_BASE_DN` is
+  required for create (people are routed to review until it is set).
 - After create: set `username`/`email`/`upn` on the golden record, `username_locked=1`,
   activate a `pending` person, write `create` + `username_assigned` lifecycle events.
 - **OneSync cutover:** disable OneSync's AD destination (its `destinations/{id}/status`).
@@ -278,8 +285,9 @@ AD_UPN_SUFFIX=tusc.k12.al.us        # usually identical to AD_EMAIL_DOMAIN
 ```
 
 Placement config: `AD_BASE_DN` (domain base appended to the relative
-`school.ad_ou`) and `AD_FACULTY_OU` (parent OU faculty accounts nest under,
-default `OU=faculty`).
+`school.ad_ou`), `AD_PARENT_OU` (shared parent OU every account nests under,
+default `OU=Faculty`), and per-type leaf OUs `AD_OU_CONTRACTOR` / `AD_OU_SUB` /
+`AD_OU_INTERN` (defaults `OU=PTC` / `OU=Sub` / `OU=Interns`).
 
 ## Adaxes-side setup (not code)
 
