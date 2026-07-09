@@ -431,6 +431,11 @@ final class AdaxesReconciler
         $people = $this->fetchPeople("status IN ('active','pending')", $limit);
         $this->emit('phase', ['phase' => 'groups', 'total' => count($people)]);
 
+        // The exact set of groups IDM owns (fixed groups + every building's
+        // Everyone group). Removals are confined to this set, so custom/manual
+        // groups — anything not the policy could assign — are never disturbed.
+        $managed = $this->groups->managedGroups($this->allSchoolTokens());
+
         foreach ($people as $p) {
             $pid = (int) $p['person_id'];
             $name = self::displayName($p);
@@ -481,7 +486,7 @@ final class AdaxesReconciler
             // Remove: managed groups the account is in but no longer qualifies for.
             $toRemove = [];
             foreach ($liveByCn as $lc => $g) {
-                if (!isset($desiredByCn[$lc]) && $this->groups->isManaged($g['cn'])) {
+                if (!isset($desiredByCn[$lc]) && isset($managed[$lc])) {
                     $toRemove[] = $g;
                 }
             }
@@ -548,7 +553,31 @@ final class AdaxesReconciler
         if ($adOu === '') {
             return '';
         }
-        $first = trim(explode(',', $adOu)[0]);
+        return self::ouToken($adOu);
+    }
+
+    /**
+     * The building OU token for every school on file — the domain over which the
+     * per-school Everyone groups are "managed". Used to bound group removals.
+     *
+     * @return list<string>
+     */
+    private function allSchoolTokens(): array
+    {
+        $tokens = [];
+        foreach ($this->db->query("SELECT ad_ou FROM school WHERE ad_ou IS NOT NULL AND ad_ou <> ''")->fetchAll() as $row) {
+            $token = self::ouToken((string) ($row['ad_ou'] ?? ''));
+            if ($token !== '') {
+                $tokens[$token] = true;
+            }
+        }
+        return array_keys($tokens);
+    }
+
+    /** Leftmost RDN value of a (possibly multi-level) relative OU, sans "OU=". */
+    private static function ouToken(string $adOu): string
+    {
+        $first = trim(explode(',', trim($adOu, ' ,'))[0]);
         return trim((string) preg_replace('/^OU=/i', '', $first));
     }
 

@@ -21,6 +21,17 @@ final class Config
     private static bool $loaded = false;
 
     /**
+     * Runtime overrides from the admin-editable settings store (app_setting),
+     * pushed in at bootstrap via Config::overrides(). They sit BELOW real
+     * environment variables (a container/host env var always wins) and ABOVE the
+     * .env file, so a value an admin sets in the web console takes effect unless
+     * ops has deliberately pinned it in the environment.
+     *
+     * @var array<string,string>
+     */
+    private static array $overrides = [];
+
+    /**
      * Parse a .env file (if present) into memory. Idempotent. Does NOT overwrite
      * variables already present in the real environment.
      */
@@ -70,12 +81,34 @@ final class Config
         }
     }
 
-    /** Get a config value: real env var first, then .env, then default. */
+    /**
+     * Replace the admin-editable override layer (app_setting). Values are strings;
+     * an empty string is treated as "unset" (falls through to .env/default), same
+     * as the other layers. Called once at bootstrap.
+     *
+     * @param array<string,string> $map
+     */
+    public static function overrides(array $map): void
+    {
+        self::$overrides = $map;
+    }
+
+    /** True when a real environment variable pins this key (so it can't be overridden here). */
+    public static function isEnvLocked(string $key): bool
+    {
+        $env = getenv($key);
+        return $env !== false && $env !== '';
+    }
+
+    /** Get a config value: real env var, then admin overrides, then .env, then default. */
     public static function get(string $key, ?string $default = null): ?string
     {
         $env = getenv($key);
         if ($env !== false && $env !== '') {
             return $env;
+        }
+        if (array_key_exists($key, self::$overrides) && self::$overrides[$key] !== '') {
+            return self::$overrides[$key];
         }
         if (array_key_exists($key, self::$fileValues) && self::$fileValues[$key] !== '') {
             return self::$fileValues[$key];

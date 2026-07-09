@@ -142,17 +142,30 @@ final class GroupPolicyTest extends TestCase
         );
     }
 
-    public function testIsManaged(): void
+    public function testManagedSetIsExactAndCaseInsensitive(): void
     {
-        $p = $this->policy();
-        self::assertTrue($p->isManaged('All-Faculty'));
-        self::assertTrue($p->isManaged('Transportation'));
-        self::assertTrue($p->isManaged('A1'));
-        self::assertTrue($p->isManaged('Raptor_ClientAdmin'));
-        self::assertTrue($p->isManaged('CO-Everyone'));
-        self::assertTrue($p->isManaged('rqs-everyone')); // case-insensitive
-        // Groups IDM does not own are never removed.
-        self::assertFalse($p->isManaged('Domain Users'));
-        self::assertFalse($p->isManaged('VPN-Users'));
+        // The managed set = fixed groups + the Everyone group for each KNOWN
+        // building token; anything else is custom/manual and never removed.
+        $managed = $this->policy()->managedGroups(['CO', 'RQES', 'BHS']);
+
+        foreach (['all-faculty', 'transportation', 'a1', 'a3', 'raptor_clientadmin', 'raptor_emergencymanagementuser'] as $g) {
+            self::assertArrayHasKey($g, $managed);
+        }
+        self::assertArrayHasKey('co-everyone', $managed);
+        self::assertArrayHasKey('rqs-everyone', $managed);  // remapped token
+        self::assertArrayHasKey('bhs-everyone', $managed);
+
+        // Not a known building, and not a fixed group → NOT managed (left alone).
+        self::assertArrayNotHasKey('ems-everyone', $managed);
+        self::assertArrayNotHasKey('domain users', $managed);
+        self::assertArrayNotHasKey('vpn-users', $managed);
+    }
+
+    public function testFixedManagedGroups(): void
+    {
+        $fixed = $this->policy()->fixedManagedGroups();
+        self::assertContains('All-Faculty', $fixed);
+        self::assertContains('Raptor_EmergencyManagementUser', $fixed);
+        self::assertNotContains('CO-Everyone', $fixed); // per-school, not fixed
     }
 }

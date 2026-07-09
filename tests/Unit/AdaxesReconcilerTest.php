@@ -636,7 +636,9 @@ final class AdaxesReconcilerTest extends TestCase
         putenv('ADAXES_GROUP_REMOVE_PATH=api/group/remove');
         try {
             $db = $this->db();
-            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO')");
+            // Both buildings exist, so EMS-Everyone is a known/managed group — a
+            // realistic move: the person is now at CO but AD still has EMS-Everyone.
+            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO'), (60, 'Eastwood Middle', 'OU=EMS')");
             $this->seedPerson($db, [
                 'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
                 'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,

@@ -111,27 +111,44 @@ final class GroupPolicy
     }
 
     /**
-     * Whether IDM manages this group's membership — i.e. it is one the policy can
-     * assign, so the reconciler may REMOVE a person from it when they no longer
-     * qualify. Any group outside this set is left untouched (never removed).
+     * The groups the policy can ever assign that are NOT per-school — All-Faculty,
+     * Transportation, both M365 licenses, and every Raptor role. Combined with the
+     * per-school Everyone groups (via managedGroups()) this is the *exact* set the
+     * reconciler is allowed to remove someone from.
+     *
+     * @return list<string>
      */
-    public function isManaged(string $groupCn): bool
+    public function fixedManagedGroups(): array
     {
-        $cn = trim($groupCn);
-        if ($cn === '') {
-            return false;
-        }
         $fixed = [$this->allFaculty, $this->transportation, $this->a1, $this->a3, self::RAPTOR_DEFAULT];
         foreach (self::RAPTOR_RULES as $r) {
             $fixed[] = $r['group'];
         }
-        foreach ($fixed as $f) {
-            if (strcasecmp($cn, $f) === 0) {
-                return true;
+        return array_values(array_filter($fixed, static fn($g) => trim($g) !== ''));
+    }
+
+    /**
+     * The complete set of IDM-managed group names, lowercased for O(1) lookup:
+     * the fixed groups plus the Everyone group for every known building token.
+     * A group NOT in this set is a custom/manual group — the reconciler adds and
+     * removes only within this set, so manual memberships are never disturbed.
+     *
+     * @param list<string> $schoolTokens every building's OU token (from the DB)
+     * @return array<string,true>
+     */
+    public function managedGroups(array $schoolTokens): array
+    {
+        $set = [];
+        foreach ($this->fixedManagedGroups() as $g) {
+            $set[strtolower($g)] = true;
+        }
+        foreach ($schoolTokens as $token) {
+            $token = trim($token);
+            if ($token !== '') {
+                $set[strtolower($this->everyoneGroup($token))] = true;
             }
         }
-        // Any per-school Everyone group (…-Everyone) is ours.
-        return $this->everyoneSuffix !== '' && stripos($cn, $this->everyoneSuffix) === strlen($cn) - strlen($this->everyoneSuffix);
+        return $set;
     }
 
     // ---- matching ------------------------------------------------------------

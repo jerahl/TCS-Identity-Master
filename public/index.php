@@ -114,6 +114,11 @@ try {
     $router->post('/settings/api-keys/create', $guard('view', static fn() => $apiKeys->create()));
     $router->post('/settings/api-keys/revoke', $guard('view', static fn() => $apiKeys->revoke()));
 
+    // Configuration settings (admin-only; the provisioning / OU / group knobs).
+    $settings = new \App\Controller\SettingsController();
+    $router->get('/settings/config', $guard('admin', static fn() => $settings->index()));
+    $router->post('/settings/config/save', $guard('admin', static fn() => $settings->save()));
+
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));

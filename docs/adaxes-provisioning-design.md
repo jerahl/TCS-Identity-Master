@@ -294,6 +294,15 @@ final class UsernameMinter
 
 ## Configuration additions (`.env`)
 
+> **Admin settings page.** All of the non-secret knobs below are also editable in
+> the web console at **Settings → Configuration** (admin-only), backed by the
+> `app_setting` table (migration `0017`). Those values layer **under** real
+> environment variables and **over** `.env`, and are pushed into `Config` at
+> bootstrap so they apply to both the app and the CLI reconciler. **Secrets**
+> (`ADAXES_TOKEN` / `ADAXES_WRITE_TOKEN`, service-account password, DB / SAML /
+> Google credentials) are intentionally **not** editable there — they stay in
+> `.env` / the environment. The whitelist in `SettingsService` is the boundary.
+
 ```sh
 # --- Adaxes WRITE (direct AD provisioning; bypasses OneSync for AD) ------------
 ADAXES_WRITE_ENABLED=false          # master switch; false = read-only (today's behavior)
