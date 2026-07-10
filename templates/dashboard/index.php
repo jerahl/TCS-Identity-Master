@@ -1,21 +1,39 @@
 <?php
-/** @var array $kpis @var array $activity @var array $feeds @var array $failedSyncs @var array $syncHealth @var array $alerts */
+/** @var array $kpis @var array $activity @var array $feeds @var array $failedSyncs @var array $adSync @var array $googleSync @var array $studentSync @var array $alerts */
 use App\View\Present;
 
 $k = $kpis;
-$sh = $syncHealth ?? ['state' => 'never', 'label' => 'never', 'status' => null, 'counts' => null];
-$syncTone = ($sh['status'] ?? null) === 'failed'
-    ? 'alert'
-    : (['fresh' => 'ok', 'stale' => 'warn', 'never' => 'alert'][$sh['state']] ?? 'alert');
-$syncCounts = is_array($sh['counts'] ?? null) ? $sh['counts'] : null;
-$syncSub = 'never run';
-if ($sh['state'] !== 'never') {
-    $syncSub = ($sh['status'] ?? '') === 'failed'
-        ? 'last run failed'
-        : ($syncCounts !== null
-            ? ((int) ($syncCounts['upserted'] ?? 0)) . ' updated · ' . ((int) ($syncCounts['failed'] ?? 0)) . ' failed'
-            : 'results pulled from OneSync');
-}
+
+// A direct-provisioning tile (AD / Google): value = last-run relative label (or
+// off/never), sub = a one-line outcome, tone from the run status/freshness.
+$directTile = static function (array $h): array {
+    if (empty($h['configured'])) {
+        return ['value' => 'off', 'sub' => 'not configured', 'tone' => 'ok'];
+    }
+    $tone = ($h['status'] ?? null) === 'failed'
+        ? 'alert'
+        : (['fresh' => 'ok', 'stale' => 'warn', 'never' => 'warn'][$h['state']] ?? 'warn');
+    if ($h['state'] === 'never') {
+        return ['value' => 'never', 'sub' => 'no run recorded', 'tone' => 'warn'];
+    }
+    if (($h['status'] ?? '') === 'failed') {
+        return ['value' => $h['label'], 'sub' => 'last run failed', 'tone' => 'alert'];
+    }
+    $c = is_array($h['counts'] ?? null) ? $h['counts'] : null;
+    $sub = 'last run ' . $h['label'];
+    if ($c !== null) {
+        // Prefer a compact "what changed" line from whatever counts the job stored.
+        if (array_key_exists('created', $c) || array_key_exists('pushed', $c)) {
+            $sub = ((int) ($c['created'] ?? 0)) . ' new · ' . ((int) ($c['pushed'] ?? 0)) . ' updated'
+                 . (isset($c['errors']) && (int) $c['errors'] > 0 ? ' · ' . (int) $c['errors'] . ' err' : '');
+        } elseif (isset($c['errors'])) {
+            $sub = (int) $c['errors'] > 0 ? ((int) $c['errors']) . ' errors · ' . $h['label'] : 'clean · ' . $h['label'];
+        }
+    }
+    return ['value' => $h['label'], 'sub' => $sub, 'tone' => $tone];
+};
+$adTile = $directTile($adSync ?? ['configured' => false]);
+$gTile  = $directTile($googleSync ?? ['configured' => false]);
 
 $ss = $studentSync ?? ['state' => 'never', 'label' => 'never', 'status' => null, 'active' => 0];
 $studentTone = ($ss['status'] ?? null) === 'failed'
@@ -31,7 +49,8 @@ $cards = [
     ['label' => 'Unmapped values', 'value' => $k['unmapped'], 'sub' => 'school + ethnicity', 'tone' => $k['unmapped'] > 0 ? 'warn' : 'ok', 'href' => url('/reference')],
     ['label' => 'Failed syncs', 'value' => $k['failedSync'], 'sub' => 'last sync failed', 'tone' => $k['failedSync'] > 0 ? 'alert' : 'ok', 'href' => url('/dashboard') . '#failed'],
     ['label' => 'To disable', 'value' => $k['disableFlagged'], 'sub' => 'left, still enabled', 'tone' => $k['disableFlagged'] > 0 ? 'warn' : 'ok', 'href' => url('/review') . '#disable'],
-    ['label' => 'OneSync DB sync', 'value' => $sh['label'], 'sub' => $syncSub, 'tone' => $syncTone, 'href' => url('/admin')],
+    ['label' => 'Active Directory sync', 'value' => $adTile['value'], 'sub' => $adTile['sub'], 'tone' => $adTile['tone'], 'href' => url('/admin')],
+    ['label' => 'Google Workspace sync', 'value' => $gTile['value'], 'sub' => $gTile['sub'], 'tone' => $gTile['tone'], 'href' => url('/admin')],
     ['label' => 'Students → OneSync', 'value' => $ss['active'], 'sub' => $studentSub, 'tone' => $studentTone, 'href' => url('/dashboard') . '#students'],
     ['label' => 'Last feed run', 'value' => $k['lastFeed'] ? ucfirst($k['lastFeed']['system']) : '—', 'sub' => $k['lastFeed'] ? ($k['lastFeed']['status'] . ' · ' . $k['lastFeed']['started_at']) : 'no imports yet', 'tone' => 'ok', 'href' => url('/import')],
 ];
@@ -39,7 +58,7 @@ $cards = [
 <div class="page-head">
   <div>
     <h1>System health</h1>
-    <p>One golden record per person across NextGen, PowerSchool &amp; manual entry — synced to AD and Google by OneSync.</p>
+    <p>One golden record per person across NextGen, PowerSchool &amp; manual entry — provisioned directly to Active Directory (Adaxes) and Google Workspace.</p>
   </div>
 </div>
 

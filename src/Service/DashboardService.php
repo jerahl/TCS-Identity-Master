@@ -138,6 +138,37 @@ final class DashboardService
     }
 
     /**
+     * Health of a direct-provisioning sync (job 'adaxes' or 'google') from its
+     * last service_run row. $configured says whether the integration is set up at
+     * all, so the dashboard tile can read "off" rather than a false "never run".
+     *
+     * @return array{state:string,label:string,at:?string,status:?string,counts:?array,configured:bool,staleHours:int}
+     */
+    public function directSyncHealth(string $job, bool $configured): array
+    {
+        $staleHours = max(1, (int) Config::get('SYNC_STALE_HOURS', '26'));
+        $last = (new ServiceRunLog($this->db))->last($job);
+        $at = $last === null ? null : (string) ($last['finished_at'] ?? $last['started_at']);
+
+        $counts = null;
+        if ($last !== null && !empty($last['counts_json'])) {
+            $decoded = json_decode((string) $last['counts_json'], true);
+            $counts = is_array($decoded) ? $decoded : null;
+        }
+
+        $fresh = Freshness::classify($at, $staleHours, time());
+        return [
+            'state'      => $fresh['state'],
+            'label'      => $fresh['label'],
+            'at'         => $fresh['at'],
+            'status'     => $last === null ? null : (string) $last['status'],
+            'counts'     => $counts,
+            'configured' => $configured,
+            'staleHours' => $staleHours,
+        ];
+    }
+
+    /**
      * Students passthrough sync status: the latest student import run plus the
      * current active-student count. Drives the "Students (OneSync)" dashboard card
      * — the web app only shows the status of this sync, it doesn't edit students.
