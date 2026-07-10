@@ -108,21 +108,23 @@ $eventTitle = [
         }
         ?>
         <?php if (!empty($canAdmin) && ($p['username'] || $hasAdLink)): ?>
-        <div class="identity-actions" style="margin-top:12px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; border-top:1px solid #E4EBF0; padding-top:12px;">
+        <div class="identity-actions" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; border-top:1px solid #E4EBF0; padding-top:12px;">
           <?php if ($p['username']): ?>
-          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/rename')) ?>"
-                onsubmit="return confirm('Schedule a username/email rename for this person? The employee, principal, and IT will be emailed, and the change applies after the notice period.');"
-                style="display:flex; gap:6px; align-items:center;">
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/rename')) ?>" style="margin:0;"
+                data-idm-prompt
+                data-prompt-field="old_name"
+                data-prompt="Schedule a username/email rename for this person? The employee, principal, and IT will be emailed and the change applies after the notice period.&#10;&#10;Previous name (optional) — enter it for the notice, or leave blank. Cancel to abort.">
             <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
-            <input type="text" name="old_name" class="input" placeholder="previous name (optional)" style="width:180px;">
-            <button type="submit" class="btn btn--sm">Rename (last-name change)</button>
+            <input type="hidden" name="old_name" value="">
+            <button type="submit" class="btn btn--sm btn--ghost">Rename (last-name change)</button>
           </form>
           <?php endif; ?>
-          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/unlink')) ?>"
-                onsubmit="return confirm('Unlink this identity? Removes the AD objectGUID crosswalk (and clears any username/email/UPN + the lock) so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id / bad correlation.');"
-                style="display:flex; gap:6px; align-items:center;">
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/unlink')) ?>" style="margin:0;"
+                data-idm-prompt
+                data-prompt-field="reason"
+                data-prompt="Unlink this identity? This removes the AD objectGUID crosswalk (and clears any username/email/UPN + the lock) so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id / bad correlation.&#10;&#10;Reason (optional, e.g. HR typo). Cancel to abort.">
             <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
-            <input type="text" name="reason" class="input" placeholder="reason (e.g. HR typo)" style="width:160px;">
+            <input type="hidden" name="reason" value="">
             <button type="submit" class="btn btn--sm btn--danger"><?= $p['username'] ? 'Unlink username' : 'Unlink AD account' ?></button>
           </form>
         </div>
@@ -417,4 +419,7 @@ $eventTitle = [
 </div>
 <?php if (!empty($adaxesConfigured) || !empty($googleConfigured)): ?>
 <script src="<?= e(asset('assets/js/person-live-panels.js')) ?>" defer></script>
+<?php endif; ?>
+<?php if (!empty($canAdmin)): ?>
+<script src="<?= e(asset('assets/js/person-actions.js')) ?>" defer></script>
 <?php endif; ?>
