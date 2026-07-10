@@ -342,18 +342,35 @@ final class PersonWriter
 
         // Remove the AD crosswalk entirely (active OR inactive) so the wrong/stale
         // objectGUID can't resolve here or block re-linking it to the right person.
+        // The app DB role may lack DELETE (least privilege); if so, fall back to
+        // deactivating the row — an inactive AD link no longer resolves a GUID
+        // (see AdaxesService::adObjectGuid), so verify still stops matching it.
         $adRows = $this->db->prepare("SELECT id, source_key, is_active FROM person_source_id WHERE person_id = :id AND system = 'ad'");
         $adRows->execute([':id' => $personId]);
         $removed = 0;
+        $deactivated = 0;
         foreach ($adRows->fetchAll() as $r) {
-            $this->db->prepare('DELETE FROM person_source_id WHERE id = :rid')->execute([':rid' => (int) $r['id']]);
-            $this->audit->log('source_id', (int) $r['id'], 'delete',
-                ['system' => 'ad', 'source_key' => $r['source_key'], 'is_active' => (int) $r['is_active']],
-                ['reason' => 'username unlinked'], $actor);
-            $removed++;
+            $rid = (int) $r['id'];
+            try {
+                $this->db->prepare('DELETE FROM person_source_id WHERE id = :rid')->execute([':rid' => $rid]);
+                $this->audit->log('source_id', $rid, 'delete',
+                    ['system' => 'ad', 'source_key' => $r['source_key'], 'is_active' => (int) $r['is_active']],
+                    ['reason' => 'username unlinked'], $actor);
+                $removed++;
+            } catch (\PDOException $e) {
+                // No DELETE privilege → soft-unlink so the operation still succeeds.
+                $this->db->prepare('UPDATE person_source_id SET is_active = 0 WHERE id = :rid')->execute([':rid' => $rid]);
+                $this->audit->log('source_id', $rid, 'update',
+                    ['is_active' => (int) $r['is_active']],
+                    ['is_active' => 0, 'source_key' => $r['source_key'], 'reason' => 'username unlinked (no DELETE grant — deactivated)'], $actor);
+                $deactivated++;
+            }
         }
         if ($removed > 0) {
             $notes[] = "removed {$removed} AD crosswalk link(s)";
+        }
+        if ($deactivated > 0) {
+            $notes[] = "deactivated {$deactivated} AD crosswalk link(s) (grant DELETE on person_source_id to remove fully)";
         }
 
         if ($notes !== []) {

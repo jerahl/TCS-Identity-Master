@@ -80,6 +80,25 @@ final class AdUnlinkTest extends TestCase
         self::assertSame(0, (int) $db->query("SELECT COUNT(*) FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
     }
 
+    public function testFallsBackToDeactivateWhenDeleteIsDenied(): void
+    {
+        // Simulate the least-privilege app role (no DELETE) with a trigger that
+        // aborts deletes. Unlink must still succeed by deactivating the row.
+        $db = $this->db();
+        $db->exec("INSERT INTO person (person_id, username, email, upn, username_locked, status)
+                   VALUES (1, 'jsmith', 'jsmith@x', 'jsmith@x', 1, 'active')");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1, 'ad', 'the-guid', 1)");
+        $db->exec("CREATE TRIGGER no_delete_psid BEFORE DELETE ON person_source_id BEGIN SELECT RAISE(ABORT, 'DELETE denied'); END");
+
+        $notes = $this->writer($db)->unlinkUsername(1, 'admin', 'HR typo');
+
+        // The row survives but is now inactive (so it no longer resolves a GUID).
+        $row = $db->query("SELECT is_active FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetch();
+        self::assertNotFalse($row);
+        self::assertSame(0, (int) $row['is_active']);
+        self::assertNotEmpty(array_filter($notes, static fn($n) => str_contains($n, 'deactivated')));
+    }
+
     public function testNoOpWhenNothingLinked(): void
     {
         $db = $this->db();

@@ -411,14 +411,21 @@ final class PersonController extends Controller
             $actor = $this->currentUser()['name'];
             $reason = trim((string) ($_POST['reason'] ?? ''));
             $notes = (new PersonWriter($db, new AuditService($db)))->unlinkUsername($id, $actor, $reason);
-            (new \App\Service\ScheduledEventService($db, new AuditService($db)))->cancelPending($id, $actor);
+
+            // Best-effort: cancelling pending rename events must never turn a
+            // successful unlink into a reported failure (e.g. table not migrated).
+            try {
+                (new \App\Service\ScheduledEventService($db, new AuditService($db)))->cancelPending($id, $actor);
+            } catch (\Throwable $e) {
+                error_log('[idm] person unlink (cancel events): ' . $e->getMessage());
+            }
 
             $this->flash($notes === []
                 ? 'Nothing was linked to unlink.'
                 : 'Username unlinked — ' . implode('; ', $notes) . '. The reconciler will re-assign on the next run.');
         } catch (\Throwable $e) {
             error_log('[idm] person unlink: ' . $e->getMessage());
-            $this->flash('Could not unlink the username.');
+            $this->flash('Could not unlink the username: ' . $e->getMessage());
         }
         return $this->redirect($back);
     }

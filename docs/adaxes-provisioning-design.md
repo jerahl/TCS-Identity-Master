@@ -377,12 +377,18 @@ Beyond create/edit/disable/groups, IDM owns the human side of identity changes.
   through a pluggable transport (`smtp` / `sendmail` / disabled default) and logs
   every send to `email_outbox`. Off until `MAIL_ENABLED=true` + a transport; a
   disabled send is queued, never dropped.
-- **Unlink username.** `PersonWriter::unlinkUsername` undoes a bad mint from a
-  wrong name / employee id — clears username/email/upn + the lock and **removes**
-  the `ad` objectGUID crosswalk row(s) entirely (so a wrong/stale GUID can't
-  resolve here or block re-linking it) so the reconciler re-assigns a corrected
-  identity. Admin-only (`/people/{id}/unlink`), and it cancels any pending rename
-  events for the person.
+- **Unlink username.** `PersonWriter::unlinkUsername` undoes a bad mint / bad
+  correlation (wrong name, employee id, or a link to the wrong AD account) —
+  clears username/email/upn + the lock and **removes** the `ad` objectGUID
+  crosswalk row(s) entirely (so a wrong/stale GUID can't resolve here or block
+  re-linking it) so the reconciler re-assigns a corrected identity. Admin-only
+  (`/people/{id}/unlink`); shows even for a linked-but-unnamed person (a bad
+  correlation with no username), and cancels any pending rename events.
+  **Removing the crosswalk needs `DELETE` on `person_source_id`** — the setup
+  script grants it to the app role; if the deployed role lacks it, unlink falls
+  back to *deactivating* the row (which still stops it resolving a GUID, since an
+  inactive `ad` link no longer matches) and says so. Grant DELETE for a full
+  removal: `GRANT DELETE ON <db>.person_source_id TO '<app_user>'@'<host>';`
 - **Delayed events.** `scheduled_event` + `ScheduledEventService` are a durable
   queue for future actions; `bin/run_scheduled_events.php` (a systemd timer, every
   ~15 min) claims due rows and `ScheduledEventRunner` dispatches them by type.
