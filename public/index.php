@@ -119,6 +119,11 @@ try {
     $router->get('/settings/config', $guard('admin', static fn() => $settings->index()));
     $router->post('/settings/config/save', $guard('admin', static fn() => $settings->save()));
 
+    // Editable email templates (admin-only; rename/alias notices).
+    $emailTpl = new \App\Controller\EmailTemplateController();
+    $router->get('/settings/email-templates', $guard('admin', static fn() => $emailTpl->index()));
+    $router->post('/settings/email-templates/save', $guard('admin', static fn() => $emailTpl->save()));
+
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));

@@ -34,6 +34,7 @@ final class RenameService
     private ScheduledEventService $events;
     private AuditService $audit;
     private ?AdaxesService $read;
+    private EmailTemplateService $templates;
 
     public function __construct(
         ?PDO $db = null,
@@ -41,12 +42,14 @@ final class RenameService
         ?ScheduledEventService $events = null,
         ?AuditService $audit = null,
         ?AdaxesService $read = null,
+        ?EmailTemplateService $templates = null,
     ) {
         $this->db = $db ?? Db::connect(Db::ROLE_APP);
         $this->audit = $audit ?? new AuditService($this->db);
         $this->mailer = $mailer ?? new Mailer($this->db);
         $this->events = $events ?? new ScheduledEventService($this->db, $this->audit);
         $this->read = $read;
+        $this->templates = $templates ?? new EmailTemplateService($this->db);
     }
 
     /**
@@ -119,15 +122,8 @@ final class RenameService
         // Notice to the employee (their current/old address), principal, and IT.
         $to = [$plan['old_email']];
         $cc = array_merge($this->principalEmails($personId), $this->itEmails());
-        $this->mailer->send(
-            $to,
-            'Upcoming username & email change for ' . $plan['name'],
-            $this->noticeBody($plan, $oldName, $cutoverDate),
-            $cc,
-            $personId,
-            'rename_notice',
-            $actor,
-        );
+        $msg = $this->templates->render('rename_notice', self::noticeVars($plan, $oldName, $cutoverDate));
+        $this->mailer->send($to, $msg['subject'], $msg['body'], $cc, $personId, 'rename_notice', $actor);
 
         $this->audit->lifecycle($personId, 'update',
             ['summary' => "Rename scheduled: {$plan['old_username']} → {$plan['new_username']} on {$cutoverDate} (notice sent)."], $actor);
@@ -135,22 +131,24 @@ final class RenameService
         return ['ok' => true, 'scheduled' => true, 'note' => "Cutover scheduled for {$cutoverDate}; notice sent.", 'plan' => $plan, 'cutover_on' => $cutoverDate, 'event_id' => $eventId];
     }
 
-    /** The plain-text notice body. */
-    public function noticeBody(array $plan, ?string $oldName, string $cutoverDate): string
+    /**
+     * The {placeholder} values for the rename-notice email.
+     *
+     * @param array<string,mixed> $plan
+     * @return array<string,string|int>
+     */
+    public static function noticeVars(array $plan, ?string $oldName, string $cutoverDate): array
     {
-        $aliasDays = max(1, (int) Config::get('RENAME_ALIAS_DAYS', '90'));
-        $nameLine = ($oldName !== null && trim($oldName) !== '')
-            ? "The employee name has been changed from {$oldName} to {$plan['name']}.\n\n"
-            : "A name change has been recorded for {$plan['name']}.\n\n";
-
-        return $nameLine
-            . "On {$cutoverDate}, the username and email address will change:\n"
-            . "  username:  {$plan['old_username']}  ->  {$plan['new_username']}\n"
-            . "  email:     {$plan['old_email']}  ->  {$plan['new_email']}\n\n"
-            . "Mail sent to the old address ({$plan['old_email']}) will continue to be "
-            . "delivered for {$aliasDays} days after the change, then that alias will be removed. "
-            . "Reminders will be sent before removal.\n\n"
-            . "No action is required. — TCS Identity Management\n";
+        return [
+            'name'         => (string) $plan['name'],
+            'old_name'     => ($oldName !== null && trim($oldName) !== '') ? trim($oldName) : 'the previous name on file',
+            'old_username' => (string) $plan['old_username'],
+            'new_username' => (string) $plan['new_username'],
+            'old_email'    => (string) $plan['old_email'],
+            'new_email'    => (string) $plan['new_email'],
+            'cutover_date' => $cutoverDate,
+            'alias_days'   => max(1, (int) Config::get('RENAME_ALIAS_DAYS', '90')),
+        ];
     }
 
     // ---- lookups ------------------------------------------------------------

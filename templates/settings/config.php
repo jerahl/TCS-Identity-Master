@@ -10,6 +10,11 @@
   </div>
 </div>
 
+<div class="tabs" style="margin-bottom:16px;">
+  <a class="tab is-on" href="<?= e(url('/settings/config')) ?>">Settings</a>
+  <a class="tab" href="<?= e(url('/settings/email-templates')) ?>">Email templates</a>
+</div>
+
 <div class="panel" style="margin-bottom:16px;">
   <p class="panel__note" style="margin:0;">
     <strong>Secrets are not editable here.</strong> Adaxes tokens, service-account passwords, and database / SAML /

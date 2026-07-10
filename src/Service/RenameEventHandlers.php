@@ -30,6 +30,8 @@ final class RenameEventHandlers
     /** A well-formed objectGUID (the only kind we act on). */
     private const GUID_RE = '/^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/';
 
+    private EmailTemplateService $templates;
+
     public function __construct(
         private readonly PDO $db,
         private readonly AdaxesService $read,
@@ -39,7 +41,9 @@ final class RenameEventHandlers
         private readonly AuditService $audit,
         private readonly PersonWriter $people,
         private readonly ?GoogleWorkspaceService $google = null,
+        ?EmailTemplateService $templates = null,
     ) {
+        $this->templates = $templates ?? new EmailTemplateService($this->db);
     }
 
     /** event_type => handler, for the runner. */
@@ -146,17 +150,17 @@ final class RenameEventHandlers
         $this->people->applyRename($pid, (string) $newUser, (string) $newEmail, (string) $newUpn, self::ACTOR);
 
         // 5) Schedule the alias removal + reminders, and confirm by email.
-        $this->scheduleAliasLifecycle($pid, $guid, (string) $oldEmail, (string) $newEmail, $now);
-        $this->mailer->send(
-            array_merge([(string) $newEmail], $this->recipientsFor($pid)),
-            'Username & email changed for ' . ($p['name'] ?? ''),
-            "The change is complete:\n  username: {$p['old_username']} -> {$newUser}\n  email:    {$oldEmail} -> {$newEmail}\n\n"
-                . "Mail to {$oldEmail} will keep delivering for " . self::aliasDays() . " days, then that alias is removed.\n",
-            [],
-            $pid,
-            'rename_done',
-            self::ACTOR,
-        );
+        $name = (string) ($p['name'] ?? '');
+        $this->scheduleAliasLifecycle($pid, $guid, (string) $oldEmail, (string) $newEmail, $name, $now);
+        $msg = $this->templates->render('rename_done', [
+            'name'         => $name,
+            'old_username' => (string) ($p['old_username'] ?? ''),
+            'new_username' => (string) $newUser,
+            'old_email'    => (string) $oldEmail,
+            'new_email'    => (string) $newEmail,
+            'alias_days'   => self::aliasDays(),
+        ]);
+        $this->mailer->send(array_merge([(string) $newEmail], $this->recipientsFor($pid)), $msg['subject'], $msg['body'], [], $pid, 'rename_done', self::ACTOR);
 
         return ['ok' => true, 'note' => "renamed {$p['old_username']}→{$newUser}" . ($gnote !== '' ? "; {$gnote}" : '')];
     }
@@ -170,16 +174,13 @@ final class RenameEventHandlers
         $p = ScheduledEventService::payloadOf($event);
         $pid = (int) ($event['person_id'] ?? 0);
         $old = (string) ($p['old_email'] ?? '');
-        $on = (string) ($p['remove_date'] ?? '');
-        $this->mailer->send(
-            $this->recipientsFor($pid) ?: [(string) Config::get('IT_NOTIFY_EMAIL', '')],
-            "Reminder: email alias {$old} will be removed on {$on}",
-            "The forwarding alias {$old} is scheduled for removal on {$on}. After that, mail to the old address will bounce.\n",
-            [],
-            $pid,
-            'alias_reminder',
-            self::ACTOR,
-        );
+        $msg = $this->templates->render('alias_reminder', [
+            'name'        => (string) ($p['name'] ?? ''),
+            'old_email'   => $old,
+            'new_email'   => (string) ($p['new_email'] ?? ''),
+            'remove_date' => (string) ($p['remove_date'] ?? ''),
+        ]);
+        $this->mailer->send($this->recipientsFor($pid) ?: [(string) Config::get('IT_NOTIFY_EMAIL', '')], $msg['subject'], $msg['body'], [], $pid, 'alias_reminder', self::ACTOR);
         return ['ok' => true, 'note' => "reminder for {$old}"];
     }
 
@@ -206,15 +207,12 @@ final class RenameEventHandlers
             $g = $this->google->removeAlias((string) ($p['new_email'] ?? $old), $old);
             $gnote = $g['ok'] ? 'google alias removed' : ('google: ' . $g['error']);
         }
-        $this->mailer->send(
-            $this->recipientsFor($pid) ?: [(string) Config::get('IT_NOTIFY_EMAIL', '')],
-            "Email alias removed: {$old}",
-            "The forwarding alias {$old} has been removed. Mail to that address will no longer be delivered.\n",
-            [],
-            $pid,
-            'alias_removed',
-            self::ACTOR,
-        );
+        $msg = $this->templates->render('alias_removed', [
+            'name'      => (string) ($p['name'] ?? ''),
+            'old_email' => $old,
+            'new_email' => (string) ($p['new_email'] ?? ''),
+        ]);
+        $this->mailer->send($this->recipientsFor($pid) ?: [(string) Config::get('IT_NOTIFY_EMAIL', '')], $msg['subject'], $msg['body'], [], $pid, 'alias_removed', self::ACTOR);
         $this->audit->lifecycle($pid, 'update', ['summary' => "Old email alias {$old} removed after retention period."], self::ACTOR);
         return ['ok' => true, 'note' => "removed alias {$old}" . ($gnote !== '' ? "; {$gnote}" : '')];
     }
@@ -234,12 +232,12 @@ final class RenameEventHandlers
         return $alias['ok'] ? 'google renamed + aliased' : ('google alias: ' . $alias['error']);
     }
 
-    private function scheduleAliasLifecycle(int $pid, string $guid, string $oldEmail, string $newEmail, string $now): void
+    private function scheduleAliasLifecycle(int $pid, string $guid, string $oldEmail, string $newEmail, string $name, string $now): void
     {
         $aliasDays = self::aliasDays();
         $removeAt = gmdate('Y-m-d H:i:s', (strtotime($now . ' UTC') ?: 0) + $aliasDays * 86400);
         $removeDate = substr($removeAt, 0, 10);
-        $payload = ['old_email' => $oldEmail, 'new_email' => $newEmail, 'guid' => $guid, 'remove_date' => $removeDate];
+        $payload = ['name' => $name, 'old_email' => $oldEmail, 'new_email' => $newEmail, 'guid' => $guid, 'remove_date' => $removeDate];
 
         $this->events->schedule(RenameService::EVENT_REMOVE, $removeAt, $payload, $pid, self::ACTOR, "aliasremove:{$pid}:" . strtolower($oldEmail));
 

@@ -406,6 +406,14 @@ Beyond create/edit/disable/groups, IDM owns the human side of identity changes.
   The rename is admin-approved (not automatic on feed drift), so a typo/hyphenation
   fix doesn't silently rename accounts.
 
+  **Editable text.** The four rename emails (notice / done / reminder / removed)
+  are edited in the web console at **Settings → Email templates** (admin), backed
+  by `EmailTemplateService` + `email_template` (migration 0020). Each has a subject
+  and body with `{placeholder}` tokens (`{name}`, `{old_username}`, `{new_email}`,
+  `{cutover_date}`, `{remove_date}`, …); built-in defaults apply until edited, and
+  "Reset" reverts. Recipients (employee / principal / IT) are fixed — the page
+  controls wording only.
+
 ## Guardrails (invariants across all phases)
 
 1. **Link before write.** Edit/disable only ever act on a person with a linked
