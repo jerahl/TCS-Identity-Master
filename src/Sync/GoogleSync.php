@@ -35,6 +35,8 @@ final class GoogleSync
     private GoogleWorkspaceService $google;
     private float $maxRatio;
     private int $guardMinLinked;
+    /** When non-empty, the run is restricted to these person_ids (test cohort). */
+    private array $restrictPersonIds = [];
 
     public function __construct(
         ?PDO $db = null,
@@ -71,11 +73,19 @@ final class GoogleSync
      *              keeps the (slow, one-remote-lookup-per-person) scan visibly live.
      *   - 'result' once per applied action on a real run — adds ok, message
      *
+     * $onlyPersonIds, when non-empty, restricts the whole run to those person_ids —
+     * for exercising a few users live without touching everyone (test cohort).
+     * NOTE: the mass-suspend guardrail's denominator is the linked accounts *in the
+     * cohort*, so it's effectively bypassed on a tiny cohort — deliberate, since the
+     * whole point is to act on a handful of accounts.
+     *
      * @param callable(string,array<string,mixed>):void|null $log
+     * @param list<int> $onlyPersonIds
      * @return array{dry_run:bool, blocked:bool, configured:bool, counts:array<string,int>, actions:array<int,array<string,mixed>>, note:?string}
      */
-    public function run(bool $dryRun = false, ?string $actor = null, ?callable $log = null): array
+    public function run(bool $dryRun = false, ?string $actor = null, ?callable $log = null, array $onlyPersonIds = []): array
     {
+        $this->restrictPersonIds = array_values(array_unique(array_map('intval', $onlyPersonIds)));
         $actor ??= 'system:google_sync';
         $counts = [
             'eligible' => 0, 'created' => 0, 'pushed' => 0, 'suspended' => 0,
@@ -209,13 +219,16 @@ final class GoogleSync
     /** @return array<int,array<string,mixed>> people to reconcile. */
     private function eligiblePeople(): array
     {
-        return $this->db->query(
-            "SELECT person_id, person_uuid, username, first_name, last_name, email, upn, employee_id,
-                    status, person_type, primary_school_id
-             FROM person
-             WHERE status IN ('active','pending','disabled','terminated')
-             ORDER BY person_id"
-        )->fetchAll();
+        $sql = "SELECT person_id, person_uuid, username, first_name, last_name, email, upn, employee_id,
+                       status, person_type, primary_school_id
+                FROM person
+                WHERE status IN ('active','pending','disabled','terminated')";
+        // Test-cohort restriction: values are ints (cast in run()), so inlining is safe.
+        if ($this->restrictPersonIds !== []) {
+            $sql .= ' AND person_id IN (' . implode(',', array_map('intval', $this->restrictPersonIds)) . ')';
+        }
+        $sql .= ' ORDER BY person_id';
+        return $this->db->query($sql)->fetchAll();
     }
 
     /** @return array<int,array<string,mixed>> */

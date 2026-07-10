@@ -87,4 +87,27 @@ final class GoogleSyncTest extends TestCase
         self::assertNotEmpty($result['actions']);
         self::assertSame('create', $result['actions'][0]['action']);
     }
+
+    public function testOnlyPersonIdsRestrictsTheRunToTheCohort(): void
+    {
+        // Person 1 (active + golden email) would create; person 2 has no email.
+        // Restricting to [2] must examine ONLY person 2 — no create, one eligible.
+        $result = $this->sync($this->db())->run(dryRun: true, actor: 'tester', onlyPersonIds: [2]);
+
+        self::assertSame(1, $result['counts']['eligible']);  // just the cohort
+        self::assertSame(0, $result['counts']['created']);   // person 1 was excluded
+        self::assertSame(1, $result['counts']['no_email']);
+        self::assertSame([], $result['actions']);
+    }
+
+    public function testOnlyPersonIdsCohortActsOnTheTargetedPerson(): void
+    {
+        // Restricting to [1] examines only person 1 and plans their create.
+        $result = $this->sync($this->db())->run(dryRun: true, actor: 'tester', onlyPersonIds: [1]);
+
+        self::assertSame(1, $result['counts']['eligible']);
+        self::assertSame(1, $result['counts']['created']);
+        self::assertSame(1, $result['actions'][0]['person_id']);
+        self::assertSame('create', $result['actions'][0]['action']);
+    }
 }
