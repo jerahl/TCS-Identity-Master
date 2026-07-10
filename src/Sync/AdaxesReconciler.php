@@ -900,24 +900,24 @@ final class AdaxesReconciler
         return $attrs;
     }
 
-    /** Well-formed, active AD objectGUID from the crosswalk, or null. */
+    /** Well-formed, ACTIVE AD objectGUID from the crosswalk, or null. */
     private static function linkedGuid(array $sourceIds): ?string
     {
-        $fallback = null;
         foreach ($sourceIds as $row) {
             if (strtolower((string) ($row['system'] ?? '')) !== 'ad') {
                 continue;
             }
-            $key = trim((string) ($row['source_key'] ?? ''));
-            if (!preg_match(self::GUID_RE, $key)) {
-                continue; // aliases/uniqueIds are not a reliable write target
+            // An inactive AD link (unlinked, or flagged bad) is not a live write
+            // target — never act on it.
+            if (empty($row['is_active'])) {
+                continue;
             }
-            if (!empty($row['is_active'])) {
+            $key = trim((string) ($row['source_key'] ?? ''));
+            if (preg_match(self::GUID_RE, $key)) {
                 return $key;
             }
-            $fallback ??= $key;
         }
-        return $fallback;
+        return null;
     }
 
     /**

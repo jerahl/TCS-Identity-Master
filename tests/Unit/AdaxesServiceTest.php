@@ -259,6 +259,28 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('eq', $group['items'][0]['operator']);
     }
 
+    public function testInactiveAdCrosswalkDoesNotMatchByObjectGuid(): void
+    {
+        // After an unlink (or a cleanup), the 'ad' crosswalk row is inactive. It
+        // must NOT drive an objectGUID lookup — otherwise the person can never be
+        // correlated to a different account. verify() falls through to a search.
+        $captured = null;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+            $captured = ['method' => $method, 'url' => $url];
+            return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith']]]])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
+
+        $res = $svc->verify(
+            ['username' => 'jsmith', 'status' => 'active'],
+            [['system' => 'ad', 'source_key' => '8aad594f-6f76-4de0-81ac-85ded4350674', 'is_active' => 0]],
+        );
+
+        self::assertTrue($res['found']);
+        self::assertSame('search', $res['by']);                 // NOT objectGUID
+        self::assertStringContainsString('/api/directoryObjects/search', $captured['url']);
+    }
+
     public function testSingleCriterionUsesAndOperator(): void
     {
         $captured = null;

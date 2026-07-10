@@ -453,21 +453,23 @@ final class AdaxesService
     /** @param array<int,array<string,mixed>> $sourceIds */
     private static function adObjectGuid(array $sourceIds): ?string
     {
-        $fallback = null;
         foreach ($sourceIds as $row) {
             if (strtolower((string) ($row['system'] ?? '')) !== 'ad') {
                 continue;
             }
-            $key = trim((string) ($row['source_key'] ?? ''));
-            if ($key === '') {
+            // Only an ACTIVE AD link resolves a GUID. A deactivated row (e.g. after
+            // an unlink, or one cleanup_ad_ids marked bad) must NOT keep matching the
+            // old account — otherwise the person can never be correlated to a
+            // different account.
+            if (empty($row['is_active'])) {
                 continue;
             }
-            if (!empty($row['is_active'])) {
-                return $key; // prefer the active AD identity
+            $key = trim((string) ($row['source_key'] ?? ''));
+            if ($key !== '') {
+                return $key;
             }
-            $fallback ??= $key;
         }
-        return $fallback;
+        return null;
     }
 
     /**
