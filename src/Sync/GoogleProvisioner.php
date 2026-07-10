@@ -90,6 +90,8 @@ final class GoogleProvisioner
             'push'         => $this->doPush($person, $corr, $ou, $actor, $dryRun),
             'suspend'      => $this->doSuspend($person, $corr, $actor, $dryRun),
             'move_disabled' => $this->doMoveDisabled($person, $corr, $actor, $dryRun),
+            'license'      => $this->doLicense($person, $corr, $actor, $dryRun),
+            'unlicense'    => $this->doUnlicense($person, $corr, $actor, $dryRun),
             'restore'      => $this->doRestore($person, $corr, $actor, $dryRun),
             default        => self::result(false, "Unknown Google action '{$action}'.", $action),
         };
@@ -134,7 +136,17 @@ final class GoogleProvisioner
         if ($googleId !== '') {
             $this->linkCrosswalk((int) $person['person_id'], $googleId, $person['person_uuid'], $actor, (string) $res['primaryEmail']);
         }
-        return self::result(true, "Created Google account {$res['primaryEmail']}.", 'create', $googleId);
+        // Faculty/staff get the Education Plus license on creation (seat permitting).
+        $msg = "Created Google account {$res['primaryEmail']}.";
+        if (self::isFacultyStaff($person) && $this->google->licenseEnabled()) {
+            $key = $googleId !== '' ? $googleId : (string) $res['primaryEmail'];
+            $lic = $this->tryAssignLicense($key, (string) $res['primaryEmail']);
+            if ($lic['ok']) {
+                $this->audit->lifecycle((int) $person['person_id'], 'update', ['summary' => 'Assigned Google license: ' . (string) $res['primaryEmail']], $actor);
+            }
+            $msg .= ' ' . ucfirst($lic['note']) . '.';
+        }
+        return self::result(true, $msg, 'create', $googleId);
     }
 
     private function doPush(array $person, array $corr, ?string $ou, string $actor, bool $dryRun): array
@@ -280,6 +292,107 @@ final class GoogleProvisioner
         $this->audit->lifecycle((int) $person['person_id'], 'enable',
             ['summary' => 'Restored Google Workspace account (direct): ' . (string) $res['primaryEmail']], $actor);
         return self::result(true, "Restored {$res['primaryEmail']}.", 'restore', $res['googleId']);
+    }
+
+    /**
+     * Assign the Education Plus (staff) license to an active faculty/staff account
+     * (its own sync action, so a user missing only a license is corrected without a
+     * full push). Availability is checked first when a seat cap is set.
+     *
+     * @param array<string,mixed> $person
+     * @param array<string,mixed> $corr
+     */
+    private function doLicense(array $person, array $corr, string $actor, bool $dryRun): array
+    {
+        if (!$this->google->licenseEnabled()) {
+            return self::result(false, 'License management is off (GOOGLE_LICENSE_ENABLED + GOOGLE_LICENSE_SKU).', 'license');
+        }
+        $key = self::accountKey($corr);
+        if ($key === null) {
+            return self::result(false, 'No linked Google account to license.', 'license');
+        }
+        if (($guard = self::guardNameOnly($corr, 'license')) !== null) {
+            return $guard;
+        }
+        $email = (string) ($corr['primaryEmail'] ?? '');
+        $usage = $this->google->licenseUsage();
+        if (!$this->heldByUsage($usage, $key, $email) && self::noSeat($usage)) {
+            return self::result(false, "No license seat available (used {$usage['used']}/{$usage['seats']}).", 'license', $corr['googleId'] ?? null);
+        }
+        if ($dryRun) {
+            return self::result(true, "Would assign license to {$email}.", 'license', $corr['googleId'] ?? null);
+        }
+        $r = $this->google->assignLicense($key);
+        if (!$r['ok']) {
+            return self::result(false, 'License assign failed: ' . (string) $r['error'], 'license', $corr['googleId'] ?? null);
+        }
+        $this->audit->lifecycle((int) $person['person_id'], 'update', ['summary' => 'Assigned Google license: ' . $email], $actor);
+        return self::result(true, "Assigned license to {$email}.", 'license', $corr['googleId'] ?? null);
+    }
+
+    /**
+     * Remove the license from an account (suspended users release their seat).
+     *
+     * @param array<string,mixed> $person
+     * @param array<string,mixed> $corr
+     */
+    private function doUnlicense(array $person, array $corr, string $actor, bool $dryRun): array
+    {
+        if (!$this->google->licenseEnabled()) {
+            return self::result(false, 'License management is off.', 'unlicense');
+        }
+        $key = self::accountKey($corr);
+        if ($key === null) {
+            return self::result(false, 'No linked Google account to unlicense.', 'unlicense');
+        }
+        $email = (string) ($corr['primaryEmail'] ?? '');
+        if ($dryRun) {
+            return self::result(true, "Would remove license from {$email}.", 'unlicense', $corr['googleId'] ?? null);
+        }
+        $r = $this->google->removeLicense($key);
+        if (!$r['ok']) {
+            return self::result(false, 'License remove failed: ' . (string) $r['error'], 'unlicense', $corr['googleId'] ?? null);
+        }
+        $this->audit->lifecycle((int) $person['person_id'], 'update', ['summary' => 'Removed Google license: ' . $email], $actor);
+        return self::result(true, "Removed license from {$email}.", 'unlicense', $corr['googleId'] ?? null);
+    }
+
+    /**
+     * Assign the license, checking seat availability first. Returns ok + a short
+     * note (for folding into another action's message, e.g. create).
+     *
+     * @return array{ok:bool, note:string}
+     */
+    private function tryAssignLicense(string $key, string $email): array
+    {
+        $usage = $this->google->licenseUsage();
+        if (!$this->heldByUsage($usage, $key, $email) && self::noSeat($usage)) {
+            return ['ok' => false, 'note' => "no license seat available (used {$usage['used']}/{$usage['seats']})"];
+        }
+        $r = $this->google->assignLicense($key);
+        return $r['ok'] ? ['ok' => true, 'note' => 'licensed'] : ['ok' => false, 'note' => 'license failed: ' . (string) $r['error']];
+    }
+
+    /** True when a seat cap is set and full (uncapped/unknown availability = room). */
+    private static function noSeat(array $usage): bool
+    {
+        return ($usage['seats'] ?? 0) > 0 && $usage['available'] !== null && (int) $usage['available'] <= 0;
+    }
+
+    /** Whether the account (by id or email) already holds the license, per usage(). */
+    private function heldByUsage(array $usage, string $key, string $email): bool
+    {
+        $set = $usage['users'] ?? null;
+        if (!is_array($set)) {
+            return false;
+        }
+        return isset($set[strtolower($key)]) || ($email !== '' && isset($set[strtolower($email)]));
+    }
+
+    /** People types that receive the staff license. */
+    public static function isFacultyStaff(array $person): bool
+    {
+        return in_array(strtolower(trim((string) ($person['person_type'] ?? ''))), ['faculty', 'staff'], true);
     }
 
     // ---- persistence helpers ------------------------------------------------

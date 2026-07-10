@@ -221,4 +221,64 @@ final class GoogleWorkspaceGamBackendTest extends TestCase
         self::assertTrue($res['configured']);
         self::assertStringContainsString('GAM did not run', (string) $res['error']);
     }
+
+    public function testAssignLicenseIssuesGamAddLicense(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        putenv('GOOGLE_LICENSE_PRODUCT=101031');
+        try {
+            $calls = null;
+            $svc = $this->service([self::ok('')], $calls);
+            $res = $svc->assignLicense('jsmith@x.org');
+
+            self::assertTrue($res['ok']);
+            self::assertSame(['gam', 'user', 'jsmith@x.org', 'add', 'license', '1010310008', 'product', '101031'], $calls[0]);
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+            putenv('GOOGLE_LICENSE_PRODUCT');
+        }
+    }
+
+    public function testRemoveLicenseIssuesGamDeleteLicense(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        try {
+            $calls = null;
+            $svc = $this->service([self::ok('')], $calls);
+            $res = $svc->removeLicense('jsmith@x.org');
+
+            self::assertTrue($res['ok']);
+            self::assertSame(['gam', 'user', 'jsmith@x.org', 'delete', 'license', '1010310008'], $calls[0]);
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+        }
+    }
+
+    public function testLicenseUsageCountsAssignmentsAndSeats(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        putenv('GOOGLE_LICENSE_SEATS=10');
+        try {
+            $csv = "JSON\n"
+                . '"' . str_replace('"', '""', (string) json_encode(['userId' => 'a@x.org'])) . '"' . "\n"
+                . '"' . str_replace('"', '""', (string) json_encode(['userId' => 'b@x.org'])) . '"' . "\n";
+            $svc = $this->service([self::ok($csv)]);
+            $usage = $svc->licenseUsage();
+
+            self::assertTrue($usage['ok']);
+            self::assertSame(2, $usage['used']);
+            self::assertSame(10, $usage['seats']);
+            self::assertSame(8, $usage['available']);
+            self::assertArrayHasKey('a@x.org', $usage['users']);
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+            putenv('GOOGLE_LICENSE_SEATS');
+        }
+    }
 }

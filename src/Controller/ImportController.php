@@ -179,11 +179,12 @@ final class ImportController extends Controller
                 $this->flash($r['note'] ?? 'Google sync blocked by the threshold guardrail — nothing written.');
             } else {
                 $runLog?->finish($runId, $c['errors'] > 0 ? 'failed' : 'complete', $c, sprintf(
-                    'created %d · pushed %d · suspended %d · moved %d · errors %d',
-                    $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['errors']));
-                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · moved %d · in-sync %d · no-email %d · errors %d',
+                    'created %d · pushed %d · suspended %d · moved %d · licensed %d · unlicensed %d · errors %d',
+                    $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['licensed'], $c['unlicensed'], $c['errors']));
+                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · moved %d · licensed %d · unlicensed %d%s · errors %d',
                     $dryRun ? 'Google sync (dry run)' : 'Google sync',
-                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['in_sync'], $c['no_email'], $c['errors']));
+                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['licensed'], $c['unlicensed'],
+                    $c['license_blocked'] > 0 ? " · {$c['license_blocked']} blocked (no seats)" : '', $c['errors']));
             }
         } catch (\Throwable $e) {
             $runLog?->finish($runId, 'failed', [], $e->getMessage());

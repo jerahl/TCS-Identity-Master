@@ -192,6 +192,100 @@ final class GamClient
         return $res['status'] === 0 ? ['ok' => true, 'error' => null] : ['ok' => false, 'error' => $this->gamError($res, 'delete alias')];
     }
 
+    // ---- licensing --------------------------------------------------------------
+
+    /**
+     * Assign a license SKU to a user: `gam user <key> add license <sku> [product <p>]`.
+     * Idempotent — GAM reporting the user already has it is treated as success.
+     *
+     * @return array{ok:bool,error:?string}
+     */
+    public function addLicense(string $userKey, string $sku, string $product = ''): array
+    {
+        $argv = ['user', $userKey, 'add', 'license', $sku];
+        if ($product !== '') {
+            $argv[] = 'product';
+            $argv[] = $product;
+        }
+        $res = $this->run($argv);
+        if ($res === null) {
+            return ['ok' => false, 'error' => $this->unreachable()];
+        }
+        if ($res['status'] === 0 || self::isAlreadyLicensed($res['stderr'])) {
+            return ['ok' => true, 'error' => null];
+        }
+        return ['ok' => false, 'error' => $this->gamError($res, 'add license')];
+    }
+
+    /**
+     * Remove a license SKU from a user: `gam user <key> delete license <sku> [product <p>]`.
+     * Idempotent — "not assigned" is treated as success.
+     *
+     * @return array{ok:bool,error:?string}
+     */
+    public function deleteLicense(string $userKey, string $sku, string $product = ''): array
+    {
+        $argv = ['user', $userKey, 'delete', 'license', $sku];
+        if ($product !== '') {
+            $argv[] = 'product';
+            $argv[] = $product;
+        }
+        $res = $this->run($argv);
+        if ($res === null) {
+            return ['ok' => false, 'error' => $this->unreachable()];
+        }
+        if ($res['status'] === 0 || self::isNotLicensed($res['stderr'])) {
+            return ['ok' => true, 'error' => null];
+        }
+        return ['ok' => false, 'error' => $this->gamError($res, 'delete license')];
+    }
+
+    /**
+     * The set of users currently assigned a SKU, as lowercased primaryEmail (and
+     * userId) keys: `gam print licenses skus <sku> formatjson`. Drives the
+     * seats-available check and per-user "has license?" without a call per user.
+     * Returns null when it can't be determined (unreachable / parse error) so the
+     * caller degrades to "unknown" rather than a false empty.
+     *
+     * @return array<string,true>|null
+     */
+    public function listLicenseUsers(string $sku, string $product = ''): ?array
+    {
+        $argv = ['print', 'licenses', 'skus', $sku];
+        if ($product !== '') {
+            $argv[] = 'products';
+            $argv[] = $product;
+        }
+        $argv[] = 'formatjson';
+        $res = $this->run($argv);
+        if ($res === null || $res['status'] !== 0) {
+            return null;
+        }
+        $set = [];
+        foreach (self::allCsvJsonRows($res['stdout']) as $row) {
+            foreach (['userId', 'userPrimaryEmail', 'primaryEmail', 'user'] as $k) {
+                $v = trim((string) ($row[$k] ?? ''));
+                if ($v !== '') {
+                    $set[strtolower($v)] = true;
+                }
+            }
+        }
+        return $set;
+    }
+
+    /** GAM's "already has license" diagnostics (assign is idempotent). */
+    private static function isAlreadyLicensed(string $stderr): bool
+    {
+        return stripos($stderr, 'already') !== false && stripos($stderr, 'licens') !== false;
+    }
+
+    /** GAM's "user has no such license" diagnostics (delete is idempotent). */
+    private static function isNotLicensed(string $stderr): bool
+    {
+        return (stripos($stderr, 'not') !== false || stripos($stderr, 'no ') !== false)
+            && stripos($stderr, 'licens') !== false;
+    }
+
     // ---- internals -------------------------------------------------------------
 
     /**
@@ -303,6 +397,38 @@ final class GamClient
             }
         }
         return null;
+    }
+
+    /**
+     * Parse ALL rows of `print … formatjson` CSV output, decoding each row's JSON
+     * column. Used for licensing, where every assignment is one row.
+     *
+     * @return list<array<string,mixed>>
+     */
+    private static function allCsvJsonRows(string $stdout): array
+    {
+        $lines = preg_split('/\r\n|\n|\r/', trim($stdout)) ?: [];
+        $jsonCol = null;
+        $out = [];
+        foreach ($lines as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            $cells = str_getcsv($line, ',', '"', '');
+            if ($jsonCol === null) {
+                $idx = array_search('JSON', $cells, true);
+                if ($idx === false) {
+                    return $out;
+                }
+                $jsonCol = (int) $idx;
+                continue;
+            }
+            $data = json_decode((string) ($cells[$jsonCol] ?? ''), true);
+            if (is_array($data)) {
+                $out[] = $data;
+            }
+        }
+        return $out;
     }
 
     private function unreachable(): string

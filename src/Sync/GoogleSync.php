@@ -91,6 +91,7 @@ final class GoogleSync
         $actor ??= 'system:google_sync';
         $counts = [
             'eligible' => 0, 'created' => 0, 'pushed' => 0, 'suspended' => 0, 'moved' => 0,
+            'licensed' => 0, 'unlicensed' => 0, 'license_blocked' => 0,
             'in_sync' => 0, 'no_email' => 0, 'no_account' => 0, 'manual_override' => 0, 'errors' => 0,
         ];
 
@@ -103,6 +104,17 @@ final class GoogleSync
         $plan = [];           // list of ['person_id','action','email']
         $linked = 0;          // people with a live Google account (denominator for the guard)
         $suspendPlanned = 0;
+
+        // Licensing (Education Plus staff). One usage lookup drives both the
+        // per-user "has a license?" check and the seat budget for the whole run.
+        $licenseOn = $this->google->licenseEnabled();
+        $licUsers = null;     // set of assigned users (email/id, lowercased), or null=unknown
+        $seatsLeft = null;    // remaining seats this run, or null=uncapped/unknown
+        if ($licenseOn) {
+            $usage = $this->google->licenseUsage();
+            $licUsers = $usage['users'];
+            $seatsLeft = $usage['available']; // null when uncapped or unknown
+        }
 
         $people = $this->eligiblePeople();
         if ($log !== null) {
@@ -136,6 +148,39 @@ final class GoogleSync
                 }
                 $plan[] = ['person_id' => $pid, 'action' => $decision['action'],
                     'email' => $decision['email'], 'detail' => $decision['detail']];
+            }
+
+            // ---- Licensing reconciliation (separate plan entry per person) ----
+            if (!$licenseOn) {
+                continue;
+            }
+            $active = in_array((string) ($person['status'] ?? ''), ['active', 'pending'], true);
+            $found = !empty($corr['found']);
+            $held = $this->licenseHeld($licUsers, $corr);
+            $email = $decision['email'];
+
+            if ($active && GoogleProvisioner::isFacultyStaff($person)) {
+                // A create will license the new account itself (doCreate) — budget
+                // for it so we don't over-assign; the found-but-unlicensed case gets
+                // its own 'license' action.
+                if ($decision['action'] === 'create') {
+                    $seatsLeft = $this->consumeSeat($seatsLeft);
+                } elseif ($found && $held === false) {
+                    if ($seatsLeft === null || $seatsLeft > 0) {
+                        $plan[] = ['person_id' => $pid, 'action' => 'license', 'email' => $email, 'detail' => 'assign Education Plus license'];
+                        $counts['licensed']++;
+                        $seatsLeft = $this->consumeSeat($seatsLeft);
+                        $log?->__invoke('scan', ['person_id' => $pid, 'email' => $email, 'bucket' => 'licensed', 'action' => 'license', 'detail' => 'assign Education Plus license', 'message' => '']);
+                    } else {
+                        $counts['license_blocked']++;
+                        $log?->__invoke('scan', ['person_id' => $pid, 'email' => $email, 'bucket' => 'license_blocked', 'action' => null, 'detail' => 'no license seat available', 'message' => '']);
+                    }
+                }
+            } elseif (!$active && $found && $held === true) {
+                // Suspended/terminated account still holding a seat → release it.
+                $plan[] = ['person_id' => $pid, 'action' => 'unlicense', 'email' => $email, 'detail' => 'remove Education Plus license'];
+                $counts['unlicensed']++;
+                $log?->__invoke('scan', ['person_id' => $pid, 'email' => $email, 'bucket' => 'unlicensed', 'action' => 'unlicense', 'detail' => 'remove Education Plus license', 'message' => '']);
             }
         }
 
@@ -252,6 +297,34 @@ final class GoogleSync
         $cur  = trim($curGiven . ' ' . $curFamily);
         $want = trim($wantGiven . ' ' . $wantFamily);
         return 'name ' . ($cur === '' ? '(none)' : $cur) . '→' . $want;
+    }
+
+    /**
+     * Whether the correlated account holds the license, per the run's usage set:
+     * true/false when the set is known, null when usage couldn't be read (unknown —
+     * the caller then leaves licensing alone rather than acting on a guess).
+     *
+     * @param array<string,true>|null $set
+     * @param array<string,mixed> $corr
+     */
+    private function licenseHeld(?array $set, array $corr): ?bool
+    {
+        if ($set === null) {
+            return null;
+        }
+        foreach ([(string) ($corr['googleId'] ?? ''), (string) ($corr['primaryEmail'] ?? '')] as $k) {
+            $k = strtolower(trim($k));
+            if ($k !== '' && isset($set[$k])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Decrement the seat budget by one (null = uncapped, stays null). */
+    private function consumeSeat(?int $seatsLeft): ?int
+    {
+        return $seatsLeft === null ? null : max(0, $seatsLeft - 1);
     }
 
     /** An "OU /old→/new" delta between two OU paths (normalized for display). */

@@ -58,17 +58,29 @@ final class GoogleSyncTest extends TestCase
      * disabled-OU move. Search (`print users`) stays empty.
      *
      * @param array<string,mixed> $user
+     * @param list<string> $licensedEmails users the SKU is already assigned to
+     *        (answers `print licenses`); the rest read as unlicensed.
      */
-    private function syncWithUser(PDO $db, array $user): GoogleSync
+    private function syncWithUser(PDO $db, array $user, array $licensedEmails = []): GoogleSync
     {
-        $runner = static function (array $argv) use ($user): ?array {
+        // `print licenses …` CSV: one JSON column, one row per assignment.
+        $rows = ['JSON'];
+        foreach ($licensedEmails as $em) {
+            $rows[] = '"' . str_replace('"', '""', (string) json_encode(['userId' => $em])) . '"';
+        }
+        $licenseCsv = implode("\n", $rows) . "\n";
+
+        $runner = static function (array $argv) use ($user, $licenseCsv): ?array {
             if (in_array('info', $argv, true) && in_array('user', $argv, true)) {
                 return ['status' => 0, 'stdout' => (string) json_encode($user), 'stderr' => ''];
+            }
+            if (in_array('print', $argv, true) && in_array('licenses', $argv, true)) {
+                return ['status' => 0, 'stdout' => $licenseCsv, 'stderr' => ''];
             }
             if (in_array('print', $argv, true)) {
                 return ['status' => 0, 'stdout' => "primaryEmail,JSON\n", 'stderr' => ''];
             }
-            // Writes (update/move/suspend) succeed and echo the key back.
+            // Writes (update/move/suspend/add|delete license) succeed.
             return ['status' => 0, 'stdout' => (string) json_encode($user), 'stderr' => ''];
         };
         $gam = new GamClient(gamPath: 'gam', configDir: '', timeout: 5, runner: $runner);
@@ -139,6 +151,102 @@ final class GoogleSyncTest extends TestCase
 
         self::assertSame(0, $result['counts']['pushed']);
         self::assertSame(1, $result['counts']['in_sync']);
+    }
+
+    public function testActiveFacultyMissingLicenseIsAssigned(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        try {
+            $db = $this->db(); // person 1 = active faculty, John Smith
+            $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+            // Found, active, in sync on name/OU, but NOT in the license set.
+            $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                     'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+            $result = $this->syncWithUser($db, $user, licensedEmails: [])->run(dryRun: true, actor: 't', onlyPersonIds: [1]);
+
+            self::assertSame(1, $result['counts']['licensed']);
+            self::assertContains('license', array_column($result['actions'], 'action'));
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+        }
+    }
+
+    public function testActiveFacultyAlreadyLicensedGetsNoLicenseAction(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        try {
+            $db = $this->db();
+            $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+            $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                     'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+            // Already licensed (by primaryEmail).
+            $result = $this->syncWithUser($db, $user, licensedEmails: ['jsmith@x.org'])->run(dryRun: true, actor: 't', onlyPersonIds: [1]);
+
+            self::assertSame(0, $result['counts']['licensed']);
+            self::assertNotContains('license', array_column($result['actions'], 'action'));
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+        }
+    }
+
+    public function testSuspendedLicensedUserHasLicenseRemoved(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        try {
+            $db = $this->db();
+            $db->exec("UPDATE person SET status='terminated' WHERE person_id=1");
+            $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+            // Already suspended (so no suspend action), in the disabled OU, still licensed.
+            $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => true,
+                     'orgUnitPath' => '/tcs/faculty/disabled', 'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+            $result = $this->syncWithUser($db, $user, licensedEmails: ['jsmith@x.org'])->run(dryRun: true, actor: 't', onlyPersonIds: [1]);
+
+            self::assertSame(1, $result['counts']['unlicensed']);
+            self::assertContains('unlicense', array_column($result['actions'], 'action'));
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+        }
+    }
+
+    public function testLicenseBlockedWhenNoSeatsAvailable(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        putenv('GOOGLE_LICENSE_SEATS=1'); // one seat, already taken by someone else
+        try {
+            $db = $this->db();
+            $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+            $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                     'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+            // The single seat is used by a different account → none left for jsmith.
+            $result = $this->syncWithUser($db, $user, licensedEmails: ['someoneelse@x.org'])->run(dryRun: true, actor: 't', onlyPersonIds: [1]);
+
+            self::assertSame(0, $result['counts']['licensed']);
+            self::assertSame(1, $result['counts']['license_blocked']);
+            self::assertNotContains('license', array_column($result['actions'], 'action'));
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+            putenv('GOOGLE_LICENSE_SEATS');
+        }
+    }
+
+    public function testLicenseUntouchedWhenFeatureOff(): void
+    {
+        $db = $this->db(); // GOOGLE_LICENSE_ENABLED unset
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+        $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                 'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+        $result = $this->syncWithUser($db, $user)->run(dryRun: true, actor: 't', onlyPersonIds: [1]);
+
+        self::assertSame(0, $result['counts']['licensed']);
+        self::assertSame(0, $result['counts']['unlicensed']);
     }
 
     public function testVerboseLogStreamsStartAndPerPersonScan(): void

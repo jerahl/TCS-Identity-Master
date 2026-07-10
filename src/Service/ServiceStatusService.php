@@ -140,9 +140,12 @@ final class ServiceStatusService
      */
     private function googleSync(): array
     {
+        $licenseOn = Config::bool('GOOGLE_LICENSE_ENABLED', false) && trim((string) Config::get('GOOGLE_LICENSE_SKU', '')) !== '';
+        $seats = (int) Config::get('GOOGLE_LICENSE_SEATS', '0');
         $facts = [
             ['Domain', (string) (Config::get('GOOGLE_DOMAIN', '') ?: '(not set)')],
             ['Disabled OU', (string) (Config::get('GOOGLE_DISABLED_OU', '/tcs/faculty/disabled') ?: '(off)')],
+            ['Licensing', $licenseOn ? ('on · SKU ' . (string) Config::get('GOOGLE_LICENSE_SKU', '') . ($seats > 0 ? " · {$seats} seats" : ' · uncapped')) : 'off'],
         ];
         if (!(new GoogleWorkspaceService())->configured()) {
             return $this->entry('google_sync', 'Google Workspace sync', 'disabled',

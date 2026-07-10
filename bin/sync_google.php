@@ -126,12 +126,14 @@ if ($runLog !== null) {
     $status = ($result['blocked'] || $c['errors'] > 0) ? 'failed' : 'complete';
     $summary = $result['blocked']
         ? (string) ($result['note'] ?? 'blocked by guardrail')
-        : sprintf('created %d · pushed %d · suspended %d · moved %d · errors %d',
-            $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['errors']);
+        : sprintf('created %d · pushed %d · suspended %d · moved %d · licensed %d · unlicensed %d · errors %d',
+            $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['licensed'], $c['unlicensed'], $c['errors']);
     $runLog->finish($runId, $status, $c, $summary);
 }
 echo 'Google Workspace sync' . ($result['dry_run'] ? " (DRY RUN)\n" : "\n");
 echo "  eligible {$c['eligible']}  ·  created {$c['created']}  ·  pushed {$c['pushed']}  ·  suspended {$c['suspended']}  ·  moved {$c['moved']}\n";
+echo "  licensed {$c['licensed']}  ·  unlicensed {$c['unlicensed']}"
+    . ($c['license_blocked'] > 0 ? "  ·  license-BLOCKED {$c['license_blocked']} (no seats)" : '') . "\n";
 echo "  in-sync {$c['in_sync']}  ·  no-email {$c['no_email']}  ·  no-account {$c['no_account']}"
     . "  ·  manual-override {$c['manual_override']}  ·  errors {$c['errors']}\n";
 if ($result['blocked']) {
