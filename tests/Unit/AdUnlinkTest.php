@@ -66,6 +66,20 @@ final class AdUnlinkTest extends TestCase
         self::assertStringContainsString('removed', (string) $detail);
     }
 
+    public function testRemovesAdCrosswalkEvenWithNoUsername(): void
+    {
+        // A mis-correlation: the person has NO minted username but an active AD
+        // crosswalk to the wrong account. Unlink must still remove that link.
+        $db = $this->db();
+        $db->exec("INSERT INTO person (person_id, username, email, upn, username_locked, status)
+                   VALUES (1, NULL, NULL, NULL, 0, 'active')");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1, 'ad', '8aad594f-6f76-4de0-81ac-85ded4350674', 1)");
+
+        $notes = $this->writer($db)->unlinkUsername(1, 'admin', 'wrong correlation');
+        self::assertNotEmpty($notes);
+        self::assertSame(0, (int) $db->query("SELECT COUNT(*) FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
+    }
+
     public function testNoOpWhenNothingLinked(): void
     {
         $db = $this->db();

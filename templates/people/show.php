@@ -95,8 +95,21 @@ $eventTitle = [
           <?php endif; ?>
         </div>
 
-        <?php if (!empty($canAdmin) && $p['username']): ?>
+        <?php
+        // Is there an AD crosswalk link (any state) to unlink? Unlink must be
+        // available even when no username was minted — a bad correlation links a
+        // GUID with no username, and that's exactly what needs removing.
+        $hasAdLink = false;
+        foreach (($sourceIds ?? []) as $__sid) {
+            if (strtolower((string) ($__sid['system'] ?? '')) === 'ad') {
+                $hasAdLink = true;
+                break;
+            }
+        }
+        ?>
+        <?php if (!empty($canAdmin) && ($p['username'] || $hasAdLink)): ?>
         <div class="identity-actions" style="margin-top:12px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; border-top:1px solid #E4EBF0; padding-top:12px;">
+          <?php if ($p['username']): ?>
           <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/rename')) ?>"
                 onsubmit="return confirm('Schedule a username/email rename for this person? The employee, principal, and IT will be emailed, and the change applies after the notice period.');"
                 style="display:flex; gap:6px; align-items:center;">
@@ -104,12 +117,13 @@ $eventTitle = [
             <input type="text" name="old_name" class="input" placeholder="previous name (optional)" style="width:180px;">
             <button type="submit" class="btn btn--sm">Rename (last-name change)</button>
           </form>
+          <?php endif; ?>
           <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/unlink')) ?>"
-                onsubmit="return confirm('Unlink this identity? Clears the username/email/UPN and the lock and REMOVES the AD objectGUID crosswalk so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id.');"
+                onsubmit="return confirm('Unlink this identity? Removes the AD objectGUID crosswalk (and clears any username/email/UPN + the lock) so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id / bad correlation.');"
                 style="display:flex; gap:6px; align-items:center;">
             <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
             <input type="text" name="reason" class="input" placeholder="reason (e.g. HR typo)" style="width:160px;">
-            <button type="submit" class="btn btn--sm btn--danger">Unlink username</button>
+            <button type="submit" class="btn btn--sm btn--danger"><?= $p['username'] ? 'Unlink username' : 'Unlink AD account' ?></button>
           </form>
         </div>
         <?php endif; ?>
