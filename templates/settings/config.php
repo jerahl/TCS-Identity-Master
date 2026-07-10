@@ -15,6 +15,15 @@
   <a class="tab" href="<?= e(url('/settings/email-templates')) ?>">Email templates</a>
 </div>
 
+<?php if (isset($storeReady) && !$storeReady): ?>
+<div class="warn-banner" style="margin-bottom:16px;">
+  <div class="warn-banner__title">Settings store not set up</div>
+  <p style="margin:4px 0 0; font-size:13px;">The <span class="mono">app_setting</span> table doesn't exist yet, so saves will fail.
+    Run database migrations to create it: <span class="mono">php bin/migrate.php</span> (or <span class="mono">composer migrate</span>).
+    Until then the values below reflect <span class="mono">.env</span> / defaults only.</p>
+</div>
+<?php endif; ?>
+
 <div class="panel" style="margin-bottom:16px;">
   <p class="panel__note" style="margin:0;">
     <strong>Secrets are not editable here.</strong> Adaxes tokens, service-account passwords, and database / SAML /
