@@ -68,10 +68,12 @@ final class GoogleSync
      * value). Signature: fn(string $event, array $data), where $event is:
      *   - 'start'  once before the scan — data: total (eligible count)
      *   - 'scan'   once per person as it's correlated — data: person_id, email,
-     *              bucket, action (null when nothing to do), message (error text
-     *              when bucket='error'). Emitting per person, not just per action,
-     *              keeps the (slow, one-remote-lookup-per-person) scan visibly live.
+     *              bucket, action (null when nothing to do), detail (what a write
+     *              would change: name/OU deltas, destination OU), message (error
+     *              text when bucket='error'). Emitting per person, not just per
+     *              action, keeps the (slow, one-remote-lookup-per-person) scan live.
      *   - 'result' once per applied action on a real run — adds ok, message
+     *              (and carries the plan item's action/email/detail)
      *
      * $onlyPersonIds, when non-empty, restricts the whole run to those person_ids —
      * for exercising a few users live without touching everyone (test cohort).
@@ -125,13 +127,15 @@ final class GoogleSync
             $counts[$decision['bucket']]++;
             if ($log !== null) {
                 $log('scan', ['person_id' => $pid, 'email' => $decision['email'],
-                    'bucket' => $decision['bucket'], 'action' => $decision['action'], 'message' => '']);
+                    'bucket' => $decision['bucket'], 'action' => $decision['action'],
+                    'detail' => $decision['detail'], 'message' => '']);
             }
             if ($decision['action'] !== null) {
                 if ($decision['action'] === 'suspend') {
                     $suspendPlanned++;
                 }
-                $plan[] = ['person_id' => $pid, 'action' => $decision['action'], 'email' => $decision['email']];
+                $plan[] = ['person_id' => $pid, 'action' => $decision['action'],
+                    'email' => $decision['email'], 'detail' => $decision['detail']];
             }
         }
 
@@ -167,10 +171,13 @@ final class GoogleSync
 
     /**
      * Decide the reconciliation action for one person given their correlation.
+     * `detail` describes exactly what a write would change (name and/or OU deltas,
+     * the destination OU) so --verbose can show what's being pushed, not just that
+     * something is.
      *
      * @param array<string,mixed> $person
      * @param array<string,mixed> $corr
-     * @return array{action:?string, bucket:string, email:string}
+     * @return array{action:?string, bucket:string, email:string, detail:string}
      */
     private function decide(array $person, array $corr): array
     {
@@ -184,62 +191,74 @@ final class GoogleSync
         if ($active) {
             if (!$found) {
                 if (trim((string) ($person['email'] ?? '')) === '') {
-                    return ['action' => null, 'bucket' => 'no_email', 'email' => ''];
+                    return ['action' => null, 'bucket' => 'no_email', 'email' => '', 'detail' => ''];
                 }
-                return ['action' => 'create', 'bucket' => 'created', 'email' => (string) $person['email']];
+                $ou = $this->provisioner->activeOrgUnitFor($person);
+                $detail = 'new account' . ($ou !== null ? ' in ' . GoogleWorkspaceService::normalizeOu($ou) : '');
+                return ['action' => 'create', 'bucket' => 'created', 'email' => (string) $person['email'], 'detail' => $detail];
             }
             // Linked. A golden-active account that Google shows suspended is a
             // manual/out-of-band override — the batch never auto-restores.
             if ($corr['suspended'] === true) {
-                return ['action' => null, 'bucket' => 'manual_override', 'email' => $email];
+                return ['action' => null, 'bucket' => 'manual_override', 'email' => $email, 'detail' => ''];
             }
             // Push on name drift OR OU drift — a push writes name + the building's
             // OU, so it also relocates a user whose OU no longer matches their school.
-            if ($this->hasNameDrift($person, $attrs) || $this->hasActiveOuDrift($person, $currentOu)) {
-                return ['action' => 'push', 'bucket' => 'pushed', 'email' => $email];
+            $parts = [];
+            $nameDetail = $this->nameDetail($person, $attrs);
+            if ($nameDetail !== '') {
+                $parts[] = $nameDetail;
             }
-            return ['action' => null, 'bucket' => 'in_sync', 'email' => $email];
+            $desiredOu = $this->provisioner->activeOrgUnitFor($person);
+            if ($desiredOu !== null && !GoogleProvisioner::ouEquals($currentOu, $desiredOu)) {
+                $parts[] = $this->ouDetail($currentOu, $desiredOu);
+            }
+            if ($parts !== []) {
+                return ['action' => 'push', 'bucket' => 'pushed', 'email' => $email, 'detail' => implode('; ', $parts)];
+            }
+            return ['action' => null, 'bucket' => 'in_sync', 'email' => $email, 'detail' => ''];
         }
 
         // disabled / terminated
         if (!$found) {
-            return ['action' => null, 'bucket' => 'no_account', 'email' => ''];
+            return ['action' => null, 'bucket' => 'no_account', 'email' => '', 'detail' => ''];
         }
-        // Not suspended yet → suspend (which also moves to the disabled OU).
+        $disabledOu = $this->provisioner->disabledOu();
+        // Not suspended yet → suspend (which also moves to the disabled OU). The
+        // action name already says "suspend"; detail carries only the OU move.
         if ($corr['suspended'] !== true) {
-            return ['action' => 'suspend', 'bucket' => 'suspended', 'email' => $email];
+            $detail = ($disabledOu !== '' && !GoogleProvisioner::ouEquals($currentOu, $disabledOu))
+                ? $this->ouDetail($currentOu, $disabledOu)
+                : '';
+            return ['action' => 'suspend', 'bucket' => 'suspended', 'email' => $email, 'detail' => $detail];
         }
         // Already suspended but not in the disabled OU → relocate it there.
-        $disabledOu = $this->provisioner->disabledOu();
         if ($disabledOu !== '' && !GoogleProvisioner::ouEquals($currentOu, $disabledOu)) {
-            return ['action' => 'move_disabled', 'bucket' => 'moved', 'email' => $email];
+            return ['action' => 'move_disabled', 'bucket' => 'moved', 'email' => $email, 'detail' => $this->ouDetail($currentOu, $disabledOu)];
         }
-        return ['action' => null, 'bucket' => 'in_sync', 'email' => $email];
+        return ['action' => null, 'bucket' => 'in_sync', 'email' => $email, 'detail' => ''];
     }
 
-    /**
-     * True when an active person's Google OU differs from their building's
-     * (school.google_ou). Only signals drift when a desired OU is resolvable — a
-     * person with no school / no google_ou is left where they are.
-     *
-     * @param array<string,mixed> $person
-     */
-    private function hasActiveOuDrift(array $person, string $currentOu): bool
+    /** A "name Old Name→New Name" delta, or '' when the name matches. */
+    private function nameDetail(array $person, array $attrs): string
     {
-        $desired = $this->provisioner->activeOrgUnitFor($person);
-        if ($desired === null) {
-            return false;
+        $curGiven  = trim((string) ($attrs['givenname'] ?? ''));
+        $curFamily = trim((string) ($attrs['familyname'] ?? ''));
+        $wantGiven  = trim((string) ($person['first_name'] ?? ''));
+        $wantFamily = trim((string) ($person['last_name'] ?? ''));
+        if ($curGiven === $wantGiven && $curFamily === $wantFamily) {
+            return '';
         }
-        return !GoogleProvisioner::ouEquals($currentOu, $desired);
+        $cur  = trim($curGiven . ' ' . $curFamily);
+        $want = trim($wantGiven . ' ' . $wantFamily);
+        return 'name ' . ($cur === '' ? '(none)' : $cur) . '→' . $want;
     }
 
-    /** True when the golden first/last name differs from what Google holds. */
-    private function hasNameDrift(array $person, array $attrs): bool
+    /** An "OU /old→/new" delta between two OU paths (normalized for display). */
+    private function ouDetail(string $current, string $desired): string
     {
-        $given = trim((string) ($attrs['givenname'] ?? ''));
-        $family = trim((string) ($attrs['familyname'] ?? ''));
-        return $given !== trim((string) ($person['first_name'] ?? ''))
-            || $family !== trim((string) ($person['last_name'] ?? ''));
+        $cur = trim($current) === '' ? '(unknown)' : GoogleWorkspaceService::normalizeOu($current);
+        return 'OU ' . $cur . '→' . GoogleWorkspaceService::normalizeOu($desired);
     }
 
     /** @return array<int,array<string,mixed>> people to reconcile. */

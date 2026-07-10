@@ -160,11 +160,42 @@ final class GoogleSyncTest extends TestCase
         self::assertSame(1, $events[1][1]['person_id']);
         self::assertSame('create', $events[1][1]['action']);
         self::assertSame('created', $events[1][1]['bucket']);
+        self::assertSame('new account', $events[1][1]['detail']); // no school → no OU suffix
         self::assertSame('scan', $events[2][0]);
         self::assertSame(2, $events[2][1]['person_id']);
         self::assertNull($events[2][1]['action']);            // no-op still emits a scan line
         self::assertSame('no_email', $events[2][1]['bucket']);
         self::assertCount(3, $events);
+    }
+
+    public function testVerboseScanDetailShowsNameAndOuDeltasForAPush(): void
+    {
+        $db = $this->db();
+        $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, google_ou TEXT)');
+        $db->exec("INSERT INTO school (school_id, name, google_ou) VALUES (7, 'Central Office', '/tcs/faculty/CO')");
+        $db->exec("UPDATE person SET primary_school_id=7 WHERE person_id=1");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+
+        // Google has a stale first name AND a stale OU; golden is John Smith / CO.
+        $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                 'orgUnitPath' => '/tcs/faculty/OLD', 'name' => ['givenName' => 'Jon', 'familyName' => 'Smith']];
+
+        $events = [];
+        $log = static function (string $event, array $data) use (&$events): void {
+            $events[] = [$event, $data];
+        };
+        $this->syncWithUser($db, $user)->run(dryRun: true, actor: 'tester', log: $log, onlyPersonIds: [1]);
+
+        $scan = null;
+        foreach ($events as [$name, $data]) {
+            if ($name === 'scan' && ($data['action'] ?? null) === 'push') {
+                $scan = $data;
+                break;
+            }
+        }
+        self::assertNotNull($scan, 'expected a push scan event');
+        self::assertStringContainsString('name Jon Smith→John Smith', $scan['detail']);
+        self::assertStringContainsString('OU /tcs/faculty/OLD→/tcs/faculty/CO', $scan['detail']);
     }
 
     public function testRunWithoutLogStillPlans(): void

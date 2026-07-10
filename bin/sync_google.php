@@ -78,19 +78,25 @@ $log = $verbose ? static function (string $event, array $d) use ($dryRun): void 
         fwrite(STDOUT, "Scanning {$n} eligible " . ($n === 1 ? 'person' : 'people') . "…\n");
     } elseif ($event === 'scan') {
         $email = ($d['email'] ?? '') !== '' ? (string) $d['email'] : '(no email)';
+        $detail = (string) ($d['detail'] ?? '');
         if (($d['bucket'] ?? '') === 'error') {
             $note = 'ERROR' . (($d['message'] ?? '') !== '' ? ': ' . (string) $d['message'] : '');
         } elseif (($d['action'] ?? null) !== null) {
             $note = $dryRun ? 'would ' . (string) $d['action'] : (string) $d['action'] . ' (planned)';
+            if ($detail !== '') {
+                $note .= ' — ' . $detail;   // WHAT is being pushed/moved/created
+            }
         } else {
             $note = str_replace('_', '-', (string) $d['bucket']);
         }
         fwrite(STDOUT, sprintf("  #%-6d %-30s %s\n", (int) $d['person_id'], $email, $note));
     } elseif ($event === 'result') {
         $email = ($d['email'] ?? '') !== '' ? (string) $d['email'] : '(no email)';
+        $detail = (string) ($d['detail'] ?? '');
         $status = !empty($d['ok']) ? 'ok' : 'FAILED';
         $msg = ($d['message'] ?? '') !== '' ? ' — ' . (string) $d['message'] : '';
-        fwrite(STDOUT, sprintf("    -> %-8s %s: %s%s\n", (string) $d['action'], $email, $status, $msg));
+        $what = $detail !== '' ? ' [' . $detail . ']' : '';
+        fwrite(STDOUT, sprintf("    -> %-8s %s%s: %s%s\n", (string) $d['action'], $email, $what, $status, $msg));
     }
     fflush(STDOUT);
 } : null;
