@@ -9,6 +9,7 @@ use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AdaxesWriter;
 use App\Service\AuditService;
+use App\Service\GoogleWorkspaceService;
 use App\Service\GroupPolicy;
 use App\Service\UsernameMinter;
 use PDO;
@@ -273,30 +274,57 @@ final class AdaxesReconciler
                 continue;
             }
 
+            $adAttrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
             $attrs = self::editDelta($env['comparison'] ?? []);
-            // Operational drift beyond the identity comparison: title and
-            // department (department drives the per-school Everyone groups, so a
+            // Operational drift beyond the identity comparison: title/department and
+            // their mirrors (department drives the per-school Everyone groups, so a
             // school move MUST propagate or downstream group logic breaks).
-            $attrs += $this->operationalDrift($p, is_array($env['attributes'] ?? null) ? $env['attributes'] : []);
-            if ($attrs === []) {
-                $out['noop']++;
-                continue;
+            $attrs += $this->operationalDrift($p, $adAttrs);
+            // OU drift: the container the person SHOULD live in vs. where AD has them
+            // (e.g. a bus aide created under a building that must move to OU=trans).
+            $moveTo = $this->ouMoveTarget($p, $adAttrs);
+
+            $acted = false;
+
+            if ($attrs !== []) {
+                $acted = true;
+                if (!$apply) {
+                    $this->item($out, $pid, $name, 'edit', 'would-edit', 'push ' . self::attrsSummary($attrs));
+                } else {
+                    $res = $this->writer->modify($guid, $attrs);
+                    if (!$res['ok']) {
+                        $out['errors']++;
+                        $this->item($out, $pid, $name, 'edit', 'error', (string) $res['error']);
+                    } else {
+                        $this->audit->log('person', $pid, 'update', ['ad_attrs' => 'drift'], $res['changed'], self::ACTOR);
+                        $this->audit->lifecycle($pid, 'update', ['summary' => 'AD attributes updated via Adaxes: ' . self::attrsSummary($res['changed']) . '.'], self::ACTOR);
+                        $out['applied']++;
+                        $this->item($out, $pid, $name, 'edit', 'edited', self::attrsSummary($res['changed']));
+                    }
+                }
             }
 
-            if (!$apply) {
-                $this->item($out, $pid, $name, 'edit', 'would-edit', 'push ' . self::attrsSummary($attrs));
-                continue;
+            if ($moveTo !== null) {
+                $acted = true;
+                if (!$apply) {
+                    $this->item($out, $pid, $name, 'edit', 'would-move', 'move to ' . $moveTo);
+                } else {
+                    $res = $this->writer->move($guid, $moveTo);
+                    if (!$res['ok']) {
+                        $out['errors']++;
+                        $this->item($out, $pid, $name, 'edit', 'error', 'move: ' . (string) $res['error']);
+                    } else {
+                        $this->audit->log('person', $pid, 'update', ['ad_ou' => 'move'], ['container' => $moveTo], self::ACTOR);
+                        $this->audit->lifecycle($pid, 'update', ['summary' => 'AD account moved to ' . $moveTo . ' via Adaxes.'], self::ACTOR);
+                        $out['applied']++;
+                        $this->item($out, $pid, $name, 'edit', 'moved', 'to ' . $moveTo);
+                    }
+                }
             }
-            $res = $this->writer->modify($guid, $attrs);
-            if (!$res['ok']) {
-                $out['errors']++;
-                $this->item($out, $pid, $name, 'edit', 'error', (string) $res['error']);
-                continue;
+
+            if (!$acted) {
+                $out['noop']++;
             }
-            $this->audit->log('person', $pid, 'update', ['ad_attrs' => 'drift'], $res['changed'], self::ACTOR);
-            $this->audit->lifecycle($pid, 'update', ['summary' => 'AD attributes updated via Adaxes: ' . self::attrsSummary($res['changed']) . '.'], self::ACTOR);
-            $out['applied']++;
-            $this->item($out, $pid, $name, 'edit', 'edited', self::attrsSummary($res['changed']));
         }
 
         return $out;
@@ -690,13 +718,12 @@ final class AdaxesReconciler
         // load-bearing downstream — the per-school "Everyone" groups match on it —
         // so it is always the building name (Bus Drivers override to the
         // transportation department).
-        $title = $this->desiredTitle($p);
-        if ($title !== '') {
-            $attrs['title'] = $title;
-        }
-        $dept = $this->desiredDepartment($p);
-        if ($dept !== '') {
-            $attrs['department'] = $dept;
+        // Title drives AD `title` and mirrors into `description`; department drives
+        // AD `department` and mirrors into `physicalDeliveryOfficeName` (Office);
+        // `info` (Notes) carries the person's Google Workspace email. These mirror
+        // OneSync's default mappings so the two agree.
+        foreach ($this->desiredMappings($p, $username, $email) as $k => $v) {
+            $attrs[$k] = $v;
         }
         // Account expiration = the position end date, when one is set. AD's
         // accountExpires is a Windows FILETIME; midnight UTC of the end date reads
@@ -730,7 +757,65 @@ final class AdaxesReconciler
     }
 
     /**
-     * Title/department drift for the edit phase: the desired values that are
+     * The IDM-authoritative operational AD attributes for a person (title,
+     * department, and the derived mirrors) — every one non-empty. Shared by create
+     * (initial values) and edit (drift target) so both stay identical:
+     *
+     *   title                        ← job title
+     *   description                  ← job title (mirror)
+     *   department                   ← building name (transportation staff overridden)
+     *   physicalDeliveryOfficeName   ← same as department (Office)
+     *   info                         ← the person's Google Workspace email (Notes)
+     *
+     * $username/$email let create pass the freshly-minted values (the golden record
+     * isn't stamped yet); edit omits them and the person row carries username/email.
+     *
+     * @param array<string,mixed> $p
+     * @return array<string,string>
+     */
+    private function desiredMappings(array $p, ?string $username = null, ?string $email = null): array
+    {
+        $out = [];
+        $title = $this->desiredTitle($p);
+        if ($title !== '') {
+            $out['title'] = $title;
+            $out['description'] = $title;
+        }
+        $dept = $this->desiredDepartment($p);
+        if ($dept !== '') {
+            $out['department'] = $dept;
+            $out['physicalDeliveryOfficeName'] = $dept;
+        }
+        $gmail = $this->googleEmail($p, $username, $email);
+        if ($gmail !== '') {
+            $out['info'] = $gmail;
+        }
+        return $out;
+    }
+
+    /**
+     * The person's Google Workspace email (<username>@GOOGLE_DOMAIN via the shared
+     * convention). '' when GOOGLE_DOMAIN isn't configured — we only write `info`
+     * when we can derive a REAL Google address, never the on-prem golden email. On
+     * create the minted username/email are passed explicitly (the row isn't stamped
+     * yet).
+     *
+     * @param array<string,mixed> $p
+     */
+    private function googleEmail(array $p, ?string $username = null, ?string $email = null): string
+    {
+        $person = $p;
+        if ($username !== null && trim($username) !== '') {
+            $person['username'] = $username;
+        }
+        if ($email !== null && trim($email) !== '') {
+            $person['email'] = $email;
+        }
+        return GoogleWorkspaceService::googleEmailFor($person);
+    }
+
+    /**
+     * Operational-attribute drift for the edit phase: the desired mappings that are
      * non-empty and differ (case-insensitively) from what live AD holds. Kept in
      * sync because a school move must update department or the per-school
      * Everyone-group logic breaks downstream.
@@ -742,12 +827,12 @@ final class AdaxesReconciler
     private function operationalDrift(array $p, array $envAttrs): array
     {
         $out = [];
-        $desired = ['title' => $this->desiredTitle($p), 'department' => $this->desiredDepartment($p)];
-        foreach ($desired as $attr => $want) {
+        foreach ($this->desiredMappings($p) as $attr => $want) {
             if ($want === '') {
                 continue; // nothing authoritative to push
             }
-            $have = trim((string) ($envAttrs[$attr] ?? ''));
+            // envAttrs are lowercase-keyed (normalizeProperties); match on that.
+            $have = trim((string) ($envAttrs[strtolower($attr)] ?? ''));
             if (mb_strtolower($want) !== mb_strtolower($have)) {
                 $out[$attr] = $want;
             }
@@ -824,6 +909,61 @@ final class AdaxesReconciler
         }
         $parts[] = $adOu;
         return implode(',', array_merge($parts, $tail));
+    }
+
+    /**
+     * The destination container for an OU move, or null when no move is warranted:
+     * the account is already in the right OU, the desired placement can't be
+     * resolved (no AD_BASE_DN, no school.ad_ou), or AD didn't return a DN to compare.
+     * Compares the current DN's parent (everything past the RDN) against placement()
+     * case- and whitespace-insensitively so cosmetic DN differences don't churn.
+     *
+     * @param array<string,mixed>  $p
+     * @param array<string,string> $adAttrs normalized (lowercase-keyed) AD attributes
+     */
+    private function ouMoveTarget(array $p, array $adAttrs): ?string
+    {
+        if ($this->baseDn === '') {
+            return null; // can't form a full container DN to move into
+        }
+        $desired = $this->placement($p);
+        if ($desired === null) {
+            return null; // no resolvable placement (e.g. missing school.ad_ou)
+        }
+        $currentDn = trim((string) ($adAttrs['distinguishedname'] ?? ''));
+        if ($currentDn === '') {
+            return null; // AD didn't return a DN — nothing to compare against
+        }
+        $currentParent = self::parentDn($currentDn);
+        if ($currentParent === '' || self::dnEquals($currentParent, $desired)) {
+            return null; // already in the right container
+        }
+        return $desired;
+    }
+
+    /** A DN's parent container: everything after the first UNescaped comma. '' when none. */
+    private static function parentDn(string $dn): string
+    {
+        $len = strlen($dn);
+        for ($i = 0; $i < $len; $i++) {
+            if ($dn[$i] === ',' && ($i === 0 || $dn[$i - 1] !== '\\')) {
+                return trim(substr($dn, $i + 1));
+            }
+        }
+        return '';
+    }
+
+    /** DN equality, ignoring case and the optional spaces around commas/equals. */
+    private static function dnEquals(string $a, string $b): bool
+    {
+        return self::normalizeDn($a) === self::normalizeDn($b);
+    }
+
+    private static function normalizeDn(string $dn): string
+    {
+        $dn = (string) preg_replace('/\s*,\s*/', ',', trim($dn));
+        $dn = (string) preg_replace('/\s*=\s*/', '=', $dn);
+        return mb_strtolower($dn);
     }
 
     /**

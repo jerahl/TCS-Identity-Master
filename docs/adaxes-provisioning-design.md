@@ -47,7 +47,7 @@ The read-only leg already contains most of the machinery a writer needs:
 | Field-by-field golden↔AD diff | `AdaxesService::compareToGolden()` | drives the edit delta |
 | Username immutability + uniqueness | `person.username_locked`, `uq_person_username`, `uq_person_email` | mint collision guard |
 | Audit + lifecycle | `audit_log`, `lifecycle_event` (`create`/`update`/`disable`/`enable`) | every write |
-| OU placement | `school.ad_ou` (relative building OU, e.g. `OU=CO`) + `AD_BASE_DN` / `AD_PARENT_OU` / per-type leaf | create container |
+| OU placement | `school.ad_ou` (relative building OU, e.g. `OU=CO`) + `AD_BASE_DN` / `AD_PARENT_OU` / per-type leaf | create container + edit-phase move (`AdaxesWriter::move`) |
 | Dry-run / idempotent importer conventions | every `bin/import_*.php` | the reconciler |
 
 The correlation model is a 1:1 analog of OneSync's `correlation` controller
@@ -162,12 +162,27 @@ Push the diffs the verification panel already computes.
 - Reconciler extends to compute the delta from `compareToGolden()` and apply only
   fields that `differ`/`missing` on the AD side (never touch `sAMAccountName` —
   immutable).
-- **Also kept in sync: `title` and `department`.** OneSync writes both on every
-  account and `department` is load-bearing — all 22 per-school *Everyone* groups
-  match on it. Desired department = the building name (Bus Drivers override to
-  the transportation department); desired title = the primary assignment title.
-  A school move therefore propagates to `department`, or the Everyone-group
-  logic breaks downstream.
+- **Also kept in sync: the operational mappings.** OneSync writes these on every
+  account; IDM keeps them in sync (each is pushed only when non-empty and it
+  differs from AD):
+  - `title` ← primary assignment title, mirrored into **`description`**.
+  - `department` ← building name (Transportation staff overridden to the
+    transportation department), mirrored into **`physicalDeliveryOfficeName`**
+    (the AD *Office* field). `department` is load-bearing — all 22 per-school
+    *Everyone* groups match on it, so a school move must propagate here or the
+    Everyone-group logic breaks downstream.
+  - `info` (the AD *Notes* field) ← the person's Google Workspace email
+    (`<username>@GOOGLE_DOMAIN`); written only when `GOOGLE_DOMAIN` is set (we
+    never put the on-prem address in Notes).
+- **Also kept in sync: OU placement (moves).** The edit phase compares the
+  account's current container (the parent of its `distinguishedName`) against the
+  OU it *should* live in (the same `placement()` used on create) and, when they
+  differ, relocates it via `AdaxesWriter::move(objectGuid, containerDn)`. This
+  heals accounts that landed in the wrong OU — e.g. a bus aide created under a
+  building that now belongs in `OU=trans`. The comparison ignores case and the
+  optional spaces around DN separators, so cosmetic differences don't churn. The
+  move endpoint is version-specific (`ADAXES_MOVE_PATH`, defaults to
+  `api/directoryObjects/move`; supports an `{id}`-in-path shape too).
 - Same GUID-required rule.
 
 ### Phase 3 — Create + minting (retire OneSync for AD)
@@ -181,10 +196,12 @@ The final phase. IDM mints identity and creates the account.
   **no** linked GUID, and whose AD search returns **no** hit (a true net-new hire).
 - Attributes IDM sends on create: `sAMAccountName`, `userPrincipalName`, `mail`,
   `displayName` (preferred-or-legal first + last), `givenName`, `sn`, `employeeID`,
-  `title` (primary assignment title), `department` (building name; Bus Driver
-  override — see Phase 2 note on why department matters), and — when
-  `person.end_date` is set — `accountExpires` (the position end date as a Windows
-  FILETIME at midnight UTC, so it round-trips through the verify panel).
+  and the operational mappings kept in sync by Phase 2 — `title` + `description`
+  (primary assignment title), `department` + `physicalDeliveryOfficeName` (Office;
+  building name, Transportation override — see Phase 2 note on why department
+  matters), `info` (Notes; Google Workspace email, when `GOOGLE_DOMAIN` is set) —
+  and, when `person.end_date` is set, `accountExpires` (the position end date as a
+  Windows FILETIME at midnight UTC, so it round-trips through the verify panel).
 - **CN / name:** the object's name is sent top-level (it becomes the RDN), as
   `"First Last"` — OneSync's rule. CN must be unique within an OU, so on a live-AD
   `cn` hit the reconciler falls back to `"First Last (username)"`, which is

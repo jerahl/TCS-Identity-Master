@@ -277,6 +277,57 @@ final class AdaxesWriterTest extends TestCase
         self::assertFalse($w->removeFromGroup('CN=x', '')['ok']);
     }
 
+    public function testMovePostsObjectAndDestinationInBody(): void
+    {
+        // Default shape: POST /api/directoryObjects/move {newParent, object}.
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+
+        $guid = '2b6160e2-ad91-419c-8960-cf672c75528f';
+        $dest = 'OU=trans,OU=Faculty,DC=x';
+        $res = $w->move($guid, $dest);
+
+        self::assertTrue($res['ok']);
+        self::assertSame('POST', $captured['method']);
+        self::assertStringContainsString('/api/directoryObjects/move', $captured['url']);
+        self::assertStringNotContainsString('{id}', $captured['url']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame($dest, $body['newParent']);
+        self::assertSame($guid, $body['object']);
+    }
+
+    public function testMoveRequiresObjectAndDestination(): void
+    {
+        $w = $this->writer(['status' => 200, 'body' => '{}']);
+        self::assertFalse($w->move('', 'OU=x,DC=y')['ok']);
+        self::assertFalse($w->move('guid', '')['ok']);
+    }
+
+    public function testMovePutsObjectInPathWhenPathTemplateHasIdPlaceholder(): void
+    {
+        putenv('ADAXES_MOVE_PATH=api/directoryObjects/{id}/move');
+        putenv('ADAXES_MOVE_DESTINATION_FIELD=container');
+        try {
+            $captured = null;
+            $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+                $captured = ['method' => $method, 'url' => $url, 'body' => $body];
+                return ['status' => 200, 'body' => '{}'];
+            };
+            $w = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $fetch, 'test-token', true);
+            $guid = '2b6160e2-ad91-419c-8960-cf672c75528f';
+            $res = $w->move($guid, 'OU=trans,DC=x');
+
+            self::assertTrue($res['ok']);
+            self::assertStringContainsString('/api/directoryObjects/' . $guid . '/move', $captured['url']);
+            $body = json_decode((string) $captured['body'], true);
+            self::assertSame('OU=trans,DC=x', $body['container']);
+            self::assertArrayNotHasKey('object', $body); // object rode the path, not the body
+        } finally {
+            putenv('ADAXES_MOVE_PATH');
+            putenv('ADAXES_MOVE_DESTINATION_FIELD');
+        }
+    }
+
     public function testDedicatedDisablePathIsPostedWhenConfigured(): void
     {
         putenv('ADAXES_DISABLE_PATH=api/directoryObjects/disable');

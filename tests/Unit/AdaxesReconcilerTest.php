@@ -272,6 +272,128 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame([], $calls);
     }
 
+    public function testEditMovesAccountToTheComputedOuWhenContainerDrifts(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Jo', 'last_name' => 'Smith',
+            'username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us', 'upn' => 'jsmith@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Identity + department match golden; only the OU (container) is wrong.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'jsmith',
+            'userPrincipalName' => 'jsmith@tusc.k12.al.us',
+            'mail'              => 'jsmith@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'distinguishedName' => 'CN=Jo Smith,OU=OldBuilding,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['applied']);
+        self::assertContains('moved', array_column($res['edit']['items'], 'outcome'));
+
+        $move = null;
+        foreach ($calls as $c) {
+            if (str_contains($c['url'], '/move')) {
+                $move = $c;
+                break;
+            }
+        }
+        self::assertNotNull($move, 'expected a move call to the writer');
+        self::assertSame('POST', $move['method']);
+        $body = json_decode((string) $move['body'], true);
+        self::assertSame('OU=CO,OU=Faculty,' . self::BASE_DN, $body['newParent']);
+        self::assertSame(self::GUID1, $body['object']);
+    }
+
+    public function testEditDoesNotMoveWhenAlreadyInComputedOu(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Jo', 'last_name' => 'Smith',
+            'username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us', 'upn' => 'jsmith@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // DN already in the computed container — differing only in case/spacing,
+        // which normalizeDn() must treat as equal (no churn).
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'jsmith',
+            'userPrincipalName' => 'jsmith@tusc.k12.al.us',
+            'mail'              => 'jsmith@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'distinguishedName' => 'CN=Jo Smith, ou=co, ou=faculty, ' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['noop']);
+        self::assertSame([], $calls);
+    }
+
+    public function testEditPushesOfficeDescriptionAndInfoMappings(): void
+    {
+        putenv('GOOGLE_DOMAIN=example.edu');
+        try {
+            $db = $this->db();
+            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+            $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Teacher', 1)");
+            $this->seedPerson($db, [
+                'person_id' => 1, 'status' => 'active', 'first_name' => 'Jo', 'last_name' => 'Smith',
+                'username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us', 'upn' => 'jsmith@tusc.k12.al.us',
+                'primary_school_id' => 5,
+            ]);
+            $this->link($db, 1, self::GUID1);
+
+            $calls = [];
+            // In the right OU already, but missing the operational mappings.
+            $read = $this->read([self::GUID1 => [
+                'sAMAccountName'    => 'jsmith',
+                'userPrincipalName' => 'jsmith@tusc.k12.al.us',
+                'mail'              => 'jsmith@tusc.k12.al.us',
+                'accountDisabled'   => 'false',
+                'distinguishedName' => 'CN=Jo Smith,OU=CO,OU=Faculty,' . self::BASE_DN,
+            ]]);
+            $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+            $res = $rec->run(dryRun: false, phases: ['edit']);
+
+            self::assertSame(1, $res['edit']['applied']);
+            $patch = null;
+            foreach ($calls as $c) {
+                if ($c['method'] === 'PATCH') {
+                    $patch = $c;
+                    break;
+                }
+            }
+            self::assertNotNull($patch, 'expected a modify PATCH');
+            $props = [];
+            foreach (json_decode((string) $patch['body'], true)['properties'] as $pr) {
+                $props[$pr['name']] = $pr['value'];
+            }
+            self::assertSame('Teacher', $props['title']);
+            self::assertSame('Teacher', $props['description']);          // description ← title
+            self::assertSame('Central Office', $props['department']);
+            self::assertSame('Central Office', $props['physicalDeliveryOfficeName']); // office ← department
+            self::assertSame('jsmith@example.edu', $props['info']);       // info ← Google email
+            self::assertArrayNotHasKey('sAMAccountName', $props);         // immutable
+        } finally {
+            putenv('GOOGLE_DOMAIN');
+        }
+    }
+
     // ---- create -------------------------------------------------------------
 
     public function testCreatesNetNewFacultyHireLinksGuidAndStampsGolden(): void

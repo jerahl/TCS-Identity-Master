@@ -50,6 +50,7 @@ final class AdaxesService
         'distinguishedName', 'accountDisabled', 'userAccountControl',
         'accountExpires', 'accountExpirationDate',
         'department', 'title', 'whenChanged',
+        'physicalDeliveryOfficeName', 'description', 'info',
     ];
 
     /**

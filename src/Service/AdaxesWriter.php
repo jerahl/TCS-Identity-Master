@@ -41,6 +41,9 @@ final class AdaxesWriter
     private string $disablePath;
     private string $enablePath;
     private string $groupMembersPath;
+    private string $movePath;
+    private string $moveObjectField;
+    private string $moveDestField;
     private string $createObjectType;
 
     /**
@@ -83,6 +86,16 @@ final class AdaxesWriter
         $this->groupMembersPath = trim((string) (Config::get('ADAXES_GROUP_MEMBERS_PATH', '')
             ?: Config::get('ADAXES_GROUP_ADD_PATH', '')
             ?: 'api/directoryObjects/groupMembers'), '/');
+        // Move endpoint (relocate an object to a different OU). Version-specific,
+        // like the paths above; the 2025.x default posts both the object and the
+        // destination container in the body. Two request shapes are supported so
+        // this needn't change with the build: if ADAXES_MOVE_PATH contains the
+        // literal "{id}", the object identity is URL-encoded into the path and only
+        // the destination rides the body; otherwise both ride the body under the
+        // configurable ADAXES_MOVE_OBJECT_FIELD / ADAXES_MOVE_DESTINATION_FIELD.
+        $this->movePath        = trim((string) Config::get('ADAXES_MOVE_PATH', 'api/directoryObjects/move'), '/');
+        $this->moveObjectField = trim((string) Config::get('ADAXES_MOVE_OBJECT_FIELD', 'object')) ?: 'object';
+        $this->moveDestField   = trim((string) Config::get('ADAXES_MOVE_DESTINATION_FIELD', 'newParent')) ?: 'newParent';
         $this->createObjectType = trim((string) Config::get('ADAXES_CREATE_OBJECT_TYPE', 'user')) ?: 'user';
 
         $this->sessionPath = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
@@ -237,6 +250,42 @@ final class AdaxesWriter
         $url  = $this->baseUrl . '/' . $this->modifyPath . '?' . $this->objectParam . '=' . rawurlencode($objectGuid);
 
         $res = $this->request('PATCH', $url, (string) json_encode($body));
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => true]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => false];
+    }
+
+    /**
+     * Relocate an account to a different OU (its container / parent). Identity
+     * attributes and the CN are unchanged — only the object's parent moves. Used by
+     * the edit phase to heal accounts sitting in the wrong OU (e.g. a bus aide that
+     * was created under a building instead of the transportation OU).
+     *
+     * $objectGuid is the object identity (objectGUID or DN); $containerDn is the
+     * destination OU's distinguishedName.
+     *
+     * @return ToggleResult
+     */
+    public function move(string $objectGuid, string $containerDn): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        }
+        $objectGuid  = trim($objectGuid);
+        $containerDn = trim($containerDn);
+        if ($objectGuid === '' || $containerDn === '') {
+            return ['ok' => false, 'error' => 'objectGUID and destination container are both required for move.', 'changed' => false];
+        }
+
+        $inPath = str_contains($this->movePath, '{id}');
+        $path   = $inPath ? str_replace('{id}', rawurlencode($objectGuid), $this->movePath) : $this->movePath;
+        $body   = [$this->moveDestField => $containerDn];
+        if (!$inPath) {
+            $body[$this->moveObjectField] = $objectGuid;
+        }
+
+        $url = $this->baseUrl . '/' . $path;
+        $res = $this->request('POST', $url, (string) json_encode($body));
         return $res['ok']
             ? ['ok' => true, 'error' => null, 'changed' => true]
             : ['ok' => false, 'error' => $res['error'], 'changed' => false];
