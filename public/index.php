@@ -142,6 +142,7 @@ try {
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));
     $router->post('/people/{id}/unlink', $guard('admin', static fn(array $p) => $person->unlink($p)));
     $router->post('/people/{id}/rename', $guard('admin', static fn(array $p) => $person->rename($p)));
+    $router->post('/people/{id}/raptor-override', $guard('admin', static fn(array $p) => $person->raptorOverride($p)));
     // Direct-to-Google provisioning (bypasses OneSync): link/create/push/suspend/restore.
     $router->post('/people/{id}/google/{action}', $guard('edit', static fn(array $p) => $google->act($p)));
     $router->post('/people/{id}/reconcile', $guard('edit', static fn(array $p) => $person->reconcile($p)));

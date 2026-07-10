@@ -12,6 +12,7 @@ use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AuditService;
 use App\Service\GoogleWorkspaceService;
+use App\Service\GroupPolicy;
 use App\Service\PersonService;
 use App\Support\Csrf;
 use App\Config;
@@ -131,6 +132,9 @@ final class PersonController extends Controller
             'hasPowerSchool' => $hasPowerSchool,
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
+            'raptorOptions'  => (new GroupPolicy())->raptorRoleOptions(),
+            'raptorOverride' => (string) ($person['raptor_group_override'] ?? ''),
+            'raptorUrl'      => url('/people/' . $id . '/raptor-override'),
             'csrf'           => Csrf::token(),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
@@ -458,6 +462,50 @@ final class PersonController extends Controller
         } catch (\Throwable $e) {
             error_log('[idm] person rename: ' . $e->getMessage());
             $this->flash('Could not schedule the rename: ' . $e->getMessage());
+        }
+        return $this->redirect($back);
+    }
+
+    /**
+     * Set (or clear) a person's Raptor role exception — the manual override to the
+     * title-based Raptor group rule. Admin-only, CSRF-checked, POST. The value is
+     * a role key validated against GroupPolicy::raptorRoleOptions() ('' = automatic
+     * by title, 'none' = no Raptor group). Persisted on the golden record and
+     * audited via updateProfile; the groups phase honors it on its next run.
+     */
+    public function raptorOverride(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        if ($id <= 0 || $this->people->find($id) === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        $value = strtolower(trim((string) ($_POST['raptor_group_override'] ?? '')));
+        $policy = new GroupPolicy();
+        if (!$policy->isValidRaptorOverride($value)) {
+            $this->flash('Unknown Raptor role — nothing changed.');
+            return $this->redirect($back);
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            // '' clears the override (updateProfile maps '' → NULL = automatic).
+            (new PersonWriter($db, new AuditService($db)))
+                ->updateProfile($id, ['raptor_group_override' => $value], $this->currentUser()['name']);
+            $label = $policy->raptorRoleOptions()[$value] ?? $value;
+            $this->flash($value === ''
+                ? 'Raptor role set to automatic (by job title). The next group sync will apply it.'
+                : "Raptor role exception set to “{$label}”. The next group sync will apply it.");
+        } catch (\Throwable $e) {
+            error_log('[idm] raptor override: ' . $e->getMessage());
+            $this->flash('Could not save the Raptor role exception: ' . $e->getMessage());
         }
         return $this->redirect($back);
     }

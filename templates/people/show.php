@@ -129,6 +129,22 @@ $eventTitle = [
           </form>
         </div>
         <?php endif; ?>
+
+        <?php if (!empty($canAdmin)): ?>
+        <div class="identity-actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-top:1px solid #E4EBF0; padding-top:12px;">
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/raptor-override')) ?>" style="margin:0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+            <label for="raptor_group_override" class="kv__label" style="margin:0;">Raptor role exception</label>
+            <select id="raptor_group_override" name="raptor_group_override" class="select" style="max-width:280px;">
+              <?php foreach (($raptorOptions ?? []) as $rk => $rlabel): ?>
+              <option value="<?= e((string) $rk) ?>"<?= ((string) ($raptorOverride ?? '') === (string) $rk) ? ' selected' : '' ?>><?= e((string) $rlabel) ?></option>
+              <?php endforeach; ?>
+            </select>
+            <button type="submit" class="btn btn--sm btn--ghost">Save</button>
+            <span class="muted" style="font-size:12px;">Overrides the title-based Raptor group; applied on the next group sync.</span>
+          </form>
+        </div>
+        <?php endif; ?>
       </div>
 
       <!-- Demographics -->

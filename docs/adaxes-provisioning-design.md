@@ -365,15 +365,25 @@ Rules (from the OneSync destination):
 - **Microsoft 365 license** (exactly one): the **A1** group if the title contains
   `CNP` / `custodian` / `bus driver` / `aide` / `sub` / `intern` / `SRO`, or the
   person is a contractor / sub / intern; otherwise the **A3** group.
-- **Raptor role** (exactly one, first match wins):
+- **Raptor role** (exactly one, first match wins by title):
   - `Raptor_BuildingAdmin` — title contains *Principal* or *IT Computer Tech*
   - `Raptor_ClientAdmin` — *IT Technician Supervisor*, *Safety Contractor*, or *Director of Technology*
   - `Raptor_EntryAdmin` — *Secretary* or *bookkeeper*
   - `Raptor_GlobalAdmin` — *Network Administrator* or *Security Specialist*
   - `Raptor_EmergencyManagementUser` — everyone else
 
-Group **names** are configurable (`AD_GROUP_*`); confirm they match the real AD
-names before enabling. Membership is written through the Adaxes group-member API
+  **Per-person exceptions.** The title rule is the default; an admin can override
+  the Raptor role for an individual on the person page (the *Raptor role
+  exception* control). The choice is stored on `person.raptor_group_override` as a
+  stable role **key** (`buildingadmin` / `clientadmin` / `entryadmin` /
+  `globaladmin` / `emergency`), so it survives a group-name change; `''` = automatic
+  (by title) and `none` = exclude from every Raptor group. The groups phase reads
+  the override and, because the resulting group is still in the managed set, the
+  person's old Raptor group is removed and the exception added on the next sync
+  (`GroupPolicy::resolveRaptor` / `raptorRoleOptions`).
+
+Group **names** are configurable (`AD_GROUP_*`, including
+`AD_GROUP_RAPTOR_*`); confirm they match the real AD names before enabling. Membership is written through the Adaxes group-member API
 (`ADAXES_GROUP_MEMBERS_PATH`, default `api/directoryObjects/groupMembers`):
 `POST …/groupMembers {"group":…,"newMember":…}` to add, `DELETE
 …/groupMembers?group=…&member=…` to remove. The API takes a **DN/GUID**, not a

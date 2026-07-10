@@ -117,6 +117,52 @@ final class GroupPolicyTest extends TestCase
         ];
     }
 
+    public function testRaptorOverrideForcesGroupRegardlessOfTitle(): void
+    {
+        // A Teacher would earn only the EmergencyManagement fallback; the override
+        // grants Raptor_ClientAdmin instead (an exception by user).
+        $groups = $this->policy()->desiredGroups('Teacher - Math', 'faculty', 'CO', false, 'clientadmin');
+        self::assertContains('Raptor_ClientAdmin', $groups);
+        self::assertNotContains('Raptor_EmergencyManagementUser', $groups);
+        // Still exactly one Raptor group.
+        self::assertCount(1, array_filter($groups, static fn($g) => str_starts_with($g, 'Raptor_')));
+    }
+
+    public function testRaptorOverrideNoneExcludesEveryRaptorGroup(): void
+    {
+        // 'none' removes the person from all Raptor groups even though the title
+        // (Principal) would normally earn BuildingAdmin.
+        $groups = $this->policy()->desiredGroups('Principal', 'faculty', 'CO', false, 'none');
+        self::assertSame([], array_filter($groups, static fn($g) => str_starts_with($g, 'Raptor_')));
+    }
+
+    public function testRaptorOverrideEmptyIsAutomaticByTitle(): void
+    {
+        $groups = $this->policy()->desiredGroups('Principal', 'faculty', 'CO', false, '');
+        self::assertContains('Raptor_BuildingAdmin', $groups);
+    }
+
+    public function testRaptorOverrideUnknownKeyFailsSafeToTitle(): void
+    {
+        $groups = $this->policy()->desiredGroups('Principal', 'faculty', 'CO', false, 'bogus-role');
+        self::assertContains('Raptor_BuildingAdmin', $groups);
+    }
+
+    public function testRaptorRoleOptionsAndValidation(): void
+    {
+        $opts = $this->policy()->raptorRoleOptions();
+        // The three exceptions the request names, plus automatic + none.
+        foreach (['', 'buildingadmin', 'clientadmin', 'entryadmin', 'none'] as $key) {
+            self::assertArrayHasKey($key, $opts);
+        }
+        self::assertSame('Raptor_ClientAdmin', $opts['clientadmin']);
+
+        self::assertTrue($this->policy()->isValidRaptorOverride(''));
+        self::assertTrue($this->policy()->isValidRaptorOverride('none'));
+        self::assertTrue($this->policy()->isValidRaptorOverride('CLIENTADMIN')); // case-insensitive
+        self::assertFalse($this->policy()->isValidRaptorOverride('bogus-role'));
+    }
+
     public function testExactlyOneRaptorAndOneLicenseGroup(): void
     {
         $groups = $this->desired('Principal', 'faculty', 'CO', false);

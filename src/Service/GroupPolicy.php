@@ -42,20 +42,31 @@ final class GroupPolicy
     /** person_type values that always get the A1 license. */
     private const A1_TYPES = ['contractor', 'sub', 'intern'];
 
-    /** Raptor role groups, in priority order (first title match wins). */
+    /**
+     * Raptor role groups, in priority order (first title match wins). Each carries
+     * a STABLE role key (used to store a per-person override — robust to the AD
+     * group name changing), the env key its name is configurable under, its default
+     * name, and the title keywords that assign it.
+     */
     private const RAPTOR_RULES = [
-        ['group' => 'Raptor_BuildingAdmin', 'keywords' => ['Principal', 'IT Computer Tech']],
-        ['group' => 'Raptor_ClientAdmin',   'keywords' => ['IT Technician Supervisor', 'Safety Contractor', 'Director of Technology']],
-        ['group' => 'Raptor_EntryAdmin',    'keywords' => ['Secretary', 'bookkeeper']],
-        ['group' => 'Raptor_GlobalAdmin',   'keywords' => ['Network Administrator', 'Security Specialist']],
+        'buildingadmin' => ['env' => 'AD_GROUP_RAPTOR_BUILDING_ADMIN', 'default' => 'Raptor_BuildingAdmin', 'keywords' => ['Principal', 'IT Computer Tech']],
+        'clientadmin'   => ['env' => 'AD_GROUP_RAPTOR_CLIENT_ADMIN',   'default' => 'Raptor_ClientAdmin',   'keywords' => ['IT Technician Supervisor', 'Safety Contractor', 'Director of Technology']],
+        'entryadmin'    => ['env' => 'AD_GROUP_RAPTOR_ENTRY_ADMIN',    'default' => 'Raptor_EntryAdmin',    'keywords' => ['Secretary', 'bookkeeper']],
+        'globaladmin'   => ['env' => 'AD_GROUP_RAPTOR_GLOBAL_ADMIN',   'default' => 'Raptor_GlobalAdmin',   'keywords' => ['Network Administrator', 'Security Specialist']],
     ];
-    private const RAPTOR_DEFAULT = 'Raptor_EmergencyManagementUser';
+    /** Role key + env/default for the fallback Raptor group (everyone with no title match). */
+    private const RAPTOR_DEFAULT_KEY = 'emergency';
+    private const RAPTOR_DEFAULT_ENV = 'AD_GROUP_RAPTOR_DEFAULT';
+    private const RAPTOR_DEFAULT_NAME = 'Raptor_EmergencyManagementUser';
 
     private string $allFaculty;
     private string $transportation;
     private string $everyoneSuffix;
     private string $a1;
     private string $a3;
+    /** @var array<string,string> Raptor role key → configured group cn (priority order). */
+    private array $raptorGroups;
+    private string $raptorDefault;
 
     public function __construct(
         ?string $allFaculty = null,
@@ -69,16 +80,25 @@ final class GroupPolicy
         $this->everyoneSuffix = $everyoneSuffix ?? (string) Config::get('AD_GROUP_EVERYONE_SUFFIX', '-Everyone');
         $this->a1             = $a1             ?? (string) Config::get('AD_GROUP_M365_A1', 'M365 A1 License');
         $this->a3             = $a3             ?? (string) Config::get('AD_GROUP_M365_A3', 'M365 A3 License');
+
+        $this->raptorGroups = [];
+        foreach (self::RAPTOR_RULES as $key => $rule) {
+            $this->raptorGroups[$key] = (string) Config::get($rule['env'], $rule['default']);
+        }
+        $this->raptorDefault = (string) Config::get(self::RAPTOR_DEFAULT_ENV, self::RAPTOR_DEFAULT_NAME);
     }
 
     /**
      * The group names (cn) a person should belong to.
      *
-     * @param string $schoolToken   the building OU token (e.g. "CO"); '' if unknown
+     * @param string $schoolToken     the building OU token (e.g. "CO"); '' if unknown
      * @param bool   $isTransportation true for Bus Drivers / transportation staff
+     * @param string $raptorOverride  per-person Raptor exception (a role key from
+     *        raptorRoleOptions()): '' = automatic by title, 'none' = no Raptor
+     *        group, else force that role. Unknown values fail safe to the title rule.
      * @return list<string> deduped, stable order
      */
-    public function desiredGroups(string $title, string $personType, string $schoolToken, bool $isTransportation): array
+    public function desiredGroups(string $title, string $personType, string $schoolToken, bool $isTransportation, string $raptorOverride = ''): array
     {
         $groups = [$this->allFaculty];
 
@@ -89,7 +109,7 @@ final class GroupPolicy
             $groups[] = $this->transportation;
         }
         $groups[] = self::isA1($title, $personType) ? $this->a1 : $this->a3;
-        $groups[] = self::raptorGroup($title);
+        $groups[] = $this->resolveRaptor($title, $raptorOverride);
 
         // Dedupe, preserve order, drop any empties.
         $out = [];
@@ -100,6 +120,53 @@ final class GroupPolicy
             }
         }
         return $out;
+    }
+
+    /**
+     * The Raptor group cn for a person, honoring a per-person override. '' means no
+     * Raptor group (an explicit 'none' exception). See desiredGroups() for the
+     * override semantics.
+     */
+    public function resolveRaptor(string $title, string $override = ''): string
+    {
+        $ov = strtolower(trim($override));
+        if ($ov === '') {
+            return $this->raptorGroup($title);       // automatic (by title)
+        }
+        if ($ov === 'none') {
+            return '';                               // explicit exclusion
+        }
+        if ($ov === self::RAPTOR_DEFAULT_KEY) {
+            return $this->raptorDefault;
+        }
+        if (isset($this->raptorGroups[$ov])) {
+            return $this->raptorGroups[$ov];
+        }
+        return $this->raptorGroup($title);           // unknown key → fail safe
+    }
+
+    /**
+     * The per-person Raptor override choices for the admin control: stable role key
+     * → the label shown. '' = automatic; each role key maps to its (configured) AD
+     * group name; 'none' excludes the person from every Raptor group.
+     *
+     * @return array<string,string>
+     */
+    public function raptorRoleOptions(): array
+    {
+        $opts = ['' => 'Automatic (by job title)'];
+        foreach ($this->raptorGroups as $key => $cn) {
+            $opts[$key] = $cn;
+        }
+        $opts[self::RAPTOR_DEFAULT_KEY] = $this->raptorDefault;
+        $opts['none'] = 'None (exclude from all Raptor groups)';
+        return $opts;
+    }
+
+    /** True when $key is an accepted Raptor override value (a key from raptorRoleOptions()). */
+    public function isValidRaptorOverride(string $key): bool
+    {
+        return array_key_exists(strtolower(trim($key)), $this->raptorRoleOptions());
     }
 
     /** The per-school Everyone group name for a building OU token (with remaps). */
@@ -120,9 +187,9 @@ final class GroupPolicy
      */
     public function fixedManagedGroups(): array
     {
-        $fixed = [$this->allFaculty, $this->transportation, $this->a1, $this->a3, self::RAPTOR_DEFAULT];
-        foreach (self::RAPTOR_RULES as $r) {
-            $fixed[] = $r['group'];
+        $fixed = [$this->allFaculty, $this->transportation, $this->a1, $this->a3, $this->raptorDefault];
+        foreach ($this->raptorGroups as $cn) {
+            $fixed[] = $cn;
         }
         return array_values(array_filter($fixed, static fn($g) => trim($g) !== ''));
     }
@@ -164,14 +231,14 @@ final class GroupPolicy
         return self::titleContainsAny($title, self::A1_TITLE_KEYWORDS);
     }
 
-    private static function raptorGroup(string $title): string
+    private function raptorGroup(string $title): string
     {
-        foreach (self::RAPTOR_RULES as $rule) {
+        foreach (self::RAPTOR_RULES as $key => $rule) {
             if (self::titleContainsAny($title, $rule['keywords'])) {
-                return $rule['group'];
+                return $this->raptorGroups[$key];
             }
         }
-        return self::RAPTOR_DEFAULT;
+        return $this->raptorDefault;
     }
 
     /** SRO detection — the substring "sro" isn't in "School Resource Officer", so match the token/phrase. */

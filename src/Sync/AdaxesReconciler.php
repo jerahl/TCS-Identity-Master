@@ -488,6 +488,7 @@ final class AdaxesReconciler
                 (string) ($p['person_type'] ?? ''),
                 $this->schoolToken($p),
                 self::isTransportation($p),
+                (string) ($p['raptor_group_override'] ?? ''),
             );
 
             $live = $this->read->memberOf($guid);
@@ -1147,7 +1148,7 @@ final class AdaxesReconciler
     {
         $sql = 'SELECT p.person_id, p.person_type, p.status, p.first_name, p.last_name, p.preferred_name,
                        p.username, p.username_locked, p.email, p.upn, p.employee_id,
-                       p.primary_school_id, p.end_date,
+                       p.primary_school_id, p.end_date, p.raptor_group_override,
                        (SELECT a.title FROM assignment a WHERE a.person_id = p.person_id
                          ORDER BY a.is_primary DESC, a.id LIMIT 1) AS title
                 FROM person p

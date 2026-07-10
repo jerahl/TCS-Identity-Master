@@ -46,7 +46,8 @@ final class AdaxesReconcilerTest extends TestCase
             first_name TEXT, last_name TEXT,
             preferred_name TEXT, username TEXT UNIQUE, email TEXT UNIQUE, upn TEXT,
             username_locked INTEGER DEFAULT 0, username_assigned_at TEXT,
-            employee_id TEXT, primary_school_id INTEGER, end_date TEXT)');
+            employee_id TEXT, primary_school_id INTEGER, end_date TEXT,
+            raptor_group_override TEXT)');
         $db->exec('CREATE TABLE person_source_id (
             id INTEGER PRIMARY KEY, person_id INTEGER, system TEXT, source_key TEXT,
             is_active INTEGER DEFAULT 1, first_seen TEXT, last_seen TEXT)');
@@ -907,6 +908,47 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertStringContainsString('EMS-Everyone', $joined);                // the managed removal
         self::assertStringNotContainsString('Domain Users', $joined);             // unmanaged, untouched
         self::assertStringNotContainsString('CN=All-Faculty', $joined);           // already a member, no re-add
+    }
+
+    public function testGroupsPhaseHonorsPerPersonRaptorOverride(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
+            'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,
+            // A Teacher would earn only Raptor_EmergencyManagementUser; the per-person
+            // exception forces Raptor_ClientAdmin instead.
+            'raptor_group_override' => 'clientadmin',
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 30, 'Teacher - Math', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $readFetch = function (string $method, string $url, array $headers, ?string $body): ?array {
+            if (str_contains($url, '/search')) {
+                preg_match('/"value":"([^"]+)"/', (string) $body, $m);
+                $cn = $m[1] ?? 'Unknown';
+                return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => [
+                    'distinguishedName' => 'CN=' . $cn . ',OU=Groups,DC=example,DC=org',
+                ]]]])];
+            }
+            return ['status' => 200, 'body' => json_encode(['properties' => [['name' => 'memberOf', 'values' => []]]])];
+        };
+        $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+
+        $calls = [];
+        $writerFetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls[] = ['method' => $method, 'url' => $url, 'body' => $body];
+            return ['status' => 200, 'body' => '{}'];
+        };
+        $writer = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $writerFetch, 'write-token', true);
+
+        $res = (new AdaxesReconciler($db, $read, $writer))->run(dryRun: false, phases: ['groups']);
+
+        self::assertSame(1, $res['groups']['applied']);
+        $joined = implode(' | ', array_map(static fn($c) => (string) $c['body'], $calls));
+        self::assertStringContainsString('Raptor_ClientAdmin', $joined);                 // the exception
+        self::assertStringNotContainsString('Raptor_EmergencyManagementUser', $joined);  // NOT the title default
     }
 
     public function testGroupsPhaseDryRunReportsButDoesNotWrite(): void
