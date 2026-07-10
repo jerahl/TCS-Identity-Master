@@ -307,11 +307,12 @@ final class PersonWriter
     /**
      * Unlink a person's assigned identity — for when the wrong name/employee id
      * caused a bad username to be minted/linked. Clears username/email/upn and the
-     * lock (so the minter can re-assign a correct one), and deactivates the person's
-     * `ad` crosswalk row(s) so a stale objectGUID no longer points here. Does NOT
-     * touch the live AD account itself (IT deletes/renames that, or the reconciler
-     * creates a fresh corrected account). Audited + a lifecycle event. Returns the
-     * change notes (empty if there was nothing linked).
+     * lock (so the minter can re-assign a correct one), and REMOVES the person's
+     * `ad` crosswalk row(s) entirely (objectGUID link) so a wrong/stale GUID can
+     * neither resolve here nor block re-linking that GUID elsewhere. Does NOT touch
+     * the live AD account itself (IT deletes/renames that, or the reconciler creates
+     * a fresh corrected account). Audited + a lifecycle event. Returns the change
+     * notes (empty if there was nothing linked).
      *
      * @return list<string>
      */
@@ -339,17 +340,20 @@ final class PersonWriter
             $notes[] = 'cleared username/email/UPN and unlocked';
         }
 
-        // Deactivate the AD crosswalk so a stale objectGUID no longer resolves here.
-        $adRows = $this->db->prepare("SELECT id FROM person_source_id WHERE person_id = :id AND system = 'ad' AND is_active = 1");
+        // Remove the AD crosswalk entirely (active OR inactive) so the wrong/stale
+        // objectGUID can't resolve here or block re-linking it to the right person.
+        $adRows = $this->db->prepare("SELECT id, source_key, is_active FROM person_source_id WHERE person_id = :id AND system = 'ad'");
         $adRows->execute([':id' => $personId]);
-        $deact = 0;
+        $removed = 0;
         foreach ($adRows->fetchAll() as $r) {
-            $this->db->prepare('UPDATE person_source_id SET is_active = 0 WHERE id = :rid')->execute([':rid' => (int) $r['id']]);
-            $this->audit->log('source_id', (int) $r['id'], 'update', ['is_active' => 1], ['is_active' => 0, 'reason' => 'username unlinked'], $actor);
-            $deact++;
+            $this->db->prepare('DELETE FROM person_source_id WHERE id = :rid')->execute([':rid' => (int) $r['id']]);
+            $this->audit->log('source_id', (int) $r['id'], 'delete',
+                ['system' => 'ad', 'source_key' => $r['source_key'], 'is_active' => (int) $r['is_active']],
+                ['reason' => 'username unlinked'], $actor);
+            $removed++;
         }
-        if ($deact > 0) {
-            $notes[] = "deactivated {$deact} AD crosswalk link(s)";
+        if ($removed > 0) {
+            $notes[] = "removed {$removed} AD crosswalk link(s)";
         }
 
         if ($notes !== []) {

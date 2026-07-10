@@ -378,9 +378,11 @@ Beyond create/edit/disable/groups, IDM owns the human side of identity changes.
   every send to `email_outbox`. Off until `MAIL_ENABLED=true` + a transport; a
   disabled send is queued, never dropped.
 - **Unlink username.** `PersonWriter::unlinkUsername` undoes a bad mint from a
-  wrong name / employee id — clears username/email/upn + the lock and deactivates
-  the `ad` crosswalk so the reconciler re-assigns a corrected identity. Admin-only
-  (`/people/{id}/unlink`), and it cancels any pending rename events for the person.
+  wrong name / employee id — clears username/email/upn + the lock and **removes**
+  the `ad` objectGUID crosswalk row(s) entirely (so a wrong/stale GUID can't
+  resolve here or block re-linking it) so the reconciler re-assigns a corrected
+  identity. Admin-only (`/people/{id}/unlink`), and it cancels any pending rename
+  events for the person.
 - **Delayed events.** `scheduled_event` + `ScheduledEventService` are a durable
   queue for future actions; `bin/run_scheduled_events.php` (a systemd timer, every
   ~15 min) claims due rows and `ScheduledEventRunner` dispatches them by type.

@@ -105,7 +105,7 @@ $eventTitle = [
             <button type="submit" class="btn btn--sm">Rename (last-name change)</button>
           </form>
           <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/unlink')) ?>"
-                onsubmit="return confirm('Unlink this identity? Clears the username/email/UPN and the lock and detaches the AD link so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id.');"
+                onsubmit="return confirm('Unlink this identity? Clears the username/email/UPN and the lock and REMOVES the AD objectGUID crosswalk so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id.');"
                 style="display:flex; gap:6px; align-items:center;">
             <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
             <input type="text" name="reason" class="input" placeholder="reason (e.g. HR typo)" style="width:160px;">
