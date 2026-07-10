@@ -214,9 +214,12 @@ The final phase. IDM mints identity and creates the account.
   Two **title-driven rules** (mirroring OneSync's custom mappings) trump the type
   leaf:
 
-  - **Bus Driver** (title matches *bus driver*) → `{AD_OU_BUS_DRIVER},OU=Faculty,
-    <base>` (default `OU=trans`) with **no building segment**, and the AD
-    `department` is overridden (`AD_DEPT_BUS_DRIVER`, default `Transportation`).
+  - **Transportation** (title contains *bus* as a whole word — Bus Driver, Bus
+    Aide, Bus Monitor, … — plus any extra titles in `AD_TRANSPORTATION_TITLES`) →
+    `{AD_OU_TRANSPORTATION},OU=Faculty,<base>` (default `OU=trans`) with **no
+    building segment**, and the AD `department` is overridden
+    (`AD_DEPT_TRANSPORTATION`, default `Transportation`). Legacy aliases:
+    `AD_OU_BUS_DRIVER` / `AD_DEPT_BUS_DRIVER`.
   - **SRO** (title matches *SRO* / *school resource officer*) →
     `{AD_OU_SRO},{school.ad_ou},OU=Faculty,<base>` (default `OU=SRO`), e.g.
     `OU=SRO,OU=BHS,OU=Faculty,<base>`.
@@ -522,9 +525,11 @@ destination. IDM state is unchanged; no data migration to reverse.
   `api/directoryObjects/groupMembers`) matches the deployed Adaxes build. The
   `sub` (A1) keyword and the `Secretary` spelling were normalized from OneSync's
   rules; spot-check against the live destination.
-- Confirm `AD_DEPT_BUS_DRIVER` — IDM defaults the Bus Driver department override
-  to `Transportation`; verify the exact string OneSync writes (group matching is
-  string-sensitive).
+- Confirm `AD_DEPT_TRANSPORTATION` — IDM defaults the transportation department
+  override to `Transportation`; verify the exact string OneSync writes (group
+  matching is string-sensitive). Transportation staff = any title with *bus* as a
+  whole word (Bus Driver, Bus Aide, …); add non-"bus" transportation titles to
+  `AD_TRANSPORTATION_TITLES`.
 - **Email transport.** `Mailer` ships with SMTP and sendmail transports; confirm
   which the district uses (an internal relay / Exchange Online submission on :587,
   vs. the host MTA) and set `MAIL_*` / `SMTP_*`. A Microsoft 365 Graph transport

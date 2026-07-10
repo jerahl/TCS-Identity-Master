@@ -465,6 +465,82 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame('Transportation', $props['department']); // override, not a building
     }
 
+    /**
+     * Bus Aides (and other "bus" roles) are transportation too — they must get the
+     * Transportation department + OU, not their building. This was the reported bug.
+     */
+    #[DataProvider('transportationTitles')]
+    public function testTransportationTitlesGetTransOuAndDepartment(string $title): void
+    {
+        $db = $this->db();
+        // Assigned to Central Office; must still land in Transportation, not CO.
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (4999, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'staff', 'status' => 'pending',
+            'first_name' => 'Pat', 'last_name' => 'Rider', 'primary_school_id' => 4999,
+        ]);
+        $db->prepare("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 4999, ?, 1)")->execute([$title]);
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path'], "{$title} OU");
+        $props = [];
+        foreach ($body['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        self::assertSame('Transportation', $props['department'], "{$title} department");
+    }
+
+    /** @return array<string,array{0:string}> */
+    public static function transportationTitles(): array
+    {
+        return [
+            'bus aide'    => ['Bus Aide'],
+            'bus driver'  => ['Bus Driver'],
+            'bus monitor' => ['Bus Monitor'],
+            'school bus aide' => ['School Bus Aide'],
+        ];
+    }
+
+    public function testBusinessTitleIsNotTransportation(): void
+    {
+        // "Business Manager" contains "bus" but must NOT be transportation.
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (4999, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'staff', 'status' => 'pending',
+            'first_name' => 'Biz', 'last_name' => 'Manager', 'primary_school_id' => 4999,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 4999, 'Business Manager', 1)");
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['path']); // stays at the building
+        $props = [];
+        foreach ($body['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        self::assertSame('Central Office', $props['department']);
+    }
+
     public function testSroGetsSroLeafAboveTheBuildingOu(): void
     {
         $db = $this->db();

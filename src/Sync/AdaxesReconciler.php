@@ -459,7 +459,7 @@ final class AdaxesReconciler
                 (string) ($p['title'] ?? ''),
                 (string) ($p['person_type'] ?? ''),
                 $this->schoolToken($p),
-                self::isBusDriver($p),
+                self::isTransportation($p),
             );
 
             $live = $this->read->memberOf($guid);
@@ -715,15 +715,16 @@ final class AdaxesReconciler
     }
 
     /**
-     * The AD `department`: the building name — except Bus Drivers, whose
-     * department is overridden (AD_DEPT_BUS_DRIVER) because they belong to
+     * The AD `department`: the building name — except transportation staff (bus
+     * drivers, bus aides, …), whose department is overridden
+     * (AD_DEPT_TRANSPORTATION, legacy AD_DEPT_BUS_DRIVER) because they belong to
      * transportation rather than any one school. '' when unresolvable (never
      * blank out AD's value).
      */
     private function desiredDepartment(array $p): string
     {
-        if (self::isBusDriver($p)) {
-            return trim((string) Config::get('AD_DEPT_BUS_DRIVER', 'Transportation'));
+        if (self::isTransportation($p)) {
+            return trim((string) (Config::get('AD_DEPT_TRANSPORTATION', '') ?: Config::get('AD_DEPT_BUS_DRIVER', 'Transportation')));
         }
         return $this->schoolRow($p)['name'];
     }
@@ -782,17 +783,18 @@ final class AdaxesReconciler
      * be resolved (no school.ad_ou for a placement that needs one). Assembled
      * most-specific first; $baseDn is checked by the caller.
      *
-     *   default     : [OU=<type leaf>,] {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
-     *   Bus Driver  : {AD_OU_BUS_DRIVER} , {AD_PARENT_OU} , {AD_BASE_DN}   (no school OU)
-     *   SRO         : {AD_OU_SRO} , {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
+     *   default         : [OU=<type leaf>,] {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
+     *   transportation  : {AD_OU_TRANSPORTATION} , {AD_PARENT_OU} , {AD_BASE_DN}   (no school OU)
+     *   SRO             : {AD_OU_SRO} , {school.ad_ou} , {AD_PARENT_OU} , {AD_BASE_DN}
      *
      * All provisioned accounts nest under a shared parent OU (AD_PARENT_OU,
      * "OU=Faculty" at TCS). Contractors/subs/interns get a type-specific leaf OU
      * as the innermost segment (faculty/staff none); two title-driven rules trump
-     * the type leaf: Bus Drivers live in a transportation OU with NO building
-     * segment, and SROs get an SRO leaf above their building. e.g. a contractor
-     * at Central Office → OU=PTC,OU=CO,OU=Faculty,<base>; a bus driver →
-     * OU=trans,OU=Faculty,<base>; an SRO at BHS → OU=SRO,OU=BHS,OU=Faculty,<base>.
+     * the type leaf: transportation staff (bus drivers, bus aides, …) live in a
+     * transportation OU with NO building segment, and SROs get an SRO leaf above
+     * their building. e.g. a contractor at Central Office → OU=PTC,OU=CO,OU=Faculty,
+     * <base>; a bus aide → OU=trans,OU=Faculty,<base>; an SRO at BHS →
+     * OU=SRO,OU=BHS,OU=Faculty,<base>.
      *
      * @param array<string,mixed> $p
      */
@@ -800,8 +802,8 @@ final class AdaxesReconciler
     {
         $tail = array_values(array_filter([$this->parentOu, $this->baseDn], static fn($s) => $s !== ''));
 
-        if (self::isBusDriver($p)) {
-            $transOu = trim((string) Config::get('AD_OU_BUS_DRIVER', 'OU=trans'), ' ,');
+        if (self::isTransportation($p)) {
+            $transOu = trim((string) (Config::get('AD_OU_TRANSPORTATION', '') ?: Config::get('AD_OU_BUS_DRIVER', 'OU=trans')), ' ,');
             return implode(',', array_merge([$transOu], $tail));
         }
 
@@ -824,10 +826,34 @@ final class AdaxesReconciler
         return implode(',', array_merge($parts, $tail));
     }
 
-    /** Bus Driver title rule (see placement/desiredDepartment). */
-    private static function isBusDriver(array $p): bool
+    /**
+     * Transportation title rule (see placement/desiredDepartment): everyone whose
+     * job is transportation — Bus Driver, Bus Aide, Bus Monitor, Bus Assistant, …
+     * "bus" is matched as a WHOLE WORD so it covers all of those without false-
+     * matching "Business". Extra, non-"bus" transportation titles (e.g. a mechanic
+     * or dispatcher) can be added via AD_TRANSPORTATION_TITLES.
+     */
+    private static function isTransportation(array $p): bool
     {
-        return (bool) preg_match('/bus\s*driver/i', (string) ($p['title'] ?? ''));
+        $title = (string) ($p['title'] ?? '');
+        if (preg_match('/\bbus\b/i', $title)) {
+            return true;
+        }
+        foreach (self::extraTransportationKeywords() as $kw) {
+            if (stripos($title, $kw) !== false) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Extra transportation title keywords (substring, case-insensitive). @return list<string> */
+    private static function extraTransportationKeywords(): array
+    {
+        return array_values(array_filter(
+            array_map('trim', explode(',', (string) Config::get('AD_TRANSPORTATION_TITLES', ''))),
+            static fn($s) => $s !== '',
+        ));
     }
 
     /** School Resource Officer title rule (see placement). */
