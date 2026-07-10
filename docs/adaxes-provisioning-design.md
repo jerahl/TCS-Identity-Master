@@ -352,10 +352,14 @@ Rules (from the OneSync destination):
   - `Raptor_GlobalAdmin` — *Network Administrator* or *Security Specialist*
   - `Raptor_EmergencyManagementUser` — everyone else
 
-Group **names** are configurable (`AD_GROUP_*`); the exact AD names + the
-membership-write endpoints must be confirmed before enabling (see Open items).
-Until `ADAXES_GROUP_ADD_PATH` / `_REMOVE_PATH` are set, the `groups` phase is
-report-only (dry-run shows the intended add/remove per person).
+Group **names** are configurable (`AD_GROUP_*`); confirm they match the real AD
+names before enabling. Membership is written through the Adaxes group-member API
+(`ADAXES_GROUP_MEMBERS_PATH`, default `api/directoryObjects/groupMembers`):
+`POST …/groupMembers {"group":…,"newMember":…}` to add, `DELETE
+…/groupMembers?group=…&member=…` to remove. The API takes a **DN/GUID**, not a
+name, so the reconciler resolves each group name to its DN first
+(`AdaxesService::findGroup`, cached per run) and reports an error if a group
+isn't found in AD.
 
 ## Adaxes-side setup (not code)
 
@@ -514,11 +518,10 @@ destination. IDM state is unchanged; no data migration to reverse.
   (`GroupPolicy`). Before enabling: (a) confirm the exact AD group **names**
   (`AD_GROUP_ALL_FACULTY` / `_TRANSPORTATION` / `_M365_A1` / `_M365_A3`, the
   `-Everyone` suffix, and the Everyone-token remaps `RQES→RQS` / `UPE→UP`); and
-  (b) confirm the group-membership **write endpoints** the deployed Adaxes build
-  exposes (`ADAXES_GROUP_ADD_PATH` / `_REMOVE_PATH` + the group/member param
-  names) — the phase is report-only until they are set. The `sub` (A1) keyword
-  and the `Secretary` spelling were normalized from OneSync's rules; spot-check
-  against the live destination.
+  (b) confirm the group-membership endpoint (`ADAXES_GROUP_MEMBERS_PATH`, default
+  `api/directoryObjects/groupMembers`) matches the deployed Adaxes build. The
+  `sub` (A1) keyword and the `Secretary` spelling were normalized from OneSync's
+  rules; spot-check against the live destination.
 - Confirm `AD_DEPT_BUS_DRIVER` — IDM defaults the Bus Driver department override
   to `Transportation`; verify the exact string OneSync writes (group matching is
   string-sensitive).

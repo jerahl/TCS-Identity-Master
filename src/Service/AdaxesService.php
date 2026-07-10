@@ -207,6 +207,61 @@ final class AdaxesService
     }
 
     /**
+     * Resolve a group by its cn/name to a directory identifier the group-member
+     * REST calls accept (its distinguishedName, else objectGUID). The reconciler
+     * knows groups by name (All-Faculty, CO-Everyone, …) but the API needs a
+     * DN/GUID, so this bridges the two.
+     *
+     * @return array{ok:bool, error:?string, found:bool, id:?string, dn:?string, guid:?string}
+     */
+    public function findGroup(string $cn): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Adaxes is not configured.', 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+        }
+        $cn = trim($cn);
+        if ($cn === '') {
+            return ['ok' => true, 'error' => null, 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+        }
+
+        // Match a Group whose cn OR sAMAccountName equals the name.
+        $body = [
+            'criteria' => [
+                'objectTypes' => [[
+                    'type'  => 'Group',
+                    'items' => [
+                        'type'            => 1,
+                        'logicalOperator' => 2, // OR
+                        'items'           => [
+                            ['type' => 0, 'property' => 'cn', 'operator' => 'eq', 'values' => [['type' => 2, 'value' => $cn]], 'valueLogicalOperator' => 0],
+                            ['type' => 0, 'property' => 'sAMAccountName', 'operator' => 'eq', 'values' => [['type' => 2, 'value' => $cn]], 'valueLogicalOperator' => 0],
+                        ],
+                    ],
+                ]],
+            ],
+            'select' => ['properties' => 'distinguishedName,objectGUID,cn,sAMAccountName'],
+        ];
+
+        try {
+            $res = $this->request('POST', $this->baseUrl . '/' . $this->searchPath, (string) json_encode($body));
+            if (!$res['ok']) {
+                return ['ok' => false, 'error' => $res['error'], 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+            }
+            $first = self::firstSearchHit($res['data']);
+            if ($first === null) {
+                return ['ok' => true, 'error' => null, 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+            }
+            $attrs = self::normalizeProperties($first);
+            $dn = trim((string) ($attrs['distinguishedname'] ?? ''));
+            $guid = self::extractGuid($attrs);
+            $id = $dn !== '' ? $dn : $guid;
+            return ['ok' => true, 'error' => null, 'found' => $id !== null && $id !== '', 'id' => $id, 'dn' => $dn ?: null, 'guid' => $guid];
+        } finally {
+            $this->endSession();
+        }
+    }
+
+    /**
      * The group DNs a directory object is a direct member of (`memberOf`). Kept
      * separate from getObject() because memberOf is multi-valued and each value
      * is a DN (full of commas), which the scalar property flattening would

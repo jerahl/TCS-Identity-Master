@@ -62,6 +62,9 @@ final class AdaxesReconciler
     /** When non-empty, every phase is restricted to these person_ids (test cohort). */
     private array $restrictPersonIds = [];
 
+    /** Per-run cache: group cn (lowercased) → resolved DN/GUID, or '' if not found. */
+    private array $groupIdCache = [];
+
     public function __construct(
         private readonly PDO $db,
         private readonly AdaxesService $read,
@@ -514,7 +517,13 @@ final class AdaxesReconciler
             $changed = 0;
             $errs = [];
             foreach ($toAdd as $cn) {
-                $r = $this->writer->addToGroup($cn, $guid);
+                // The API needs the group's DN/GUID, not its name — resolve it.
+                $groupId = $this->resolveGroupId($cn);
+                if ($groupId === null) {
+                    $errs[] = "add {$cn}: group not found in AD (cannot resolve to a DN)";
+                    continue;
+                }
+                $r = $this->writer->addToGroup($groupId, $guid);
                 if ($r['ok']) {
                     $out['added']++;
                     $changed++;
@@ -544,6 +553,24 @@ final class AdaxesReconciler
         }
 
         return $out;
+    }
+
+    /**
+     * Resolve a group name to the directory identifier the group-member API needs
+     * (its DN, else objectGUID), cached for the run. Null when the group can't be
+     * found in AD (so the add is reported as an error rather than a 400).
+     */
+    private function resolveGroupId(string $cn): ?string
+    {
+        $key = strtolower(trim($cn));
+        if (array_key_exists($key, $this->groupIdCache)) {
+            $id = $this->groupIdCache[$key];
+            return $id === '' ? null : $id;
+        }
+        $res = $this->read->findGroup($cn);
+        $id = ($res['ok'] && $res['found']) ? (string) $res['id'] : '';
+        $this->groupIdCache[$key] = $id;
+        return $id === '' ? null : $id;
     }
 
     // ---- helpers ------------------------------------------------------------

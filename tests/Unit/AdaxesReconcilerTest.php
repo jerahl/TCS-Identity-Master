@@ -652,59 +652,63 @@ final class AdaxesReconcilerTest extends TestCase
 
     public function testGroupsPhaseAddsMissingAndRemovesManagedOnlyWithinTheSet(): void
     {
-        putenv('ADAXES_GROUP_ADD_PATH=api/group/add');
-        putenv('ADAXES_GROUP_REMOVE_PATH=api/group/remove');
-        try {
-            $db = $this->db();
-            // Both buildings exist, so EMS-Everyone is a known/managed group — a
-            // realistic move: the person is now at CO but AD still has EMS-Everyone.
-            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO'), (60, 'Eastwood Middle', 'OU=EMS')");
-            $this->seedPerson($db, [
-                'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
-                'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,
-            ]);
-            $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 30, 'Teacher - Math', 1)");
-            $this->link($db, 1, self::GUID1);
+        $db = $this->db();
+        // Both buildings exist, so EMS-Everyone is a known/managed group — a
+        // realistic move: the person is now at CO but AD still has EMS-Everyone.
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO'), (60, 'Eastwood Middle', 'OU=EMS')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
+            'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 30, 'Teacher - Math', 1)");
+        $this->link($db, 1, self::GUID1);
 
-            // Live memberOf: keep All-Faculty; EMS-Everyone is managed but no longer
-            // desired (→ remove); Domain Users is unmanaged (→ never touch).
-            $readFetch = function (string $method, string $url, array $headers, ?string $body): ?array {
-                return ['status' => 200, 'body' => json_encode(['properties' => [
-                    ['name' => 'memberOf', 'values' => [
-                        'CN=All-Faculty,OU=Groups,DC=example,DC=org',
-                        'CN=EMS-Everyone,OU=Groups,DC=example,DC=org',
-                        'CN=Domain Users,CN=Users,DC=example,DC=org',
-                    ]],
-                ]])];
-            };
-            $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+        // The read fake answers two things: the memberOf GET, and the group-name→DN
+        // resolution search (echoes a DN built from the searched cn).
+        $readFetch = function (string $method, string $url, array $headers, ?string $body): ?array {
+            if (str_contains($url, '/search')) {
+                preg_match('/"value":"([^"]+)"/', (string) $body, $m);
+                $cn = $m[1] ?? 'Unknown';
+                return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => [
+                    'distinguishedName' => 'CN=' . $cn . ',OU=Groups,DC=example,DC=org',
+                    'objectGUID'        => '00000000-0000-0000-0000-000000000000',
+                ]]]])];
+            }
+            return ['status' => 200, 'body' => json_encode(['properties' => [
+                ['name' => 'memberOf', 'values' => [
+                    'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                    'CN=EMS-Everyone,OU=Groups,DC=example,DC=org',
+                    'CN=Domain Users,CN=Users,DC=example,DC=org',
+                ]],
+            ]])];
+        };
+        $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
 
-            $calls = [];
-            $writerFetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
-                $calls[] = ['url' => $url, 'body' => $body];
-                return ['status' => 200, 'body' => '{}'];
-            };
-            $writer = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $writerFetch, 'write-token', true);
+        $calls = [];
+        $writerFetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls[] = ['method' => $method, 'url' => $url, 'body' => $body];
+            return ['status' => 200, 'body' => '{}'];
+        };
+        $writer = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $writerFetch, 'write-token', true);
 
-            $rec = new AdaxesReconciler($db, $read, $writer);
-            $res = $rec->run(dryRun: false, phases: ['groups']);
+        $rec = new AdaxesReconciler($db, $read, $writer);
+        $res = $rec->run(dryRun: false, phases: ['groups']);
 
-            self::assertSame(1, $res['groups']['applied']);
-            // desired = All-Faculty, CO-Everyone, M365 A3 License, Raptor_EmergencyManagementUser.
-            // All-Faculty already present → 3 adds; EMS-Everyone removed; Domain Users kept.
-            self::assertSame(3, $res['groups']['added']);
-            self::assertSame(1, $res['groups']['removed']);
+        self::assertSame(1, $res['groups']['applied']);
+        // desired = All-Faculty, CO-Everyone, M365 A3 License, Raptor_EmergencyManagementUser.
+        // All-Faculty already present → 3 adds; EMS-Everyone removed; Domain Users kept.
+        self::assertSame(3, $res['groups']['added']);
+        self::assertSame(1, $res['groups']['removed']);
 
-            $bodies = array_map(static fn($c) => (string) $c['body'], $calls);
-            $joined = implode(' | ', $bodies);
-            self::assertStringContainsString('CO-Everyone', $joined);
-            self::assertStringContainsString('EMS-Everyone', $joined);          // the managed removal
-            self::assertStringNotContainsString('Domain Users', $joined);       // unmanaged, untouched
-            self::assertStringNotContainsString('All-Faculty', $joined);        // already a member, no re-add
-        } finally {
-            putenv('ADAXES_GROUP_ADD_PATH');
-            putenv('ADAXES_GROUP_REMOVE_PATH');
-        }
+        // Adds are POSTs (group in the body), the removal is a DELETE (group in the URL).
+        $joined = implode(' | ', array_map(static fn($c) => $c['method'] . ' ' . $c['url'] . ' ' . (string) $c['body'], $calls));
+        self::assertStringContainsString('POST', $joined);
+        self::assertStringContainsString('DELETE', $joined);
+        self::assertStringContainsString('CO-Everyone', $joined);                 // added
+        self::assertStringContainsString('newMember', $joined);                   // correct add field
+        self::assertStringContainsString('EMS-Everyone', $joined);                // the managed removal
+        self::assertStringNotContainsString('Domain Users', $joined);             // unmanaged, untouched
+        self::assertStringNotContainsString('CN=All-Faculty', $joined);           // already a member, no re-add
     }
 
     public function testGroupsPhaseDryRunReportsButDoesNotWrite(): void

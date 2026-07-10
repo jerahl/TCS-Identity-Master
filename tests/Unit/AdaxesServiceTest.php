@@ -575,6 +575,35 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('john.smith@example.org', $ad['email']);
     }
 
+    public function testFindGroupResolvesNameToDnAndGuid(): void
+    {
+        $captured = null;
+        $svc = $this->service(['status' => 200, 'body' => json_encode([
+            'objects' => [['properties' => [
+                'distinguishedName' => 'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                'objectGUID'        => '2b6160e2-ad91-419c-8960-cf672c75528f',
+            ]]],
+        ])], $captured);
+
+        $res = $svc->findGroup('All-Faculty');
+        self::assertTrue($res['found']);
+        self::assertSame('CN=All-Faculty,OU=Groups,DC=example,DC=org', $res['dn']);
+        self::assertSame('CN=All-Faculty,OU=Groups,DC=example,DC=org', $res['id']); // prefers the DN
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $res['guid']);
+        // Searched the Group object type by name.
+        $sent = json_decode((string) $captured['body'], true);
+        self::assertSame('Group', $sent['criteria']['objectTypes'][0]['type']);
+    }
+
+    public function testFindGroupNotFound(): void
+    {
+        $svc = $this->service(['status' => 200, 'body' => json_encode(['objects' => []])]);
+        $res = $svc->findGroup('No-Such-Group');
+        self::assertTrue($res['ok']);
+        self::assertFalse($res['found']);
+        self::assertNull($res['id']);
+    }
+
     public function testMemberOfReturnsRawGroupDnsWithoutCommaCorruption(): void
     {
         // memberOf is multi-valued and each value is a DN full of commas — the

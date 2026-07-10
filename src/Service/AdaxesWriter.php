@@ -40,10 +40,7 @@ final class AdaxesWriter
     private string $modifyPath;
     private string $disablePath;
     private string $enablePath;
-    private string $groupAddPath;
-    private string $groupRemovePath;
-    private string $groupParam;
-    private string $memberParam;
+    private string $groupMembersPath;
     private string $createObjectType;
 
     /**
@@ -80,10 +77,12 @@ final class AdaxesWriter
         $this->enablePath       = trim((string) Config::get('ADAXES_ENABLE_PATH', ''), '/');
         // Group membership endpoints are version-specific — no default; the group
         // reconciler phase reports (dry-run) until these are configured.
-        $this->groupAddPath     = trim((string) Config::get('ADAXES_GROUP_ADD_PATH', ''), '/');
-        $this->groupRemovePath  = trim((string) Config::get('ADAXES_GROUP_REMOVE_PATH', ''), '/');
-        $this->groupParam       = trim((string) Config::get('ADAXES_GROUP_PARAM', 'group')) ?: 'group';
-        $this->memberParam      = trim((string) Config::get('ADAXES_MEMBER_PARAM', 'member')) ?: 'member';
+        // The group-membership endpoint (same path for add/remove; POST adds,
+        // DELETE removes). Adaxes 2025.x: {base}/api/directoryObjects/groupMembers.
+        // ADAXES_GROUP_ADD_PATH is honored as a legacy override if present.
+        $this->groupMembersPath = trim((string) (Config::get('ADAXES_GROUP_MEMBERS_PATH', '')
+            ?: Config::get('ADAXES_GROUP_ADD_PATH', '')
+            ?: 'api/directoryObjects/groupMembers'), '/');
         $this->createObjectType = trim((string) Config::get('ADAXES_CREATE_OBJECT_TYPE', 'user')) ?: 'user';
 
         $this->sessionPath = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
@@ -262,54 +261,58 @@ final class AdaxesWriter
     }
 
     /**
-     * Add a member (by objectGUID) to a group (by DN, GUID, or cn — whatever the
-     * configured endpoint accepts). Requires ADAXES_GROUP_ADD_PATH; without it the
-     * group reconciler stays in report-only mode.
+     * Add a member to a group via the Adaxes REST API:
+     *   POST {base}/api/directoryObjects/groupMembers  {"group": …, "newMember": …}
+     * Both $group and $member are directory identifiers (distinguishedName or
+     * objectGUID) — the caller resolves a group name to its DN/GUID first.
      *
      * @return ToggleResult
      */
-    public function addToGroup(string $group, string $memberGuid): array
+    public function addToGroup(string $group, string $member): array
     {
-        return $this->groupOp($this->groupAddPath, 'ADAXES_GROUP_ADD_PATH', $group, $memberGuid);
-    }
-
-    /** Remove a member from a group (the inverse of addToGroup). @return ToggleResult */
-    public function removeFromGroup(string $group, string $memberGuid): array
-    {
-        return $this->groupOp($this->groupRemovePath, 'ADAXES_GROUP_REMOVE_PATH', $group, $memberGuid);
-    }
-
-    // ---- internals ----------------------------------------------------------
-
-    /**
-     * POST a membership change to a configurable endpoint, passing the group and
-     * member both as query params and in the JSON body (endpoints differ on which
-     * they read). No-op with a clear error when the path isn't configured.
-     *
-     * @return ToggleResult
-     */
-    private function groupOp(string $path, string $envName, string $group, string $memberGuid): array
-    {
-        if (!$this->configured()) {
-            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        if (($guard = $this->groupGuard($group, $member)) !== null) {
+            return $guard;
         }
-        $group = trim($group);
-        $memberGuid = trim($memberGuid);
-        if ($group === '' || $memberGuid === '') {
-            return ['ok' => false, 'error' => 'Group and member are both required.', 'changed' => false];
-        }
-        if ($path === '') {
-            return ['ok' => false, 'error' => "Group membership endpoint is not configured (set {$envName}).", 'changed' => false];
-        }
-
-        $url = $this->baseUrl . '/' . $path
-             . '?' . $this->groupParam . '=' . rawurlencode($group)
-             . '&' . $this->memberParam . '=' . rawurlencode($memberGuid);
-        $body = (string) json_encode([$this->groupParam => $group, $this->memberParam => $memberGuid]);
+        $url = $this->baseUrl . '/' . $this->groupMembersPath;
+        $body = (string) json_encode(['group' => trim($group), 'newMember' => trim($member)]);
         $res = $this->request('POST', $url, $body);
         return $res['ok']
             ? ['ok' => true, 'error' => null, 'changed' => true]
             : ['ok' => false, 'error' => $res['error'], 'changed' => false];
+    }
+
+    /**
+     * Remove a member from a group:
+     *   DELETE {base}/api/directoryObjects/groupMembers?group=…&member=…   (no body)
+     *
+     * @return ToggleResult
+     */
+    public function removeFromGroup(string $group, string $member): array
+    {
+        if (($guard = $this->groupGuard($group, $member)) !== null) {
+            return $guard;
+        }
+        $url = $this->baseUrl . '/' . $this->groupMembersPath
+             . '?group=' . rawurlencode(trim($group))
+             . '&member=' . rawurlencode(trim($member));
+        $res = $this->request('DELETE', $url, null);
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => true]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => false];
+    }
+
+    // ---- internals ----------------------------------------------------------
+
+    /** Shared precondition for the group ops; null when everything is present. */
+    private function groupGuard(string $group, string $member): ?array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        }
+        if (trim($group) === '' || trim($member) === '') {
+            return ['ok' => false, 'error' => 'Group and member identifiers are both required.', 'changed' => false];
+        }
+        return null;
     }
 
 

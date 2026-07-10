@@ -235,41 +235,46 @@ final class AdaxesWriterTest extends TestCase
         self::assertStringContainsString('credentials', (string) $res['error']);
     }
 
-    public function testGroupAddIsNotConfiguredByDefault(): void
+    public function testAddToGroupPostsGroupAndNewMemberBody(): void
     {
-        $res = $this->writer(null)->addToGroup('CN=All-Faculty,OU=Groups,DC=x', '2b6160e2-ad91-419c-8960-cf672c75528f');
-        self::assertFalse($res['ok']);
-        self::assertStringContainsString('ADAXES_GROUP_ADD_PATH', (string) $res['error']);
+        // Add member = POST /api/directoryObjects/groupMembers {group, newMember}.
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+
+        $groupDn = 'CN=All-Faculty,OU=Groups,DC=x';
+        $memberGuid = '2b6160e2-ad91-419c-8960-cf672c75528f';
+        $res = $w->addToGroup($groupDn, $memberGuid);
+
+        self::assertTrue($res['ok']);
+        self::assertSame('POST', $captured['method']);
+        self::assertStringContainsString('/api/directoryObjects/groupMembers', $captured['url']);
+        self::assertStringNotContainsString('?', $captured['url']); // no query params
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame($groupDn, $body['group']);
+        self::assertSame($memberGuid, $body['newMember']); // NOT "member"
+        self::assertArrayNotHasKey('member', $body);
     }
 
-    public function testGroupAddAndRemovePostWhenConfigured(): void
+    public function testRemoveFromGroupDeletesWithQueryParamsNoBody(): void
     {
-        putenv('ADAXES_GROUP_ADD_PATH=api/directoryObjects/group/members/add');
-        putenv('ADAXES_GROUP_REMOVE_PATH=api/directoryObjects/group/members/remove');
-        try {
-            $captured = null;
-            $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
-                $captured = ['method' => $method, 'url' => $url, 'body' => $body];
-                return ['status' => 200, 'body' => '{}'];
-            };
-            $w = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $fetch, 'test-token', true);
+        // Remove member = DELETE /api/directoryObjects/groupMembers?group=&member= (no body).
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
 
-            $add = $w->addToGroup('All-Faculty', '2b6160e2-ad91-419c-8960-cf672c75528f');
-            self::assertTrue($add['ok']);
-            self::assertTrue($add['changed']);
-            self::assertSame('POST', $captured['method']);
-            self::assertStringContainsString('/group/members/add', $captured['url']);
-            $body = json_decode((string) $captured['body'], true);
-            self::assertSame('All-Faculty', $body['group']);
-            self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $body['member']);
+        $res = $w->removeFromGroup('CN=CO-Everyone,OU=Groups,DC=x', '2b6160e2-ad91-419c-8960-cf672c75528f');
+        self::assertTrue($res['ok']);
+        self::assertSame('DELETE', $captured['method']);
+        self::assertStringContainsString('/api/directoryObjects/groupMembers?', $captured['url']);
+        self::assertStringContainsString('group=' . rawurlencode('CN=CO-Everyone,OU=Groups,DC=x'), $captured['url']);
+        self::assertStringContainsString('member=2b6160e2-ad91-419c-8960-cf672c75528f', $captured['url']);
+        self::assertNull($captured['body']);
+    }
 
-            $rem = $w->removeFromGroup('CN=CO-Everyone,OU=Groups,DC=x', '2b6160e2-ad91-419c-8960-cf672c75528f');
-            self::assertTrue($rem['ok']);
-            self::assertStringContainsString('/group/members/remove', $captured['url']);
-        } finally {
-            putenv('ADAXES_GROUP_ADD_PATH');
-            putenv('ADAXES_GROUP_REMOVE_PATH');
-        }
+    public function testGroupOpsRequireBothIdentifiers(): void
+    {
+        $w = $this->writer(['status' => 200, 'body' => '{}']);
+        self::assertFalse($w->addToGroup('', 'guid')['ok']);
+        self::assertFalse($w->removeFromGroup('CN=x', '')['ok']);
     }
 
     public function testDedicatedDisablePathIsPostedWhenConfigured(): void
