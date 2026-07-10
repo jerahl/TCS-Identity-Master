@@ -357,6 +357,47 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('objectGUID', $res['by']);
     }
 
+    public function testRetriesTransientTransportFailureThenSucceeds(): void
+    {
+        // First call returns null (an "HTTP 0" timeout), second succeeds.
+        $calls = 0;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls++;
+            if ($calls === 1) {
+                return null; // transient transport failure
+            }
+            return ['status' => 200, 'body' => json_encode(['properties' => [['name' => 'sAMAccountName', 'value' => 'jsmith']]])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch, null, null, null, null, 'test-token');
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'guid-1', 'is_active' => 1]]);
+        self::assertTrue($res['ok']);
+        self::assertTrue($res['found']);
+        self::assertSame(2, $calls); // retried once, then succeeded
+    }
+
+    public function testRetriesGatewayErrorButNotAuthOr404(): void
+    {
+        // 503 is transient (retried); a 401 is definitive (not retried).
+        $calls = 0;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls++;
+            return ['status' => 503, 'body' => 'gateway'];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch, null, null, null, null, 'test-token');
+        $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        self::assertSame(3, $calls); // default ADAXES_RETRY_ATTEMPTS=3, all transient
+
+        $calls2 = 0;
+        $fetch2 = function (string $method, string $url, array $headers, ?string $body) use (&$calls2): ?array {
+            $calls2++;
+            return ['status' => 401, 'body' => ''];
+        };
+        $svc2 = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch2, null, null, null, null, 'test-token');
+        $svc2->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        self::assertSame(1, $calls2); // 401 is not retried
+    }
+
     public function testUnreachableReturnsErrorEnvelope(): void
     {
         $svc = $this->service(null); // transport failure

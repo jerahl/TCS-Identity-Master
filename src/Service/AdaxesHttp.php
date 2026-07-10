@@ -67,7 +67,7 @@ trait AdaxesHttp
 
         // 1) Create an authentication session (POST credentials).
         $sessUrl = $this->baseUrl . '/' . $this->sessionPath;
-        $resp = ($this->fetch)('POST', $sessUrl, self::jsonHeaders(), (string) json_encode(['username' => $this->username, 'password' => $this->password]));
+        $resp = $this->fetchRetrying('POST', $sessUrl, self::jsonHeaders(), (string) json_encode(['username' => $this->username, 'password' => $this->password]));
         $this->debugLog('POST', $sessUrl, $resp['status'] ?? 0, '(authSessions/create — body redacted)');
         $session = $this->decode($resp);
         if (!$session['ok']) {
@@ -83,7 +83,7 @@ trait AdaxesHttp
 
         // 2) Exchange the session for a security token.
         $tokUrl = $this->baseUrl . '/' . $this->tokenPath;
-        $resp2 = ($this->fetch)('POST', $tokUrl, self::jsonHeaders(), (string) json_encode(['sessionId' => $sessionId]));
+        $resp2 = $this->fetchRetrying('POST', $tokUrl, self::jsonHeaders(), (string) json_encode(['sessionId' => $sessionId]));
         $this->debugLog('POST', $tokUrl, $resp2['status'] ?? 0, '(auth — token redacted)');
         $tok = $this->decode($resp2);
         if (!$tok['ok']) {
@@ -191,7 +191,7 @@ trait AdaxesHttp
             $headers['Content-Type'] = 'application/json';
         }
 
-        $resp = ($this->fetch)($method, $url, $headers, $body);
+        $resp = $this->fetchRetrying($method, $url, $headers, $body);
         $decoded = $this->decode($resp);
         $status = $resp['status'] ?? 0;
         $location = is_array($resp) ? ($resp['location'] ?? null) : null;
@@ -241,6 +241,53 @@ trait AdaxesHttp
         if (@file_put_contents($path, $line . "\n", FILE_APPEND | LOCK_EX) === false) {
             error_log('[idm][adaxes] ' . $line);
         }
+    }
+
+    /**
+     * Send through the injected transport, retrying transient failures. Adaxes
+     * intermittently drops the connection / times out (the transport returns null,
+     * i.e. "HTTP 0") or answers a gateway error (502/503/504) — a short wait and
+     * retry almost always succeeds. Auth-rejections (401/403), 404s, redirects and
+     * real 4xx/5xx are NOT transient and return immediately.
+     *
+     * Controlled by ADAXES_RETRY_ATTEMPTS (total tries, default 3) and
+     * ADAXES_RETRY_DELAY_MS (base backoff, default 400ms; grows linearly per try).
+     *
+     * @param array<string,string> $headers
+     * @return array{status:int,body:string}|null
+     */
+    private function fetchRetrying(string $method, string $url, array $headers, ?string $body): ?array
+    {
+        $attempts = max(1, Config::int('ADAXES_RETRY_ATTEMPTS', 3));
+        $delayMs  = max(0, Config::int('ADAXES_RETRY_DELAY_MS', 400));
+
+        $resp = null;
+        for ($try = 1; $try <= $attempts; $try++) {
+            $resp = ($this->fetch)($method, $url, $headers, $body);
+            if (!self::isTransient($resp)) {
+                return $resp; // success, or a definitive (non-retryable) response
+            }
+            if ($try < $attempts && $delayMs > 0) {
+                usleep($delayMs * 1000 * $try); // linear backoff: 400ms, 800ms, …
+            }
+        }
+        return $resp; // exhausted retries — return the last (transient) response
+    }
+
+    /**
+     * Whether a response is a transient failure worth retrying: a transport-level
+     * failure (null / "HTTP 0" — timeout, connection reset, DNS) or a gateway
+     * error (502/503/504). A definitive status (including 500) is not retried.
+     *
+     * @param array{status:int,body:string}|null $resp
+     */
+    private static function isTransient(?array $resp): bool
+    {
+        if ($resp === null) {
+            return true;
+        }
+        $status = (int) ($resp['status'] ?? 0);
+        return $status === 0 || $status === 502 || $status === 503 || $status === 504;
     }
 
     /**
