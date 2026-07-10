@@ -94,6 +94,25 @@ $eventTitle = [
             Not yet assigned. OneSync will mint these once the record is activated.
           <?php endif; ?>
         </div>
+
+        <?php if (!empty($canAdmin) && $p['username']): ?>
+        <div class="identity-actions" style="margin-top:12px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; border-top:1px solid #E4EBF0; padding-top:12px;">
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/rename')) ?>"
+                onsubmit="return confirm('Schedule a username/email rename for this person? The employee, principal, and IT will be emailed, and the change applies after the notice period.');"
+                style="display:flex; gap:6px; align-items:center;">
+            <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+            <input type="text" name="old_name" class="input" placeholder="previous name (optional)" style="width:180px;">
+            <button type="submit" class="btn btn--sm">Rename (last-name change)</button>
+          </form>
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/unlink')) ?>"
+                onsubmit="return confirm('Unlink this identity? Clears the username/email/UPN and the lock and detaches the AD link so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id.');"
+                style="display:flex; gap:6px; align-items:center;">
+            <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+            <input type="text" name="reason" class="input" placeholder="reason (e.g. HR typo)" style="width:160px;">
+            <button type="submit" class="btn btn--sm btn--danger">Unlink username</button>
+          </form>
+        </div>
+        <?php endif; ?>
       </div>
 
       <!-- Demographics -->

@@ -217,21 +217,34 @@ final class AdaxesService
      */
     public function memberOf(string $idOrDn): array
     {
+        $res = $this->attributeValues($idOrDn, 'memberOf');
+        return ['ok' => $res['ok'], 'error' => $res['error'], 'found' => $res['found'], 'groups' => $res['values']];
+    }
+
+    /**
+     * The raw values of a (possibly multi-valued) attribute on a directory
+     * object, without the scalar comma-flattening — for attributes whose values
+     * contain commas (memberOf DNs, proxyAddresses). Requests only that attribute.
+     *
+     * @return array{ok:bool, error:?string, found:bool, values:list<string>}
+     */
+    public function attributeValues(string $idOrDn, string $attribute): array
+    {
         if (!$this->configured()) {
-            return ['ok' => false, 'error' => 'Adaxes is not configured.', 'found' => false, 'groups' => []];
+            return ['ok' => false, 'error' => 'Adaxes is not configured.', 'found' => false, 'values' => []];
         }
         try {
             $url = $this->baseUrl . '/' . $this->objectsPath
                  . '?' . $this->objectParam . '=' . rawurlencode($idOrDn)
-                 . '&properties=' . rawurlencode('memberOf');
+                 . '&properties=' . rawurlencode($attribute);
             $res = $this->request('GET', $url);
             if (!$res['ok']) {
                 if ($res['status'] === 404) {
-                    return ['ok' => true, 'error' => null, 'found' => false, 'groups' => []];
+                    return ['ok' => true, 'error' => null, 'found' => false, 'values' => []];
                 }
-                return ['ok' => false, 'error' => $res['error'], 'found' => false, 'groups' => []];
+                return ['ok' => false, 'error' => $res['error'], 'found' => false, 'values' => []];
             }
-            return ['ok' => true, 'error' => null, 'found' => true, 'groups' => self::rawMultiValue($res['data'], 'memberOf')];
+            return ['ok' => true, 'error' => null, 'found' => true, 'values' => self::rawMultiValue($res['data'], $attribute)];
         } finally {
             $this->endSession();
         }

@@ -186,6 +186,64 @@ final class AdaxesWriter
     }
 
     /**
+     * Rename an account: set a new sAMAccountName (and typically userPrincipalName
+     * + mail). This is the ONLY path that changes sAMAccountName — it bypasses the
+     * modify() immutability guard because the rename workflow (a deliberate,
+     * scheduled, notified last-name change) explicitly intends it. The object's
+     * cn/DN is left as-is.
+     *
+     * @param array<string,string> $extra e.g. userPrincipalName, mail
+     * @return ModifyResult
+     */
+    public function rename(string $objectGuid, string $newSamAccountName, array $extra = []): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => []];
+        }
+        $objectGuid = trim($objectGuid);
+        $newSam = trim($newSamAccountName);
+        if ($objectGuid === '' || $newSam === '') {
+            return ['ok' => false, 'error' => 'objectGUID and new sAMAccountName are both required.', 'changed' => []];
+        }
+        $attrs = ['sAMAccountName' => $newSam] + $extra;
+        $body = ['properties' => self::propertyList($attrs)];
+        $url  = $this->baseUrl . '/' . $this->modifyPath . '?' . $this->objectParam . '=' . rawurlencode($objectGuid);
+
+        $res = $this->request('PATCH', $url, (string) json_encode($body));
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => $attrs]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => []];
+    }
+
+    /**
+     * Set the account's full proxyAddresses list (the email aliases). Multi-valued,
+     * so the caller reads the current list, adds/removes, and passes the new whole
+     * list here (read-modify-write). The primary SMTP address is the `SMTP:` entry
+     * (uppercase); secondaries/aliases are `smtp:` (lowercase).
+     *
+     * @param list<string> $addresses
+     * @return ToggleResult
+     */
+    public function setProxyAddresses(string $objectGuid, array $addresses): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        }
+        $objectGuid = trim($objectGuid);
+        if ($objectGuid === '') {
+            return ['ok' => false, 'error' => 'No objectGUID.', 'changed' => false];
+        }
+        $values = array_values(array_filter(array_map('trim', $addresses), static fn($v) => $v !== ''));
+        $body = ['properties' => [['name' => 'proxyAddresses', 'value' => $values]]];
+        $url  = $this->baseUrl . '/' . $this->modifyPath . '?' . $this->objectParam . '=' . rawurlencode($objectGuid);
+
+        $res = $this->request('PATCH', $url, (string) json_encode($body));
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => true]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => false];
+    }
+
+    /**
      * Disable an account. By default this toggles the `accountDisabled` property
      * through the modify endpoint; if ADAXES_DISABLE_PATH names a dedicated
      * operation endpoint, that is POSTed instead.

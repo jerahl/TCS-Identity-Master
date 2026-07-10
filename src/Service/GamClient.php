@@ -172,6 +172,26 @@ final class GamClient
         return $this->readBack($userKey, $body);
     }
 
+    /** Add an email alias to a user. @return array{ok:bool,error:?string} */
+    public function addAlias(string $userKey, string $alias): array
+    {
+        $res = $this->run(['create', 'alias', $alias, 'user', $userKey]);
+        if ($res === null) {
+            return ['ok' => false, 'error' => $this->unreachable()];
+        }
+        return $res['status'] === 0 ? ['ok' => true, 'error' => null] : ['ok' => false, 'error' => $this->gamError($res, 'create alias')];
+    }
+
+    /** Remove an email alias. @return array{ok:bool,error:?string} */
+    public function removeAlias(string $alias): array
+    {
+        $res = $this->run(['delete', 'alias', $alias]);
+        if ($res === null) {
+            return ['ok' => false, 'error' => $this->unreachable()];
+        }
+        return $res['status'] === 0 ? ['ok' => true, 'error' => null] : ['ok' => false, 'error' => $this->gamError($res, 'delete alias')];
+    }
+
     // ---- internals -------------------------------------------------------------
 
     /**

@@ -369,6 +369,43 @@ report-only (dry-run shows the intended add/remove per person).
 
 ---
 
+## Identity lifecycle: email, unlink, delayed events, rename
+
+Beyond create/edit/disable/groups, IDM owns the human side of identity changes.
+
+- **Email.** `Mailer` sends notifications (rename notices, alias-expiry reminders)
+  through a pluggable transport (`smtp` / `sendmail` / disabled default) and logs
+  every send to `email_outbox`. Off until `MAIL_ENABLED=true` + a transport; a
+  disabled send is queued, never dropped.
+- **Unlink username.** `PersonWriter::unlinkUsername` undoes a bad mint from a
+  wrong name / employee id — clears username/email/upn + the lock and deactivates
+  the `ad` crosswalk so the reconciler re-assigns a corrected identity. Admin-only
+  (`/people/{id}/unlink`), and it cancels any pending rename events for the person.
+- **Delayed events.** `scheduled_event` + `ScheduledEventService` are a durable
+  queue for future actions; `bin/run_scheduled_events.php` (a systemd timer, every
+  ~15 min) claims due rows and `ScheduledEventRunner` dispatches them by type.
+  Failures retry then park; scheduling is idempotent via a dedupe key.
+- **Rename on last-name change.** When a person's legal last name changes, an admin
+  approves the rename (`RenameService::approve`, `/people/{id}/rename`). IDM mints
+  the new username and:
+  1. **now** — emails the employee, their **principal** (looked up from the golden
+     record: an active person at the same building whose assignment title contains
+     *Principal* — same data PowerSchool has, always present), and **IT**, stating
+     the name change and that on **cutover date** (`RENAME_NOTICE_DAYS`, default 7)
+     the username/email will change from XX to YY, with the old address delivering
+     for `RENAME_ALIAS_DAYS` (default 90);
+  2. **at cutover** — renames the AD account (`sAMAccountName`/UPN/mail — the one
+     sanctioned exception to username immutability, via `AdaxesWriter::rename`),
+     keeps the old address as a delivering **alias** (`proxyAddresses`, read-modify-
+     write) in AD **and** Google, stamps the golden record, and schedules the alias
+     removal + reminders;
+  3. **before removal** — emails reminders (`RENAME_ALIAS_REMINDER_DAYS`, default
+     `14,3`);
+  4. **at +90 days** — removes the old alias in AD + Google and confirms by email.
+
+  The rename is admin-approved (not automatic on feed drift), so a typo/hyphenation
+  fix doesn't silently rename accounts.
+
 ## Guardrails (invariants across all phases)
 
 1. **Link before write.** Edit/disable only ever act on a person with a linked
@@ -462,4 +499,13 @@ destination. IDM state is unchanged; no data migration to reverse.
 - Confirm `AD_DEPT_BUS_DRIVER` — IDM defaults the Bus Driver department override
   to `Transportation`; verify the exact string OneSync writes (group matching is
   string-sensitive).
+- **Email transport.** `Mailer` ships with SMTP and sendmail transports; confirm
+  which the district uses (an internal relay / Exchange Online submission on :587,
+  vs. the host MTA) and set `MAIL_*` / `SMTP_*`. A Microsoft 365 Graph transport
+  can be added behind the same `MailTransport` interface if preferred.
+- **Rename `proxyAddresses` + Google alias mechanics.** The AD alias lifecycle is
+  read-modify-write on `proxyAddresses` via the modify endpoint, and Google uses
+  the Admin SDK / GAM alias calls — confirm both against the deployed builds (same
+  "confirm payload shapes" caveat), and confirm `sAMAccountName` rename is
+  permitted for the write account.
 - Decide whether to add `person.username_source` provenance (reporting only).

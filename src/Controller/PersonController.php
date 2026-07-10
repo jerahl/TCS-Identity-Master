@@ -423,6 +423,38 @@ final class PersonController extends Controller
         return $this->redirect($back);
     }
 
+    /**
+     * Approve a username/email rename (admin-only) after a last-name change: mints
+     * the new username, schedules the cutover RENAME_NOTICE_DAYS out, and emails
+     * the employee, principal, and IT. No-op when the username wouldn't change.
+     */
+    public function rename(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        if ($id <= 0 || $this->people->find($id) === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        try {
+            $oldName = trim((string) ($_POST['old_name'] ?? '')) ?: null;
+            $res = (new \App\Service\RenameService())->approve($id, $this->currentUser()['name'], $oldName);
+            $this->flash($res['scheduled']
+                ? "Rename approved — {$res['note']}"
+                : $res['note']);
+        } catch (\Throwable $e) {
+            error_log('[idm] person rename: ' . $e->getMessage());
+            $this->flash('Could not schedule the rename: ' . $e->getMessage());
+        }
+        return $this->redirect($back);
+    }
+
     public function disable(array $params): string
     {
         $id = (int) ($params['id'] ?? 0);

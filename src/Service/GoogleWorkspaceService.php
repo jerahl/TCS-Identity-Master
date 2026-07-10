@@ -529,6 +529,35 @@ final class GoogleWorkspaceService
         return $this->setSuspended($userKey, false, 'enable');
     }
 
+    /**
+     * Add a secondary email alias to a Google account (keeps delivering the old
+     * address after a rename). @return array{ok:bool,error:?string}
+     */
+    public function addAlias(string $userKey, string $alias): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Direct Google provisioning is off.'];
+        }
+        if ($this->gam !== null) {
+            return $this->gam->addAlias($userKey, $alias);
+        }
+        $res = $this->request('POST', $this->apiBase . '/users/' . rawurlencode($userKey) . '/aliases', (string) json_encode(['alias' => $alias]));
+        return ['ok' => $res['ok'], 'error' => $res['error']];
+    }
+
+    /** Remove a secondary email alias. @return array{ok:bool,error:?string} */
+    public function removeAlias(string $userKey, string $alias): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Direct Google provisioning is off.'];
+        }
+        if ($this->gam !== null) {
+            return $this->gam->removeAlias($alias);
+        }
+        $res = $this->request('DELETE', $this->apiBase . '/users/' . rawurlencode($userKey) . '/aliases/' . rawurlencode($alias));
+        return ['ok' => $res['ok'], 'error' => $res['error']];
+    }
+
     private function setSuspended(string $userKey, bool $suspended, string $action): array
     {
         if (!$this->configured()) {

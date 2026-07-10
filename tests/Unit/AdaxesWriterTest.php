@@ -170,6 +170,39 @@ final class AdaxesWriterTest extends TestCase
         self::assertSame('false', $props['accountDisabled']);
     }
 
+    public function testRenameSendsSamAccountNameUnlikeModify(): void
+    {
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+
+        $res = $w->rename('2b6160e2-ad91-419c-8960-cf672c75528f', 'jjones', [
+            'userPrincipalName' => 'jjones@tusc.k12.al.us',
+            'mail'              => 'jjones@tusc.k12.al.us',
+        ]);
+        self::assertTrue($res['ok']);
+        self::assertSame('PATCH', $captured['method']);
+        $body = json_decode((string) $captured['body'], true);
+        $props = [];
+        foreach ($body['properties'] as $p) {
+            $props[$p['name']] = $p['value'];
+        }
+        // Rename is the sanctioned exception — sAMAccountName IS sent here.
+        self::assertSame('jjones', $props['sAMAccountName']);
+        self::assertSame('jjones@tusc.k12.al.us', $props['mail']);
+    }
+
+    public function testSetProxyAddressesSendsTheFullMultiValuedList(): void
+    {
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+
+        $res = $w->setProxyAddresses('2b6160e2-ad91-419c-8960-cf672c75528f', ['SMTP:jjones@x', 'smtp:jsmith@x', '']);
+        self::assertTrue($res['ok']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('proxyAddresses', $body['properties'][0]['name']);
+        self::assertSame(['SMTP:jjones@x', 'smtp:jsmith@x'], $body['properties'][0]['value']); // blanks dropped, array preserved
+    }
+
     public function testTransportFailureReturnsUnreachable(): void
     {
         $w = $this->writer(null); // transport failure

@@ -277,6 +277,34 @@ final class PersonWriter
     }
 
     /**
+     * Apply a rename cutover to the golden record: set the new username/email/upn
+     * (the account stays LOCKED — this is a sanctioned change, not an unlock).
+     * Audited + a lifecycle event. Returns whether anything changed.
+     */
+    public function applyRename(int $personId, string $newUsername, string $newEmail, string $newUpn, string $actor): bool
+    {
+        $stmt = $this->db->prepare('SELECT username, email, upn FROM person WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        $before = $stmt->fetch();
+        if ($before === false) {
+            return false;
+        }
+        $this->db->prepare(
+            'UPDATE person
+                SET username = :u, email = :e, upn = :pn,
+                    username_assigned_at = CURRENT_TIMESTAMP, username_locked = 1, updated_by = :actor
+              WHERE person_id = :id'
+        )->execute([':u' => $newUsername, ':e' => $newEmail, ':pn' => $newUpn, ':actor' => $actor, ':id' => $personId]);
+
+        $this->audit->log('person', $personId, 'update',
+            ['username' => $before['username'], 'email' => $before['email'], 'upn' => $before['upn']],
+            ['username' => $newUsername, 'email' => $newEmail, 'upn' => $newUpn], $actor);
+        $this->audit->lifecycle($personId, 'username_assigned',
+            ['summary' => "Rename applied: {$before['username']} → {$newUsername} (email {$newEmail})."], $actor);
+        return true;
+    }
+
+    /**
      * Unlink a person's assigned identity — for when the wrong name/employee id
      * caused a bad username to be minted/linked. Clears username/email/upn and the
      * lock (so the minter can re-assign a correct one), and deactivates the person's
