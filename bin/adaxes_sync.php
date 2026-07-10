@@ -33,6 +33,7 @@ declare(strict_types=1);
 
 use App\Service\AdaxesService;
 use App\Service\AdaxesWriter;
+use App\Service\ServiceRunLog;
 use App\Sync\AdaxesReconciler;
 
 require __DIR__ . '/../src/bootstrap.php';
@@ -107,9 +108,17 @@ try {
         echo 'Restricted to ' . count($onlyIds) . ' person(s): ' . implode(', ', $onlyIds) . "\n";
     }
 
+    // Record the run so the admin "Services" page shows when AD last synced and
+    // its outcome. Dry runs change nothing, so they aren't recorded.
+    $runLog = $dryRun ? null : new ServiceRunLog();
+    $runId  = $runLog?->start('adaxes', 'cron', 'system:adaxes_sync');
+
     $reconciler = new AdaxesReconciler($db, new AdaxesService(), new AdaxesWriter());
     $result = $reconciler->run($dryRun, $phases, $limit, $log, $onlyIds);
 } catch (\Throwable $e) {
+    if (isset($runLog, $runId)) {
+        $runLog?->finish($runId, 'failed', [], $e->getMessage());
+    }
     fwrite(STDERR, 'Adaxes reconcile failed: ' . $e->getMessage() . "\n");
     exit(2);
 }
@@ -146,4 +155,22 @@ foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
 }
 
 echo "\nTotal errors: {$result['errors']}\n";
+
+// Close the run row with a compact per-phase counts summary.
+if ($runLog !== null) {
+    $counts = ['errors' => (int) $result['errors'], 'write_enabled' => !empty($result['write_enabled'])];
+    foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
+        if (isset($result[$phase])) {
+            foreach (['applied', 'added', 'removed', 'created', 'errors'] as $k) {
+                if (isset($result[$phase][$k]) && $result[$phase][$k] > 0) {
+                    $counts["{$phase}_{$k}"] = (int) $result[$phase][$k];
+                }
+            }
+        }
+    }
+    $summary = 'phases ' . implode(',', $phases) . ' · errors ' . (int) $result['errors']
+        . (!empty($result['write_enabled']) ? '' : ' · writes OFF');
+    $runLog->finish($runId, $result['errors'] > 0 ? 'failed' : 'complete', $counts, $summary);
+}
+
 exit($result['errors'] > 0 ? 1 : 0);

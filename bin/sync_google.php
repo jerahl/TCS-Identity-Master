@@ -24,6 +24,7 @@ declare(strict_types=1);
  */
 
 use App\Db;
+use App\Service\ServiceRunLog;
 use App\Sync\GoogleSync;
 
 require __DIR__ . '/../src/bootstrap.php';
@@ -101,19 +102,34 @@ $log = $verbose ? static function (string $event, array $d) use ($dryRun): void 
     fflush(STDOUT);
 } : null;
 
+// Record the run so the admin "Services" page shows when Google last synced.
+// Dry runs change nothing, so they aren't recorded.
+$runLog = $dryRun ? null : new ServiceRunLog();
+$runId  = $runLog?->start('google', 'cron', 'system:google_sync');
+
 try {
     $result = (new GoogleSync())->run($dryRun, 'system:google_sync', $log, $onlyIds);
 } catch (\Throwable $e) {
+    $runLog?->finish($runId, 'failed', [], $e->getMessage());
     fwrite(STDERR, 'Google sync failed: ' . $e->getMessage() . "\n");
     exit(1);
 }
 
 if (!$result['configured']) {
+    $runLog?->finish($runId, 'failed', [], (string) ($result['note'] ?? 'not configured'));
     fwrite(STDERR, ($result['note'] ?? 'Direct Google provisioning is off.') . "\n");
     exit(1);
 }
 
 $c = $result['counts'];
+if ($runLog !== null) {
+    $status = ($result['blocked'] || $c['errors'] > 0) ? 'failed' : 'complete';
+    $summary = $result['blocked']
+        ? (string) ($result['note'] ?? 'blocked by guardrail')
+        : sprintf('created %d · pushed %d · suspended %d · moved %d · errors %d',
+            $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['errors']);
+    $runLog->finish($runId, $status, $c, $summary);
+}
 echo 'Google Workspace sync' . ($result['dry_run'] ? " (DRY RUN)\n" : "\n");
 echo "  eligible {$c['eligible']}  ·  created {$c['created']}  ·  pushed {$c['pushed']}  ·  suspended {$c['suspended']}  ·  moved {$c['moved']}\n";
 echo "  in-sync {$c['in_sync']}  ·  no-email {$c['no_email']}  ·  no-account {$c['no_account']}"

@@ -103,6 +103,31 @@ final class SettingsServiceTest extends TestCase
         }
     }
 
+    public function testSetBoolTogglesOneKeyOnly(): void
+    {
+        $db = $this->db();
+        $svc = $this->service($db);
+        // Seed another bool via save() so we can prove setBool doesn't touch it.
+        $svc->save(['AD_BASE_DN' => 'DC=x', 'MAIL_ENABLED' => '1'], 'tester');
+        self::assertSame('true', $svc->stored()['MAIL_ENABLED']);
+
+        $svc->setBool('ONESYNC_DB_SYNC_ENABLED', false, 'tester');
+        $stored = $this->service($db)->stored();
+        self::assertSame('false', $stored['ONESYNC_DB_SYNC_ENABLED']);
+        self::assertSame('true', $stored['MAIL_ENABLED']);      // untouched
+        self::assertSame('DC=x', $stored['AD_BASE_DN']);        // untouched
+
+        $svc->setBool('ONESYNC_DB_SYNC_ENABLED', true, 'tester');
+        self::assertSame('true', $this->service($db)->stored()['ONESYNC_DB_SYNC_ENABLED']);
+    }
+
+    public function testSetBoolRejectsNonBoolAndEnvLockedKeys(): void
+    {
+        $db = $this->db();
+        $this->expectException(\InvalidArgumentException::class);
+        $this->service($db)->setBool('AD_BASE_DN', true, 'tester'); // not a bool field
+    }
+
     public function testAuditRecordsEachChange(): void
     {
         $db = $this->db();

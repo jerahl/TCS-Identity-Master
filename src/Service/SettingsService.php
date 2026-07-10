@@ -129,6 +129,13 @@ final class SettingsService
                 ['key' => 'ADAXES_DEBUG', 'label' => 'Debug logging', 'type' => 'bool', 'help' => 'Logs request URLs + response snippets (contains PII). Turn off when done.'],
             ],
         ],
+        [
+            'title' => 'Cutover',
+            'help'  => 'Switches for the OneSync → IDM cutover. Turn the OneSync DB sync off once IDM is authoritative for AD/Google so provisioning results stop being pulled from OneSync.',
+            'fields' => [
+                ['key' => 'ONESYNC_DB_SYNC_ENABLED', 'label' => 'OneSync DB sync enabled', 'type' => 'bool', 'help' => 'On (default) = pull provisioning results from OneSync. Off = cutover — IDM is authoritative; the sync is skipped.'],
+            ],
+        ],
     ];
 
     /** @return list<string> every whitelisted key (the write boundary). */
@@ -235,6 +242,32 @@ final class SettingsService
             Config::overrides($this->stored()); // reflect immediately in this request
         }
         return $changed;
+    }
+
+    /**
+     * Set a single whitelisted bool setting (true/false) — for one-click toggles
+     * like the OneSync cutover switch, without touching any other key (unlike
+     * save(), which reconciles every field in the schema). Audited; the override
+     * layer is refreshed so the change takes effect this request. No-op if
+     * unchanged; throws if the key isn't a whitelisted bool or is env-locked.
+     */
+    public function setBool(string $key, bool $value, string $actor): void
+    {
+        $field = self::field($key);
+        if ($field === null || ($field['type'] ?? '') !== 'bool') {
+            throw new \InvalidArgumentException("Not a whitelisted bool setting: {$key}");
+        }
+        if (Config::isEnvLocked($key)) {
+            throw new \RuntimeException("{$key} is set in .env and cannot be changed here.");
+        }
+        $store = $value ? 'true' : 'false';
+        $existing = $this->stored()[$key] ?? null;
+        if ($existing === $store) {
+            return;
+        }
+        $this->upsert($key, $store, $actor);
+        $this->audit()->log('config', null, 'update', [$key => $existing], [$key => $store], $actor);
+        Config::overrides($this->stored());
     }
 
     private function upsert(string $key, string $value, string $actor): void

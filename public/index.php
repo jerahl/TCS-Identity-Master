@@ -164,6 +164,7 @@ try {
     $router->post('/admin/run/feeds', $guard('admin', static fn() => $admin->runFeeds()));
     $router->post('/admin/run/students', $guard('admin', static fn() => $admin->runStudents()));
     $router->post('/admin/run/onesync-db', $guard('admin', static fn() => $admin->runOnesyncDb()));
+    $router->post('/admin/onesync-sync', $guard('admin', static fn() => $admin->toggleOnesync()));
     $router->get('/security', $guard('admin', static fn() => $security->index()));
 
     $router->setNotFound(static fn() => $page->notFound());
