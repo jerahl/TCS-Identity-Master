@@ -628,6 +628,26 @@ final class AdaxesReconcilerTest extends TestCase
         }
     }
 
+    public function testOnlyPersonIdsRestrictsEveryPhaseToTheCohort(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        // Two net-new hires; only person 1 is in the test cohort.
+        $this->seedPerson($db, ['person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending', 'first_name' => 'In', 'last_name' => 'Cohort', 'primary_school_id' => 5]);
+        $this->seedPerson($db, ['person_id' => 2, 'person_type' => 'faculty', 'status' => 'pending', 'first_name' => 'Not', 'last_name' => 'Cohort', 'primary_school_id' => 5]);
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['create'], limit: null, log: null, onlyPersonIds: [1]);
+
+        // Only person 1 was created; person 2 was never examined.
+        self::assertSame(1, $res['create']['applied']);
+        $ids = array_column($res['create']['items'], 'person_id');
+        self::assertSame([1], array_values(array_unique($ids)));
+        self::assertNotFalse($db->query("SELECT username FROM person WHERE person_id = 1")->fetchColumn());
+        self::assertNull($db->query("SELECT username FROM person WHERE person_id = 2")->fetchColumn());
+    }
+
     // ---- groups (Phase 4) ---------------------------------------------------
 
     public function testGroupsPhaseAddsMissingAndRemovesManagedOnlyWithinTheSet(): void

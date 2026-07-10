@@ -12,11 +12,17 @@ declare(strict_types=1);
  *   php bin/adaxes_sync.php --phases=disable,edit      # apply (requires ADAXES_WRITE_ENABLED=true)
  *   php bin/adaxes_sync.php                            # apply all phases
  *   php bin/adaxes_sync.php --dry-run --verbose        # stream per-person progress
+ *   php bin/adaxes_sync.php --only=1234,1250 --verbose # test a few users live
+ *   php bin/adaxes_sync.php --employee=T9001 --dry-run # target by employee id
  *
  * Options:
  *   --dry-run           Compute and print intended writes; change nothing.
- *   --phases=a,b,c      Comma list of disable,edit,create (default: all three).
+ *   --phases=a,b,c      Comma list of disable,edit,create,groups (default: all).
  *   --limit=N           Cap people examined per phase (default: all).
+ *   --only=IDs          Restrict to these person_ids (comma list) — for testing a
+ *                       handful of accounts live (Business Rules included) without
+ *                       touching anyone else.
+ *   --employee=IDs      Same, but select by employee_id (resolved to person_ids).
  *   --verbose, -v       Stream one line per person as each outcome is decided
  *                       (flushed live), instead of only the batch summary.
  *
@@ -74,8 +80,35 @@ if (isset($opts['phases'])) {
 
 try {
     $db = \App\Db::connect(\App\Db::ROLE_APP);
+
+    // Test-cohort targeting: restrict to specific person_ids (--only) and/or
+    // employee_ids (--employee, resolved to person_ids). Lets an operator exercise
+    // the full pipeline (and the Adaxes Business Rules a real write triggers)
+    // against a handful of test accounts without syncing everyone.
+    $onlyIds = [];
+    foreach (array_filter(array_map('trim', explode(',', (string) ($opts['only'] ?? '')))) as $id) {
+        $onlyIds[] = (int) $id;
+    }
+    $employeeIds = array_values(array_filter(array_map('trim', explode(',', (string) ($opts['employee'] ?? '')))));
+    if ($employeeIds !== []) {
+        $ph = implode(',', array_fill(0, count($employeeIds), '?'));
+        $stmt = $db->prepare("SELECT person_id FROM person WHERE employee_id IN ({$ph})");
+        $stmt->execute($employeeIds);
+        foreach ($stmt->fetchAll() as $r) {
+            $onlyIds[] = (int) $r['person_id'];
+        }
+        if ($onlyIds === []) {
+            fwrite(STDERR, 'No person matched --employee=' . $opts['employee'] . "\n");
+            exit(2);
+        }
+    }
+    $onlyIds = array_values(array_unique($onlyIds));
+    if ($onlyIds !== []) {
+        echo 'Restricted to ' . count($onlyIds) . ' person(s): ' . implode(', ', $onlyIds) . "\n";
+    }
+
     $reconciler = new AdaxesReconciler($db, new AdaxesService(), new AdaxesWriter());
-    $result = $reconciler->run($dryRun, $phases, $limit, $log);
+    $result = $reconciler->run($dryRun, $phases, $limit, $log, $onlyIds);
 } catch (\Throwable $e) {
     fwrite(STDERR, 'Adaxes reconcile failed: ' . $e->getMessage() . "\n");
     exit(2);

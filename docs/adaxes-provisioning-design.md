@@ -457,7 +457,14 @@ reporting. Decide during Phase 3.
    proposes disables/edits for known accounts and **creates only genuine new hires**.
    Investigate any unexpected create (usually a missing GUID link, i.e. a
    correlation gap, not a real new person).
-3. **Enable writes for disable/edit** first (Phases 1–2 in production) and watch a
+3. **Live-test a small cohort.** With `ADAXES_WRITE_ENABLED=true`, target a few
+   test accounts so a *real* write fires (and with it the Adaxes Business Rules —
+   home dir, groups, licensing, password) without touching anyone else:
+   `php bin/adaxes_sync.php --only=<person_ids> --verbose` (or
+   `--employee=<employee_ids>`). Verify the account, its OU, attributes, group
+   membership, and the Business-Rule side effects in AD, then widen. Dry-run the
+   same cohort first (`--only=… --dry-run`).
+4. **Enable writes for disable/edit** first (Phases 1–2 in production) and watch a
    few cycles.
 4. **Enable create.** Turn on `ADAXES_WRITE_ENABLED` create path with a low
    `ADAXES_WRITE_MAX_CREATES`; ramp up once clean.

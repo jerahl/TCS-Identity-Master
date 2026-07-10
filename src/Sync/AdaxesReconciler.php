@@ -59,6 +59,9 @@ final class AdaxesReconciler
     /** Optional live-progress callback: fn(string $event, array $data): void. */
     private $log = null;
 
+    /** When non-empty, every phase is restricted to these person_ids (test cohort). */
+    private array $restrictPersonIds = [];
+
     public function __construct(
         private readonly PDO $db,
         private readonly AdaxesService $read,
@@ -90,10 +93,15 @@ final class AdaxesReconciler
      *        callback: fires 'phase' (with the phase name + people count) as each phase
      *        starts and 'item' as each person's outcome is decided. Lets a CLI stream
      *        progress instead of waiting for the batch summary.
+     * @param list<int> $onlyPersonIds restrict EVERY phase to these person_ids — for
+     *        testing a handful of accounts live (create/edit/disable/groups + the
+     *        Adaxes Business Rules that fire on a real write) without touching anyone
+     *        else. Empty = the whole population.
      * @return array<string,mixed>
      */
-    public function run(bool $dryRun = true, array $phases = ['disable', 'edit', 'create', 'groups'], ?int $limit = null, ?callable $log = null): array
+    public function run(bool $dryRun = true, array $phases = ['disable', 'edit', 'create', 'groups'], ?int $limit = null, ?callable $log = null, array $onlyPersonIds = []): array
     {
+        $this->restrictPersonIds = array_values(array_unique(array_map('intval', $onlyPersonIds)));
         $this->log = $log;
         $writeEnabled = $this->writer->configured();
         $apply = !$dryRun && $writeEnabled;
@@ -950,8 +958,12 @@ final class AdaxesReconciler
                        (SELECT a.title FROM assignment a WHERE a.person_id = p.person_id
                          ORDER BY a.is_primary DESC, a.id LIMIT 1) AS title
                 FROM person p
-                WHERE ' . $where . '
-                ORDER BY p.person_id';
+                WHERE ' . $where;
+        // Test-cohort restriction: values are ints (cast in run()), so inlining is safe.
+        if ($this->restrictPersonIds !== []) {
+            $sql .= ' AND p.person_id IN (' . implode(',', array_map('intval', $this->restrictPersonIds)) . ')';
+        }
+        $sql .= ' ORDER BY p.person_id';
         if ($limit !== null) {
             $sql .= ' LIMIT ' . (int) $limit;
         }
