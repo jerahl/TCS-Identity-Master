@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Sync;
 
+use App\Config;
 use App\Db;
 use App\Import\PersonWriter;
 use App\Import\SyncStatusImporter;
@@ -84,12 +85,13 @@ final class GoogleProvisioner
         }
 
         return match ($action) {
-            'link'    => $this->doLink($person, $corr, $actor, $dryRun),
-            'create'  => $this->doCreate($person, $sourceIds, $corr, $ou, $actor, $dryRun),
-            'push'    => $this->doPush($person, $corr, $ou, $actor, $dryRun),
-            'suspend' => $this->doSuspend($person, $corr, $actor, $dryRun),
-            'restore' => $this->doRestore($person, $corr, $actor, $dryRun),
-            default   => self::result(false, "Unknown Google action '{$action}'.", $action),
+            'link'         => $this->doLink($person, $corr, $actor, $dryRun),
+            'create'       => $this->doCreate($person, $sourceIds, $corr, $ou, $actor, $dryRun),
+            'push'         => $this->doPush($person, $corr, $ou, $actor, $dryRun),
+            'suspend'      => $this->doSuspend($person, $corr, $actor, $dryRun),
+            'move_disabled' => $this->doMoveDisabled($person, $corr, $actor, $dryRun),
+            'restore'      => $this->doRestore($person, $corr, $actor, $dryRun),
+            default        => self::result(false, "Unknown Google action '{$action}'.", $action),
         };
     }
 
@@ -165,21 +167,93 @@ final class GoogleProvisioner
         if (($guard = self::guardNameOnly($corr, 'suspend')) !== null) {
             return $guard;
         }
-        if (!empty($corr['found']) && $corr['suspended'] === true) {
-            return self::result(true, 'Google account is already suspended — no change.', 'suspend', $corr['googleId'] ?? null);
+        $disabledOu = $this->disabledOu();
+        $ouOk = $disabledOu === '' || self::ouEquals((string) ($corr['attributes']['orgunitpath'] ?? ''), $disabledOu);
+        if (!empty($corr['found']) && $corr['suspended'] === true && $ouOk) {
+            return self::result(true, 'Google account is already suspended' . ($disabledOu !== '' ? ' (and in the disabled OU)' : '') . ' — no change.', 'suspend', $corr['googleId'] ?? null);
         }
         if ($dryRun) {
-            return self::result(true, "Would suspend {$corr['primaryEmail']}.", 'suspend', $corr['googleId'] ?? null);
+            $moveNote = ($disabledOu !== '' && !$ouOk) ? " and move to {$disabledOu}" : '';
+            $verb = ($corr['suspended'] === true) ? "move {$corr['primaryEmail']} to {$disabledOu}" : "suspend {$corr['primaryEmail']}{$moveNote}";
+            return self::result(true, "Would {$verb}.", 'suspend', $corr['googleId'] ?? null);
         }
-        $res = $this->google->suspendUser($key);
-        $this->reflect($person, 'Disable', $res, $actor);
-        if (!$res['ok']) {
-            return self::result(false, 'Suspend failed: ' . (string) $res['error'], 'suspend');
+
+        // Suspend (unless it's already suspended and we're only here to fix the OU).
+        $email = (string) ($corr['primaryEmail'] ?? '');
+        if ($corr['suspended'] !== true) {
+            $res = $this->google->suspendUser($key);
+            $this->reflect($person, 'Disable', $res, $actor);
+            if (!$res['ok']) {
+                return self::result(false, 'Suspend failed: ' . (string) $res['error'], 'suspend');
+            }
+            $email = (string) ($res['primaryEmail'] ?? $email);
+            $this->audit->lifecycle((int) $person['person_id'], 'disable',
+                ['summary' => 'Suspended Google Workspace account (direct): ' . $email], $actor);
+        }
+        // Relocate to the disabled OU. Best-effort: a move failure doesn't undo the
+        // suspend — the next run replans a 'move_disabled' and retries.
+        $moved = $this->relocateToDisabledOu($person, $key, $disabledOu, $ouOk, $actor);
+        $this->ensureCrosswalk($person, $corr, $actor);
+        return self::result(true, "Suspended {$email}" . ($moved ? " and moved to {$disabledOu}." : '.'), 'suspend', $corr['googleId'] ?? null);
+    }
+
+    /**
+     * Move an already-suspended account to the disabled OU (the batch's retry /
+     * heal path for a suspended user sitting in the wrong OU). No suspend — the
+     * account is already suspended.
+     *
+     * @param array<string,mixed> $person
+     * @param array<string,mixed> $corr
+     */
+    private function doMoveDisabled(array $person, array $corr, string $actor, bool $dryRun): array
+    {
+        $key = self::accountKey($corr);
+        if ($key === null) {
+            return self::result(false, 'No linked Google account to move.', 'move_disabled');
+        }
+        if (($guard = self::guardNameOnly($corr, 'move')) !== null) {
+            return $guard;
+        }
+        $disabledOu = $this->disabledOu();
+        if ($disabledOu === '') {
+            return self::result(false, 'No disabled OU configured (GOOGLE_DISABLED_OU).', 'move_disabled', $corr['googleId'] ?? null);
+        }
+        if (self::ouEquals((string) ($corr['attributes']['orgunitpath'] ?? ''), $disabledOu)) {
+            return self::result(true, 'Already in the disabled OU — no change.', 'move_disabled', $corr['googleId'] ?? null);
+        }
+        if ($dryRun) {
+            return self::result(true, "Would move {$corr['primaryEmail']} to {$disabledOu}.", 'move_disabled', $corr['googleId'] ?? null);
+        }
+        $moved = $this->relocateToDisabledOu($person, $key, $disabledOu, false, $actor);
+        if (!$moved) {
+            return self::result(false, "Move to {$disabledOu} failed.", 'move_disabled', $corr['googleId'] ?? null);
         }
         $this->ensureCrosswalk($person, $corr, $actor);
-        $this->audit->lifecycle((int) $person['person_id'], 'disable',
-            ['summary' => 'Suspended Google Workspace account (direct): ' . (string) $res['primaryEmail']], $actor);
-        return self::result(true, "Suspended {$res['primaryEmail']}.", 'suspend', $res['googleId']);
+        return self::result(true, "Moved {$corr['primaryEmail']} to {$disabledOu}.", 'move_disabled', $corr['googleId'] ?? null);
+    }
+
+    /**
+     * Move an account to the disabled OU when one is configured and it isn't there
+     * already. Returns true when a move was actually applied. Reflects the write
+     * and notes it on the timeline; a failure is logged but not thrown so it never
+     * undoes a suspend.
+     *
+     * @param array<string,mixed> $person
+     */
+    private function relocateToDisabledOu(array $person, string $key, string $disabledOu, bool $ouOk, string $actor): bool
+    {
+        if ($disabledOu === '' || $ouOk) {
+            return false;
+        }
+        $mv = $this->google->moveUser($key, $disabledOu);
+        $this->reflect($person, 'Edit', $mv, $actor);
+        if (!$mv['ok']) {
+            error_log('[idm] google disabled-OU move failed for person ' . (int) $person['person_id'] . ': ' . (string) $mv['error']);
+            return false;
+        }
+        $this->audit->lifecycle((int) $person['person_id'], 'update',
+            ['summary' => 'Moved suspended Google Workspace account to the disabled OU: ' . $disabledOu], $actor);
+        return true;
     }
 
     private function doRestore(array $person, array $corr, string $actor, bool $dryRun): array
@@ -289,8 +363,13 @@ final class GoogleProvisioner
         return $email !== '' ? $email : null;
     }
 
-    /** Resolve the Google OU path for a person from their primary school. */
-    private function orgUnitFor(array $person): ?string
+    /**
+     * The Google OU path an ACTIVE person belongs in — their primary school's
+     * google_ou. Null when the person has no school or the school has no google_ou
+     * set (callers then leave the OU alone). Public so the batch can detect OU
+     * drift and plan a push.
+     */
+    public function activeOrgUnitFor(array $person): ?string
     {
         $schoolId = $person['primary_school_id'] ?? null;
         if ($schoolId === null || $schoolId === '') {
@@ -300,6 +379,27 @@ final class GoogleProvisioner
         $stmt->execute([':id' => (int) $schoolId]);
         $ou = $stmt->fetchColumn();
         return ($ou === false || trim((string) $ou) === '') ? null : (string) $ou;
+    }
+
+    /** Backwards-compatible internal alias. */
+    private function orgUnitFor(array $person): ?string
+    {
+        return $this->activeOrgUnitFor($person);
+    }
+
+    /**
+     * The Google OU suspended accounts are moved to (GOOGLE_DISABLED_OU, default
+     * /tcs/faculty/disabled). '' disables the disabled-OU move entirely.
+     */
+    public function disabledOu(): string
+    {
+        return trim((string) Config::get('GOOGLE_DISABLED_OU', '/tcs/faculty/disabled'));
+    }
+
+    /** OU-path equality, normalized (leading slash) and case-insensitive. */
+    public static function ouEquals(string $a, string $b): bool
+    {
+        return strcasecmp(GoogleWorkspaceService::normalizeOu($a), GoogleWorkspaceService::normalizeOu($b)) === 0;
     }
 
     /** @return array<string,mixed>|null */

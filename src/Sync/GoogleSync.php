@@ -88,7 +88,7 @@ final class GoogleSync
         $this->restrictPersonIds = array_values(array_unique(array_map('intval', $onlyPersonIds)));
         $actor ??= 'system:google_sync';
         $counts = [
-            'eligible' => 0, 'created' => 0, 'pushed' => 0, 'suspended' => 0,
+            'eligible' => 0, 'created' => 0, 'pushed' => 0, 'suspended' => 0, 'moved' => 0,
             'in_sync' => 0, 'no_email' => 0, 'no_account' => 0, 'manual_override' => 0, 'errors' => 0,
         ];
 
@@ -178,6 +178,8 @@ final class GoogleSync
         $active = in_array($status, ['active', 'pending'], true);
         $found = !empty($corr['found']);
         $email = (string) ($corr['primaryEmail'] ?? ($person['email'] ?? ''));
+        $attrs = is_array($corr['attributes'] ?? null) ? $corr['attributes'] : [];
+        $currentOu = (string) ($attrs['orgunitpath'] ?? '');
 
         if ($active) {
             if (!$found) {
@@ -191,7 +193,9 @@ final class GoogleSync
             if ($corr['suspended'] === true) {
                 return ['action' => null, 'bucket' => 'manual_override', 'email' => $email];
             }
-            if ($this->hasNameDrift($person, $corr['attributes'] ?? [])) {
+            // Push on name drift OR OU drift — a push writes name + the building's
+            // OU, so it also relocates a user whose OU no longer matches their school.
+            if ($this->hasNameDrift($person, $attrs) || $this->hasActiveOuDrift($person, $currentOu)) {
                 return ['action' => 'push', 'bucket' => 'pushed', 'email' => $email];
             }
             return ['action' => null, 'bucket' => 'in_sync', 'email' => $email];
@@ -201,10 +205,32 @@ final class GoogleSync
         if (!$found) {
             return ['action' => null, 'bucket' => 'no_account', 'email' => ''];
         }
-        if ($corr['suspended'] === true) {
-            return ['action' => null, 'bucket' => 'in_sync', 'email' => $email];
+        // Not suspended yet → suspend (which also moves to the disabled OU).
+        if ($corr['suspended'] !== true) {
+            return ['action' => 'suspend', 'bucket' => 'suspended', 'email' => $email];
         }
-        return ['action' => 'suspend', 'bucket' => 'suspended', 'email' => $email];
+        // Already suspended but not in the disabled OU → relocate it there.
+        $disabledOu = $this->provisioner->disabledOu();
+        if ($disabledOu !== '' && !GoogleProvisioner::ouEquals($currentOu, $disabledOu)) {
+            return ['action' => 'move_disabled', 'bucket' => 'moved', 'email' => $email];
+        }
+        return ['action' => null, 'bucket' => 'in_sync', 'email' => $email];
+    }
+
+    /**
+     * True when an active person's Google OU differs from their building's
+     * (school.google_ou). Only signals drift when a desired OU is resolvable — a
+     * person with no school / no google_ou is left where they are.
+     *
+     * @param array<string,mixed> $person
+     */
+    private function hasActiveOuDrift(array $person, string $currentOu): bool
+    {
+        $desired = $this->provisioner->activeOrgUnitFor($person);
+        if ($desired === null) {
+            return false;
+        }
+        return !GoogleProvisioner::ouEquals($currentOu, $desired);
     }
 
     /** True when the golden first/last name differs from what Google holds. */

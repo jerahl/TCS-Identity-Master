@@ -109,7 +109,7 @@ if (!$result['configured']) {
 
 $c = $result['counts'];
 echo 'Google Workspace sync' . ($result['dry_run'] ? " (DRY RUN)\n" : "\n");
-echo "  eligible {$c['eligible']}  ·  created {$c['created']}  ·  pushed {$c['pushed']}  ·  suspended {$c['suspended']}\n";
+echo "  eligible {$c['eligible']}  ·  created {$c['created']}  ·  pushed {$c['pushed']}  ·  suspended {$c['suspended']}  ·  moved {$c['moved']}\n";
 echo "  in-sync {$c['in_sync']}  ·  no-email {$c['no_email']}  ·  no-account {$c['no_account']}"
     . "  ·  manual-override {$c['manual_override']}  ·  errors {$c['errors']}\n";
 if ($result['blocked']) {

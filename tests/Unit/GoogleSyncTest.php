@@ -52,6 +52,95 @@ final class GoogleSyncTest extends TestCase
         return new GoogleSync($db, new GoogleProvisioner($db, $google));
     }
 
+    /**
+     * A GoogleSync whose GAM runner reports one specific found user (as an
+     * `info user … formatjson` JSON object) — for exercising OU drift and the
+     * disabled-OU move. Search (`print users`) stays empty.
+     *
+     * @param array<string,mixed> $user
+     */
+    private function syncWithUser(PDO $db, array $user): GoogleSync
+    {
+        $runner = static function (array $argv) use ($user): ?array {
+            if (in_array('info', $argv, true) && in_array('user', $argv, true)) {
+                return ['status' => 0, 'stdout' => (string) json_encode($user), 'stderr' => ''];
+            }
+            if (in_array('print', $argv, true)) {
+                return ['status' => 0, 'stdout' => "primaryEmail,JSON\n", 'stderr' => ''];
+            }
+            // Writes (update/move/suspend) succeed and echo the key back.
+            return ['status' => 0, 'stdout' => (string) json_encode($user), 'stderr' => ''];
+        };
+        $gam = new GamClient(gamPath: 'gam', configDir: '', timeout: 5, runner: $runner);
+        $google = new GoogleWorkspaceService(enabled: true, fetch: fn() => self::fail('gam mode must not use HTTP'), gam: $gam);
+        return new GoogleSync($db, new GoogleProvisioner($db, $google));
+    }
+
+    public function testDisabledSuspendedUserInWrongOuIsMovedToDisabledOu(): void
+    {
+        $db = $this->db();
+        $db->exec("UPDATE person SET status='disabled' WHERE person_id=1");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+
+        // Suspended already, but sitting in a building OU rather than the disabled OU.
+        $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => true,
+                 'orgUnitPath' => '/tcs/faculty/CO', 'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+        $result = $this->syncWithUser($db, $user)->run(dryRun: true, actor: 'tester', onlyPersonIds: [1]);
+
+        self::assertSame(1, $result['counts']['moved']);
+        self::assertSame(0, $result['counts']['suspended']);
+        self::assertSame('move_disabled', $result['actions'][0]['action']);
+    }
+
+    public function testSuspendedUserAlreadyInDisabledOuIsInSync(): void
+    {
+        $db = $this->db();
+        $db->exec("UPDATE person SET status='terminated' WHERE person_id=1");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+
+        $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => true,
+                 'orgUnitPath' => '/tcs/faculty/disabled', 'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+        $result = $this->syncWithUser($db, $user)->run(dryRun: true, actor: 'tester', onlyPersonIds: [1]);
+
+        self::assertSame(0, $result['counts']['moved']);
+        self::assertSame(1, $result['counts']['in_sync']);
+        self::assertSame([], $result['actions']);
+    }
+
+    public function testActiveUserWithOuDriftIsPushed(): void
+    {
+        $db = $this->db();
+        $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, google_ou TEXT)');
+        $db->exec("INSERT INTO school (school_id, name, google_ou) VALUES (7, 'Central Office', '/tcs/faculty/CO')");
+        $db->exec("UPDATE person SET primary_school_id=7 WHERE person_id=1");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+
+        // Active, name matches golden (John Smith), but the OU has drifted.
+        $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                 'orgUnitPath' => '/tcs/faculty/OLD', 'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+        $result = $this->syncWithUser($db, $user)->run(dryRun: true, actor: 'tester', onlyPersonIds: [1]);
+
+        self::assertSame(1, $result['counts']['pushed']);
+        self::assertSame('push', $result['actions'][0]['action']);
+    }
+
+    public function testActiveUserInCorrectOuWithNoDriftIsInSync(): void
+    {
+        $db = $this->db();
+        $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, google_ou TEXT)');
+        $db->exec("INSERT INTO school (school_id, name, google_ou) VALUES (7, 'Central Office', '/tcs/faculty/CO')");
+        $db->exec("UPDATE person SET primary_school_id=7 WHERE person_id=1");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (1,'google','G-1',1)");
+
+        // Case-only OU difference must NOT count as drift.
+        $user = ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                 'orgUnitPath' => '/tcs/faculty/co', 'name' => ['givenName' => 'John', 'familyName' => 'Smith']];
+        $result = $this->syncWithUser($db, $user)->run(dryRun: true, actor: 'tester', onlyPersonIds: [1]);
+
+        self::assertSame(0, $result['counts']['pushed']);
+        self::assertSame(1, $result['counts']['in_sync']);
+    }
+
     public function testVerboseLogStreamsStartAndPerPersonScan(): void
     {
         $events = [];

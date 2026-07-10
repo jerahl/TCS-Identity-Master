@@ -517,6 +517,27 @@ final class GoogleWorkspaceService
         return self::writeOk('edit', self::normalizeUser($res['data']));
     }
 
+    /**
+     * Move a Google account to a different org unit (OU-only patch — leaves name,
+     * suspension, etc. untouched). Used to relocate suspended users to the disabled
+     * OU and to heal active users whose OU has drifted from their building's.
+     *
+     * @return WriteResult
+     */
+    public function moveUser(string $userKey, string $orgUnitPath): array
+    {
+        if (!$this->configured()) {
+            return self::writeFail('edit', 'Direct Google provisioning is off.');
+        }
+        $body = ['orgUnitPath' => self::normalizeOu($orgUnitPath)];
+        if ($this->gam !== null) {
+            $res = $this->gam->updateUser($userKey, $body);
+            return $res['ok'] ? self::writeOk('edit', self::normalizeUser($res['data'])) : self::writeFail('edit', $res['error']);
+        }
+        $res = $this->request('PATCH', $this->apiBase . '/users/' . rawurlencode($userKey), (string) json_encode($body));
+        return $res['ok'] ? self::writeOk('edit', self::normalizeUser($res['data'])) : self::writeFail('edit', $res['error']);
+    }
+
     /** Suspend (disable) a Google account. Reversible via restoreUser(). @return WriteResult */
     public function suspendUser(string $userKey): array
     {
@@ -806,7 +827,7 @@ final class GoogleWorkspaceService
     }
 
     /** Normalize an OU path to Google's leading-slash form ('/', '/Faculty'). */
-    private static function normalizeOu(?string $ou): string
+    public static function normalizeOu(?string $ou): string
     {
         $ou = trim((string) $ou);
         if ($ou === '' || $ou === '/') {

@@ -172,9 +172,9 @@ final class ImportController extends Controller
             if ($r['blocked']) {
                 $this->flash($r['note'] ?? 'Google sync blocked by the threshold guardrail — nothing written.');
             } else {
-                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · in-sync %d · no-email %d · errors %d',
+                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · moved %d · in-sync %d · no-email %d · errors %d',
                     $dryRun ? 'Google sync (dry run)' : 'Google sync',
-                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['in_sync'], $c['no_email'], $c['errors']));
+                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['in_sync'], $c['no_email'], $c['errors']));
             }
         } catch (\Throwable $e) {
             error_log('[idm] google sync: ' . $e->getMessage());

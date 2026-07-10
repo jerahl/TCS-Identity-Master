@@ -150,6 +150,23 @@ final class GoogleWorkspaceServiceTest extends TestCase
         self::assertSame('E1', $body['externalIds'][0]['value']);
     }
 
+    public function testMoveUserPatchesOrgUnitPathOnly(): void
+    {
+        $captured = null;
+        $svc = $this->service($this->userResponse(), $captured);
+
+        $res = $svc->moveUser('1234', 'tcs/faculty/disabled');
+
+        self::assertTrue($res['ok']);
+        self::assertSame('PATCH', $captured['method']);
+        self::assertStringContainsString('/users/1234', $captured['url']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('/tcs/faculty/disabled', $body['orgUnitPath']); // normalized leading slash
+        self::assertArrayNotHasKey('name', $body);       // OU-only — no name/suspend/externalId
+        self::assertArrayNotHasKey('suspended', $body);
+        self::assertArrayNotHasKey('externalIds', $body);
+    }
+
     public function testCreateUserRequiresGoldenEmail(): void
     {
         $captured = null;
