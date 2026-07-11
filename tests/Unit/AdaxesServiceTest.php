@@ -259,6 +259,28 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('eq', $group['items'][0]['operator']);
     }
 
+    public function testInactiveAdCrosswalkDoesNotMatchByObjectGuid(): void
+    {
+        // After an unlink (or a cleanup), the 'ad' crosswalk row is inactive. It
+        // must NOT drive an objectGUID lookup — otherwise the person can never be
+        // correlated to a different account. verify() falls through to a search.
+        $captured = null;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+            $captured = ['method' => $method, 'url' => $url];
+            return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => ['sAMAccountName' => 'jsmith']]]])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', 'svc', 'pw', 5, $fetch, null, null, null, null, 'test-token');
+
+        $res = $svc->verify(
+            ['username' => 'jsmith', 'status' => 'active'],
+            [['system' => 'ad', 'source_key' => '8aad594f-6f76-4de0-81ac-85ded4350674', 'is_active' => 0]],
+        );
+
+        self::assertTrue($res['found']);
+        self::assertSame('search', $res['by']);                 // NOT objectGUID
+        self::assertStringContainsString('/api/directoryObjects/search', $captured['url']);
+    }
+
     public function testSingleCriterionUsesAndOperator(): void
     {
         $captured = null;
@@ -333,6 +355,47 @@ final class AdaxesServiceTest extends TestCase
         self::assertTrue($res['ok']);
         self::assertFalse($res['found']);
         self::assertSame('objectGUID', $res['by']);
+    }
+
+    public function testRetriesTransientTransportFailureThenSucceeds(): void
+    {
+        // First call returns null (an "HTTP 0" timeout), second succeeds.
+        $calls = 0;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls++;
+            if ($calls === 1) {
+                return null; // transient transport failure
+            }
+            return ['status' => 200, 'body' => json_encode(['properties' => [['name' => 'sAMAccountName', 'value' => 'jsmith']]])];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch, null, null, null, null, 'test-token');
+
+        $res = $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'guid-1', 'is_active' => 1]]);
+        self::assertTrue($res['ok']);
+        self::assertTrue($res['found']);
+        self::assertSame(2, $calls); // retried once, then succeeded
+    }
+
+    public function testRetriesGatewayErrorButNotAuthOr404(): void
+    {
+        // 503 is transient (retried); a 401 is definitive (not retried).
+        $calls = 0;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls++;
+            return ['status' => 503, 'body' => 'gateway'];
+        };
+        $svc = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch, null, null, null, null, 'test-token');
+        $svc->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        self::assertSame(3, $calls); // default ADAXES_RETRY_ATTEMPTS=3, all transient
+
+        $calls2 = 0;
+        $fetch2 = function (string $method, string $url, array $headers, ?string $body) use (&$calls2): ?array {
+            $calls2++;
+            return ['status' => 401, 'body' => ''];
+        };
+        $svc2 = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch2, null, null, null, null, 'test-token');
+        $svc2->verify(['username' => 'jsmith', 'status' => 'active'], [['system' => 'ad', 'source_key' => 'g', 'is_active' => 1]]);
+        self::assertSame(1, $calls2); // 401 is not retried
     }
 
     public function testUnreachableReturnsErrorEnvelope(): void
@@ -510,6 +573,68 @@ final class AdaxesServiceTest extends TestCase
         self::assertSame('jsmith', $ad['username']);
         self::assertSame('jsmith@example.org', $ad['upn']);
         self::assertSame('john.smith@example.org', $ad['email']);
+    }
+
+    public function testFindGroupResolvesNameToDnAndGuid(): void
+    {
+        $captured = null;
+        $svc = $this->service(['status' => 200, 'body' => json_encode([
+            'objects' => [['properties' => [
+                'distinguishedName' => 'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                'objectGUID'        => '2b6160e2-ad91-419c-8960-cf672c75528f',
+            ]]],
+        ])], $captured);
+
+        $res = $svc->findGroup('All-Faculty');
+        self::assertTrue($res['found']);
+        self::assertSame('CN=All-Faculty,OU=Groups,DC=example,DC=org', $res['dn']);
+        self::assertSame('CN=All-Faculty,OU=Groups,DC=example,DC=org', $res['id']); // prefers the DN
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $res['guid']);
+        // Searched the Group object type by name.
+        $sent = json_decode((string) $captured['body'], true);
+        self::assertSame('Group', $sent['criteria']['objectTypes'][0]['type']);
+    }
+
+    public function testFindGroupNotFound(): void
+    {
+        $svc = $this->service(['status' => 200, 'body' => json_encode(['objects' => []])]);
+        $res = $svc->findGroup('No-Such-Group');
+        self::assertTrue($res['ok']);
+        self::assertFalse($res['found']);
+        self::assertNull($res['id']);
+    }
+
+    public function testMemberOfReturnsRawGroupDnsWithoutCommaCorruption(): void
+    {
+        // memberOf is multi-valued and each value is a DN full of commas — the
+        // raw list must survive intact (not be flattened/split on commas).
+        $captured = null;
+        $svc = $this->service(['status' => 200, 'body' => json_encode([
+            'properties' => [
+                ['name' => 'memberOf', 'values' => [
+                    'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                    'CN=CO-Everyone,OU=Groups,DC=example,DC=org',
+                ]],
+            ],
+        ])], $captured);
+
+        $res = $svc->memberOf('2b6160e2-ad91-419c-8960-cf672c75528f');
+        self::assertTrue($res['ok']);
+        self::assertTrue($res['found']);
+        self::assertSame([
+            'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+            'CN=CO-Everyone,OU=Groups,DC=example,DC=org',
+        ], $res['groups']);
+        self::assertStringContainsString('properties=memberOf', $captured['url']);
+    }
+
+    public function testMemberOfMissingObjectIsCleanNotFound(): void
+    {
+        $svc = $this->service(['status' => 404, 'body' => 'not found']);
+        $res = $svc->memberOf('2b6160e2-ad91-419c-8960-cf672c75528f');
+        self::assertTrue($res['ok']);
+        self::assertFalse($res['found']);
+        self::assertSame([], $res['groups']);
     }
 
     public function testGoldenCandidateEmptyWhenNoAttributes(): void

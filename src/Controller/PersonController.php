@@ -12,6 +12,7 @@ use App\Import\PersonWriter;
 use App\Service\AdaxesService;
 use App\Service\AuditService;
 use App\Service\GoogleWorkspaceService;
+use App\Service\GroupPolicy;
 use App\Service\PersonService;
 use App\Support\Csrf;
 use App\Config;
@@ -131,6 +132,9 @@ final class PersonController extends Controller
             'hasPowerSchool' => $hasPowerSchool,
             'psStale'        => $psStale,
             'idmOnly'        => $idmOnly,
+            'raptorOptions'  => (new GroupPolicy())->raptorRoleOptions(),
+            'raptorOverride' => (string) ($person['raptor_group_override'] ?? ''),
+            'raptorUrl'      => url('/people/' . $id . '/raptor-override'),
             'csrf'           => Csrf::token(),
         ], 'people', 'People  /  Record', 'Person record — TCS Identity Master');
     }
@@ -385,6 +389,127 @@ final class PersonController extends Controller
      * form (no inline JS, CSP-safe). Idempotent-ish: a no-op if already
      * disabled/terminated. Always redirects back to the dashboard panel.
      */
+    /**
+     * Unlink a person's assigned identity (admin-only) — for a bad mint caused by
+     * a wrong name / employee id. Clears username/email/upn + the lock and
+     * deactivates the AD crosswalk, cancels any pending rename events, and lets the
+     * reconciler re-assign a corrected identity. Audited via the writer.
+     */
+    public function unlink(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        $person = $id > 0 ? $this->people->find($id) : null;
+        if ($person === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $actor = $this->currentUser()['name'];
+            $reason = trim((string) ($_POST['reason'] ?? ''));
+            $notes = (new PersonWriter($db, new AuditService($db)))->unlinkUsername($id, $actor, $reason);
+
+            // Best-effort: cancelling pending rename events must never turn a
+            // successful unlink into a reported failure (e.g. table not migrated).
+            try {
+                (new \App\Service\ScheduledEventService($db, new AuditService($db)))->cancelPending($id, $actor);
+            } catch (\Throwable $e) {
+                error_log('[idm] person unlink (cancel events): ' . $e->getMessage());
+            }
+
+            $this->flash($notes === []
+                ? 'Nothing was linked to unlink.'
+                : 'Username unlinked — ' . implode('; ', $notes) . '. The reconciler will re-assign on the next run.');
+        } catch (\Throwable $e) {
+            error_log('[idm] person unlink: ' . $e->getMessage());
+            $this->flash('Could not unlink the username: ' . $e->getMessage());
+        }
+        return $this->redirect($back);
+    }
+
+    /**
+     * Approve a username/email rename (admin-only) after a last-name change: mints
+     * the new username, schedules the cutover RENAME_NOTICE_DAYS out, and emails
+     * the employee, principal, and IT. No-op when the username wouldn't change.
+     */
+    public function rename(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        if ($id <= 0 || $this->people->find($id) === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        try {
+            $oldName = trim((string) ($_POST['old_name'] ?? '')) ?: null;
+            $res = (new \App\Service\RenameService())->approve($id, $this->currentUser()['name'], $oldName);
+            $this->flash($res['scheduled']
+                ? "Rename approved — {$res['note']}"
+                : $res['note']);
+        } catch (\Throwable $e) {
+            error_log('[idm] person rename: ' . $e->getMessage());
+            $this->flash('Could not schedule the rename: ' . $e->getMessage());
+        }
+        return $this->redirect($back);
+    }
+
+    /**
+     * Set (or clear) a person's Raptor role exception — the manual override to the
+     * title-based Raptor group rule. Admin-only, CSRF-checked, POST. The value is
+     * a role key validated against GroupPolicy::raptorRoleOptions() ('' = automatic
+     * by title, 'none' = no Raptor group). Persisted on the golden record and
+     * audited via updateProfile; the groups phase honors it on its next run.
+     */
+    public function raptorOverride(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id);
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        if ($id <= 0 || $this->people->find($id) === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        $value = strtolower(trim((string) ($_POST['raptor_group_override'] ?? '')));
+        $policy = new GroupPolicy();
+        if (!$policy->isValidRaptorOverride($value)) {
+            $this->flash('Unknown Raptor role — nothing changed.');
+            return $this->redirect($back);
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            // '' clears the override (updateProfile maps '' → NULL = automatic).
+            (new PersonWriter($db, new AuditService($db)))
+                ->updateProfile($id, ['raptor_group_override' => $value], $this->currentUser()['name']);
+            $label = $policy->raptorRoleOptions()[$value] ?? $value;
+            $this->flash($value === ''
+                ? 'Raptor role set to automatic (by job title). The next group sync will apply it.'
+                : "Raptor role exception set to “{$label}”. The next group sync will apply it.");
+        } catch (\Throwable $e) {
+            error_log('[idm] raptor override: ' . $e->getMessage());
+            $this->flash('Could not save the Raptor role exception: ' . $e->getMessage());
+        }
+        return $this->redirect($back);
+    }
+
     public function disable(array $params): string
     {
         $id = (int) ($params['id'] ?? 0);

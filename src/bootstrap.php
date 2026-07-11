@@ -38,3 +38,8 @@ spl_autoload_register(static function (string $class) use ($root): void {
 require $root . '/src/helpers.php';
 
 \App\Config::load($root . '/.env');
+
+// Layer the admin-editable settings (app_setting) over .env, under real env
+// vars, so web-console config changes take effect for both the app and the CLI.
+// Best-effort: no-ops on a fresh checkout / missing table / no DB.
+\App\Service\SettingsService::applyOverridesSafe();

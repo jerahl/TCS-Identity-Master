@@ -33,27 +33,16 @@ use App\Config;
  */
 final class AdaxesService
 {
-    private string $baseUrl;
-    private string $username;
-    private string $password;
-    private string $token;
-    private int $timeout;
+    /** Shared Adaxes auth + HTTP transport (token/handshake, TLS, injectable $fetch). */
+    use AdaxesHttp;
+
     private string $objectsPath;
     private string $objectParam;
     private string $searchPath;
-    private string $sessionPath;
-    private string $tokenPath;
     private string $employeeIdAttr;
 
-    /** Token + session resolved from the username/password handshake, per instance. */
-    private ?string $resolvedToken = null;
-    private ?string $resolvedSessionId = null;
-    private bool $authAttempted = false;
-    private ?string $authError = null;
     /** @var list<string> */
     private array $properties;
-    /** @var callable(string,string,array<string,string>,?string):?array{status:int,body:string} */
-    private $fetch;
 
     /** Default AD attributes pulled for the comparison panel. */
     private const DEFAULT_PROPERTIES = [
@@ -61,6 +50,7 @@ final class AdaxesService
         'distinguishedName', 'accountDisabled', 'userAccountControl',
         'accountExpires', 'accountExpirationDate',
         'department', 'title', 'whenChanged',
+        'physicalDeliveryOfficeName', 'description', 'info',
     ];
 
     /**
@@ -111,11 +101,6 @@ final class AdaxesService
     public function configured(): bool
     {
         return $this->baseUrl !== '' && ($this->token !== '' || ($this->username !== '' && $this->password !== ''));
-    }
-
-    public function baseUrl(): string
-    {
-        return $this->baseUrl;
     }
 
     /**
@@ -220,6 +205,105 @@ final class AdaxesService
         }
 
         return ['ok' => true, 'error' => null, 'found' => true, 'attributes' => self::normalizeProperties($res['data'])];
+    }
+
+    /**
+     * Resolve a group by its cn/name to a directory identifier the group-member
+     * REST calls accept (its distinguishedName, else objectGUID). The reconciler
+     * knows groups by name (All-Faculty, CO-Everyone, …) but the API needs a
+     * DN/GUID, so this bridges the two.
+     *
+     * @return array{ok:bool, error:?string, found:bool, id:?string, dn:?string, guid:?string}
+     */
+    public function findGroup(string $cn): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Adaxes is not configured.', 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+        }
+        $cn = trim($cn);
+        if ($cn === '') {
+            return ['ok' => true, 'error' => null, 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+        }
+
+        // Match a Group whose cn OR sAMAccountName equals the name.
+        $body = [
+            'criteria' => [
+                'objectTypes' => [[
+                    'type'  => 'Group',
+                    'items' => [
+                        'type'            => 1,
+                        'logicalOperator' => 2, // OR
+                        'items'           => [
+                            ['type' => 0, 'property' => 'cn', 'operator' => 'eq', 'values' => [['type' => 2, 'value' => $cn]], 'valueLogicalOperator' => 0],
+                            ['type' => 0, 'property' => 'sAMAccountName', 'operator' => 'eq', 'values' => [['type' => 2, 'value' => $cn]], 'valueLogicalOperator' => 0],
+                        ],
+                    ],
+                ]],
+            ],
+            'select' => ['properties' => 'distinguishedName,objectGUID,cn,sAMAccountName'],
+        ];
+
+        try {
+            $res = $this->request('POST', $this->baseUrl . '/' . $this->searchPath, (string) json_encode($body));
+            if (!$res['ok']) {
+                return ['ok' => false, 'error' => $res['error'], 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+            }
+            $first = self::firstSearchHit($res['data']);
+            if ($first === null) {
+                return ['ok' => true, 'error' => null, 'found' => false, 'id' => null, 'dn' => null, 'guid' => null];
+            }
+            $attrs = self::normalizeProperties($first);
+            $dn = trim((string) ($attrs['distinguishedname'] ?? ''));
+            $guid = self::extractGuid($attrs);
+            $id = $dn !== '' ? $dn : $guid;
+            return ['ok' => true, 'error' => null, 'found' => $id !== null && $id !== '', 'id' => $id, 'dn' => $dn ?: null, 'guid' => $guid];
+        } finally {
+            $this->endSession();
+        }
+    }
+
+    /**
+     * The group DNs a directory object is a direct member of (`memberOf`). Kept
+     * separate from getObject() because memberOf is multi-valued and each value
+     * is a DN (full of commas), which the scalar property flattening would
+     * corrupt — this returns the raw list. Requests only memberOf, so it's cheap
+     * enough for the group reconciler to call per person.
+     *
+     * @return array{ok:bool, error:?string, found:bool, groups:list<string>}
+     */
+    public function memberOf(string $idOrDn): array
+    {
+        $res = $this->attributeValues($idOrDn, 'memberOf');
+        return ['ok' => $res['ok'], 'error' => $res['error'], 'found' => $res['found'], 'groups' => $res['values']];
+    }
+
+    /**
+     * The raw values of a (possibly multi-valued) attribute on a directory
+     * object, without the scalar comma-flattening — for attributes whose values
+     * contain commas (memberOf DNs, proxyAddresses). Requests only that attribute.
+     *
+     * @return array{ok:bool, error:?string, found:bool, values:list<string>}
+     */
+    public function attributeValues(string $idOrDn, string $attribute): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Adaxes is not configured.', 'found' => false, 'values' => []];
+        }
+        try {
+            $url = $this->baseUrl . '/' . $this->objectsPath
+                 . '?' . $this->objectParam . '=' . rawurlencode($idOrDn)
+                 . '&properties=' . rawurlencode($attribute);
+            $res = $this->request('GET', $url);
+            if (!$res['ok']) {
+                if ($res['status'] === 404) {
+                    return ['ok' => true, 'error' => null, 'found' => false, 'values' => []];
+                }
+                return ['ok' => false, 'error' => $res['error'], 'found' => false, 'values' => []];
+            }
+            return ['ok' => true, 'error' => null, 'found' => true, 'values' => self::rawMultiValue($res['data'], $attribute)];
+        } finally {
+            $this->endSession();
+        }
     }
 
     /**
@@ -385,6 +469,20 @@ final class AdaxesService
     }
 
     /**
+     * Whether a verify() envelope's live AD account is enabled, from the returned
+     * attributes (the `accountDisabled` flag or the userAccountControl 0x2 bit).
+     * Null when neither attribute was present — the reconciler treats "unknown" as
+     * "don't act" so it never disables on a partial read.
+     *
+     * @param Envelope $envelope
+     */
+    public static function accountEnabledFromEnvelope(array $envelope): ?bool
+    {
+        $attrs = is_array($envelope['attributes'] ?? null) ? $envelope['attributes'] : [];
+        return self::accountEnabled($attrs);
+    }
+
+    /**
      * The identity values from a verify() envelope that may be adopted as the
      * golden record: sAMAccountName→username, userPrincipalName→upn, mail→email,
      * plus the objectGUID for the crosswalk link. Shaped exactly for
@@ -411,21 +509,23 @@ final class AdaxesService
     /** @param array<int,array<string,mixed>> $sourceIds */
     private static function adObjectGuid(array $sourceIds): ?string
     {
-        $fallback = null;
         foreach ($sourceIds as $row) {
             if (strtolower((string) ($row['system'] ?? '')) !== 'ad') {
                 continue;
             }
-            $key = trim((string) ($row['source_key'] ?? ''));
-            if ($key === '') {
+            // Only an ACTIVE AD link resolves a GUID. A deactivated row (e.g. after
+            // an unlink, or one cleanup_ad_ids marked bad) must NOT keep matching the
+            // old account — otherwise the person can never be correlated to a
+            // different account.
+            if (empty($row['is_active'])) {
                 continue;
             }
-            if (!empty($row['is_active'])) {
-                return $key; // prefer the active AD identity
+            $key = trim((string) ($row['source_key'] ?? ''));
+            if ($key !== '') {
+                return $key;
             }
-            $fallback ??= $key;
         }
-        return $fallback;
+        return null;
     }
 
     /**
@@ -602,6 +702,56 @@ final class AdaxesService
         return $out;
     }
 
+    /**
+     * Pull a named multi-valued property out of a response as its RAW list of
+     * string values (NOT comma-joined — the values may be DNs). Tolerates the
+     * list-form ([{name,value|values}]) and map-form ({name: value|values})
+     * property shapes and a top-level attribute. Case-insensitive on the name.
+     *
+     * @param array<string,mixed> $data
+     * @return list<string>
+     */
+    private static function rawMultiValue(array $data, string $name): array
+    {
+        $wanted = strtolower($name);
+        $collect = static function (mixed $value): array {
+            if ($value === null) {
+                return [];
+            }
+            $items = is_array($value) && array_is_list($value) ? $value : [$value];
+            $out = [];
+            foreach ($items as $v) {
+                if (is_scalar($v) && trim((string) $v) !== '') {
+                    $out[] = trim((string) $v);
+                }
+            }
+            return $out;
+        };
+
+        $props = $data['properties'] ?? null;
+        if (is_array($props)) {
+            if (array_is_list($props)) {
+                foreach ($props as $p) {
+                    if (is_array($p) && strtolower((string) ($p['name'] ?? $p['type'] ?? '')) === $wanted) {
+                        return $collect($p['value'] ?? $p['values'] ?? null);
+                    }
+                }
+            } else {
+                foreach ($props as $k => $v) {
+                    if (strtolower((string) $k) === $wanted) {
+                        return $collect($v);
+                    }
+                }
+            }
+        }
+        foreach ($data as $k => $v) {
+            if (strtolower((string) $k) === $wanted) {
+                return $collect($v);
+            }
+        }
+        return [];
+    }
+
     /** Flatten a property value (scalar, single-element array, or multi-value) to a string. */
     private static function scalarValue(mixed $value): string
     {
@@ -633,279 +783,6 @@ final class AdaxesService
             return $data[0];
         }
         return null;
-    }
-
-    /**
-     * Resolve the security token sent as `Adm-Authorization`. A static
-     * ADAXES_TOKEN wins; otherwise run the legacy two-step handshake with the
-     * service username/password (create session → obtain token) and cache the
-     * result for this instance. Returns null and sets $authError on failure.
-     */
-    private function authToken(): ?string
-    {
-        if ($this->token !== '') {
-            return $this->token;
-        }
-        if ($this->resolvedToken !== null) {
-            return $this->resolvedToken;
-        }
-        if ($this->authAttempted) {
-            return null; // don't retry a failed handshake repeatedly within a request
-        }
-        $this->authAttempted = true;
-
-        if ($this->username === '' || $this->password === '') {
-            $this->authError = 'no ADAXES_TOKEN and no username/password';
-            return null;
-        }
-
-        // 1) Create an authentication session (POST credentials).
-        $sessUrl = $this->baseUrl . '/' . $this->sessionPath;
-        $resp = ($this->fetch)('POST', $sessUrl, self::jsonHeaders(), (string) json_encode(['username' => $this->username, 'password' => $this->password]));
-        $this->debugLog('POST', $sessUrl, $resp['status'] ?? 0, '(authSessions/create — body redacted)');
-        $session = $this->decode($resp);
-        if (!$session['ok']) {
-            $this->authError = 'session create failed (HTTP ' . ($resp['status'] ?? 0) . ')';
-            return null;
-        }
-        $sessionId = $session['data']['sessionId'] ?? $session['data']['id'] ?? null;
-        if (!is_string($sessionId) || $sessionId === '') {
-            $this->authError = 'no sessionId in authSessions/create response';
-            return null;
-        }
-        $this->resolvedSessionId = $sessionId;
-
-        // 2) Exchange the session for a security token.
-        $tokUrl = $this->baseUrl . '/' . $this->tokenPath;
-        $resp2 = ($this->fetch)('POST', $tokUrl, self::jsonHeaders(), (string) json_encode(['sessionId' => $sessionId]));
-        $this->debugLog('POST', $tokUrl, $resp2['status'] ?? 0, '(auth — token redacted)');
-        $tok = $this->decode($resp2);
-        if (!$tok['ok']) {
-            $this->authError = 'token request failed (HTTP ' . ($resp2['status'] ?? 0) . ')';
-            return null;
-        }
-        $token = $tok['data']['token'] ?? null;
-        if (!is_string($token) || $token === '') {
-            $this->authError = 'no token in auth response';
-            return null;
-        }
-        return $this->resolvedToken = $token;
-    }
-
-    /** Headers for the unauthenticated handshake POSTs. @return array<string,string> */
-    private static function jsonHeaders(): array
-    {
-        return ['Content-Type' => 'application/json', 'Accept' => 'application/json'];
-    }
-
-    /**
-     * Tear down a handshake-minted session + token (DELETE the token, then the
-     * session) so they don't linger until auto-expiry. Best-effort and idempotent
-     * — a static ADAXES_TOKEN minted no session, so this no-ops. Resets the
-     * cached auth so a later call re-authenticates cleanly. Token *renewal* (the
-     * PATCH in the SDK sample) is unnecessary here: each verification is a short
-     * single burst that finishes well within the token lifetime.
-     */
-    private function endSession(): void
-    {
-        if ($this->resolvedSessionId === null) {
-            return;
-        }
-        $sessionId = $this->resolvedSessionId;
-        $token = $this->resolvedToken;
-        // Reset first so we never double-clean and a re-entry re-handshakes.
-        $this->resolvedSessionId = null;
-        $this->resolvedToken = null;
-        $this->authAttempted = false;
-
-        try {
-            if ($token !== null) {
-                $tokUrl = $this->baseUrl . '/' . $this->tokenPath . '?token=' . rawurlencode($token);
-                ($this->fetch)('DELETE', $tokUrl, ['Adm-Authorization' => $token, 'Accept' => 'application/json'], null);
-            }
-            // The terminate endpoint is the sessions collection (sans "/create").
-            $sessionsPath = (string) preg_replace('#/create$#', '', $this->sessionPath);
-            $sessUrl = $this->baseUrl . '/' . $sessionsPath . '?id=' . rawurlencode($sessionId);
-            ($this->fetch)('DELETE', $sessUrl, ['Accept' => 'application/json'], null);
-        } catch (\Throwable) {
-            // Cleanup is best-effort; the session/token will auto-expire anyway.
-        }
-    }
-
-    /**
-     * Decode an HTTP response into JSON, classifying failures into a message.
-     *
-     * @param array{status:int,body:string}|null $resp
-     * @return array{ok:bool, error:?string, data:array<string,mixed>}
-     */
-    private function decode(?array $resp): array
-    {
-        if ($resp === null) {
-            return ['ok' => false, 'error' => 'Adaxes is unreachable.', 'data' => []];
-        }
-        $status = $resp['status'] ?? 0;
-        if ($status === 401 || $status === 403) {
-            return ['ok' => false, 'error' => 'Adaxes rejected the credentials (HTTP ' . $status . ') — check ADAXES_TOKEN (or username/password).', 'data' => []];
-        }
-        if ($status >= 300 && $status < 400) {
-            // A redirect is usually one of two things: a wrong path (the REST API
-            // lives under {base}/api — a missing api/ segment gets redirected) or
-            // an unauthenticated request bounced to a login. The Location header
-            // (appended by request()) tells which.
-            return ['ok' => false, 'error' => 'Adaxes redirected the request (HTTP ' . $status . ') — likely a wrong path (the REST API is under {base}/api) or an unauthenticated request. Check ADAXES_BASE_URL / ADAXES_OBJECTS_PATH and ADAXES_TOKEN.', 'data' => []];
-        }
-        if ($status < 200 || $status >= 300) {
-            return ['ok' => false, 'error' => 'Adaxes returned HTTP ' . $status . '.', 'data' => []];
-        }
-        $data = json_decode((string) ($resp['body'] ?? ''), true);
-        if (!is_array($data)) {
-            return ['ok' => false, 'error' => 'Adaxes returned invalid JSON.', 'data' => []];
-        }
-        return ['ok' => true, 'error' => null, 'data' => $data];
-    }
-
-    /**
-     * Perform a request and decode it, annotating any error with the method +
-     * URL path (no query string, so no PII) so a misconfigured endpoint is
-     * obvious, and writing an optional debug line. The Basic credentials live in
-     * a header, never the URL, so the path is safe to surface.
-     *
-     * @return array{ok:bool, error:?string, data:array<string,mixed>, status:int}
-     */
-    private function request(string $method, string $url, ?string $body = null): array
-    {
-        $token = $this->authToken();
-        if ($token === null) {
-            return ['ok' => false, 'error' => 'Adaxes authentication failed: ' . ($this->authError ?? 'unknown') . '.', 'data' => [], 'status' => 0];
-        }
-        $headers = ['Adm-Authorization' => $token, 'Accept' => 'application/json'];
-        if ($body !== null) {
-            $headers['Content-Type'] = 'application/json';
-        }
-
-        $resp = ($this->fetch)($method, $url, $headers, $body);
-        $decoded = $this->decode($resp);
-        $status = $resp['status'] ?? 0;
-        $location = is_array($resp) ? ($resp['location'] ?? null) : null;
-        if (!$decoded['ok'] && $status > 0 && $decoded['error'] !== null) {
-            $decoded['error'] .= ' [' . $method . ' ' . self::urlPath($url) . ']';
-            if ($location !== null && $location !== '') {
-                $decoded['error'] .= ' (redirected to ' . self::urlPath((string) $location) . ')';
-            }
-        }
-        $this->debugLog($method, $url, $status, $resp === null ? null : (string) ($resp['body'] ?? ''), $location);
-        $decoded['status'] = $status;
-        return $decoded;
-    }
-
-    /** The URL without its query string (drops the search filter / PII). */
-    private static function urlPath(string $url): string
-    {
-        $q = strpos($url, '?');
-        return $q === false ? $url : substr($url, 0, $q);
-    }
-
-    /**
-     * Append a request/response line to the Adaxes debug log when ADAXES_DEBUG is
-     * on. Logs the full URL + a response snippet so an operator can see exactly
-     * what was sent and returned. Never logs the Authorization header. NOTE: the
-     * snippet can contain directory data (PII) and the URL carries the search
-     * filter — enable only while troubleshooting, then turn it back off.
-     */
-    private function debugLog(string $method, string $url, int $status, ?string $body, ?string $location = null): void
-    {
-        if (!Config::bool('ADAXES_DEBUG', false)) {
-            return;
-        }
-        $snippet = $body === null
-            ? '(no response — transport failure)'
-            : substr((string) preg_replace('/\s+/', ' ', $body), 0, 500);
-        $loc = ($location !== null && $location !== '') ? ' -> Location: ' . $location : '';
-        $line = sprintf("[%s] %s %s -> HTTP %d%s | %s", gmdate('c'), $method, $url, $status, $loc, $snippet);
-
-        // Write to the configured file; if that fails (dir missing / not writable
-        // by php-fpm) fall back to the PHP error log so debug output is never lost.
-        $path = (string) Config::get('ADAXES_LOG', '/var/idm/adaxes_debug.log');
-        $dir = dirname($path);
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0770, true);
-        }
-        if (@file_put_contents($path, $line . "\n", FILE_APPEND | LOCK_EX) === false) {
-            error_log('[idm][adaxes] ' . $line);
-        }
-    }
-
-    /**
-     * Real HTTP transport. Short timeout; returns the status + body, or null on a
-     * transport-level failure (DNS, connect, timeout). Honors an internal CA
-     * bundle (ADAXES_CA_FILE); TLS verification stays ON unless an operator
-     * explicitly disables it (ADAXES_VERIFY_TLS=false) for a self-signed host.
-     *
-     * @param array<string,string> $headers
-     * @return array{status:int,body:string}|null
-     */
-    private function httpRequest(string $method, string $url, array $headers, ?string $body): ?array
-    {
-        $headerLines = '';
-        foreach ($headers as $name => $value) {
-            $headerLines .= $name . ': ' . $value . "\r\n";
-        }
-
-        $verifyTls = Config::bool('ADAXES_VERIFY_TLS', true);
-        $caFile = (string) Config::get('ADAXES_CA_FILE', '');
-
-        $ctx = stream_context_create([
-            'http' => [
-                'method'         => $method,
-                'timeout'        => $this->timeout,
-                'ignore_errors'  => true,
-                'follow_location' => 0,   // capture the auth redirect instead of chasing a login page
-                'max_redirects'  => 0,
-                'header'         => $headerLines,
-                'content'        => $body ?? '',
-            ],
-            'ssl' => array_filter([
-                'verify_peer'      => $verifyTls,
-                'verify_peer_name' => $verifyTls,
-                'cafile'           => $caFile !== '' ? $caFile : null,
-            ], static fn($v) => $v !== null),
-        ]);
-
-        $raw = @file_get_contents($url, false, $ctx);
-        if ($raw === false) {
-            return null;
-        }
-
-        $headers = $http_response_header ?? [];
-        return [
-            'status'   => self::statusFromHeaders($headers),
-            'body'     => $raw,
-            'location' => self::headerValue($headers, 'Location'),
-        ];
-    }
-
-    /** First value of the named response header (case-insensitive), or null. */
-    private static function headerValue(array $headers, string $name): ?string
-    {
-        $needle = strtolower($name) . ':';
-        foreach ($headers as $line) {
-            $line = (string) $line;
-            if (str_starts_with(strtolower($line), $needle)) {
-                return trim(substr($line, strlen($needle)));
-            }
-        }
-        return null;
-    }
-
-    /** Parse the numeric status code out of the $http_response_header lines. */
-    private static function statusFromHeaders(array $headers): int
-    {
-        foreach ($headers as $line) {
-            if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $line, $m)) {
-                return (int) $m[1]; // last status line wins (handles redirects)
-            }
-        }
-        return 0;
     }
 
     /**

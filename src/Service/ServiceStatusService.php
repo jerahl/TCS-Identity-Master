@@ -11,6 +11,8 @@ use App\Support\Crypto;
 use App\Sync\FeedSync;
 use PDO;
 
+// GoogleWorkspaceService + ServiceRunLog are in this same namespace (App\Service).
+
 /**
  * Read-only health snapshot of the moving parts behind Identity Master, for the
  * admin "Services" page: the app database, OneSync's source DB (read), the
@@ -30,12 +32,14 @@ final class ServiceStatusService
 {
     private DashboardService $dash;
     private VpnMonitorService $vpn;
+    private ServiceRunLog $runs;
     private int $pingTimeout;
 
-    public function __construct(?DashboardService $dash = null, ?VpnMonitorService $vpn = null, ?int $pingTimeout = null)
+    public function __construct(?DashboardService $dash = null, ?VpnMonitorService $vpn = null, ?int $pingTimeout = null, ?ServiceRunLog $runs = null)
     {
         $this->dash = $dash ?? new DashboardService();
         $this->vpn = $vpn ?? new VpnMonitorService();
+        $this->runs = $runs ?? new ServiceRunLog();
         $this->pingTimeout = $pingTimeout ?? max(1, Config::int('SERVICE_PING_TIMEOUT', 3));
     }
 
@@ -44,6 +48,8 @@ final class ServiceStatusService
     {
         return [
             $this->appDb(),
+            $this->adaxesSync(),
+            $this->googleSync(),
             $this->onesyncSource(),
             $this->onesyncDbSync(),
             $this->onesyncApi(),
@@ -104,8 +110,87 @@ final class ServiceStatusService
             'Cannot reach OneSync DB: ' . $ping['error'], $facts);
     }
 
+    /**
+     * The direct-to-AD provisioning (Adaxes) sync status. 'disabled' until the
+     * read service is configured; otherwise reports the last recorded run and
+     * whether writes are enabled (ADAXES_WRITE_ENABLED — off = preview only).
+     */
+    private function adaxesSync(): array
+    {
+        $readConfigured = trim((string) Config::get('ADAXES_BASE_URL', '')) !== ''
+            && (trim((string) Config::get('ADAXES_TOKEN', '')) !== ''
+                || (trim((string) Config::get('ADAXES_USERNAME', '')) !== '' && trim((string) Config::get('ADAXES_PASSWORD', '')) !== ''));
+        $writesOn = Config::bool('ADAXES_WRITE_ENABLED', false);
+        $facts = [
+            ['Base URL', (string) (Config::get('ADAXES_BASE_URL', '') ?: '(not set)')],
+            ['Writes', $writesOn ? 'ENABLED' : 'off (preview only)'],
+        ];
+        if (!$readConfigured) {
+            return $this->entry('adaxes_sync', 'Active Directory sync (Adaxes)', 'disabled',
+                'Not configured — set ADAXES_BASE_URL and a token (or username/password) to enable.', $facts);
+        }
+        return $this->fromRun('adaxes_sync', 'Active Directory sync (Adaxes)',
+            'adaxes', 'bin/adaxes_sync.php', $writesOn ? 'ok' : 'warn', $facts,
+            $writesOn ? '' : 'Writes are OFF — runs preview only (set ADAXES_WRITE_ENABLED=true to provision).');
+    }
+
+    /**
+     * The direct-to-Google provisioning sync status. 'disabled' until
+     * GOOGLE_DIRECT_ENABLED + credentials are set; otherwise the last recorded run.
+     */
+    private function googleSync(): array
+    {
+        $licenseOn = Config::bool('GOOGLE_LICENSE_ENABLED', false) && trim((string) Config::get('GOOGLE_LICENSE_SKU', '')) !== '';
+        $seats = (int) Config::get('GOOGLE_LICENSE_SEATS', '0');
+        $facts = [
+            ['Domain', (string) (Config::get('GOOGLE_DOMAIN', '') ?: '(not set)')],
+            ['Disabled OU', (string) (Config::get('GOOGLE_DISABLED_OU', '/tcs/faculty/disabled') ?: '(off)')],
+            ['Licensing', $licenseOn ? ('on · SKU ' . (string) Config::get('GOOGLE_LICENSE_SKU', '') . ($seats > 0 ? " · {$seats} seats" : ' · uncapped')) : 'off'],
+        ];
+        if (!(new GoogleWorkspaceService())->configured()) {
+            return $this->entry('google_sync', 'Google Workspace sync', 'disabled',
+                'Not configured — set GOOGLE_DIRECT_ENABLED=true plus the GOOGLE_SA_* credentials + GOOGLE_ADMIN_SUBJECT.', $facts);
+        }
+        return $this->fromRun('google_sync', 'Google Workspace sync', 'google', 'bin/sync_google.php', 'ok', $facts, '');
+    }
+
+    /**
+     * Build a status card from the last service_run row of a job: fresh success →
+     * $okState, a failed last run → 'down', never-run → 'warn'. $extraDetail is
+     * appended to the base line (e.g. an Adaxes writes-off caveat).
+     *
+     * @param list<array{0:string,1:string}> $facts
+     */
+    private function fromRun(string $key, string $label, string $job, string $cli, string $okState, array $facts, string $extraDetail): array
+    {
+        $last = $this->runs->last($job);
+        if ($last === null) {
+            $detail = "Never run — schedule {$cli} (or run it from the Jobs section below).";
+            return $this->entry($key, $label, 'warn', trim($detail . ' ' . $extraDetail), $facts);
+        }
+        $status = (string) ($last['status'] ?? '');
+        $when = (string) str_replace('T', ' ', (string) ($last['finished_at'] ?? $last['started_at'] ?? ''));
+        $facts[] = ['Last run at', $when === '' ? '—' : $when];
+        if (!empty($last['message'])) {
+            $facts[] = ['Last result', (string) $last['message']];
+        }
+        if ($status === 'failed') {
+            return $this->entry($key, $label, 'down', trim("Last run FAILED ({$when}). {$extraDetail}"), $facts);
+        }
+        if ($status === 'running') {
+            return $this->entry($key, $label, 'warn', trim("A run is in progress (since {$when}). {$extraDetail}"), $facts);
+        }
+        return $this->entry($key, $label, $okState, trim("Last run {$when}. {$extraDetail}"), $facts);
+    }
+
     private function onesyncDbSync(): array
     {
+        // Cutover switch: once IDM is authoritative, an admin turns this off.
+        if (!OneSyncResultImporter::syncEnabled()) {
+            return $this->entry('onesync_db_sync', 'OneSync DB sync', 'disabled',
+                'Turned OFF for cutover — IDM is authoritative for AD/Google and OneSync results are no longer pulled. Re-enable in the Jobs section to fall back.',
+                [['Cutover', 'ONESYNC_DB_SYNC_ENABLED=false']]);
+        }
         try {
             $h = $this->dash->syncHealth();
         } catch (\Throwable $e) {

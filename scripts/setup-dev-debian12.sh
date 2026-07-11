@@ -201,9 +201,14 @@ if [ "${RUN_MIGRATE}" = "1" ]; then
     log "Running migrations"
     run_as_app php bin/migrate.php
 
-    log "Applying table-level grants (writeback + OneSync reader)"
+    log "Applying table-level grants (app deletes + writeback + OneSync reader)"
     # Phase B — the tables and the view now exist.
     mysql_admin <<SQL
+-- 2b) App role — narrow DELETE grants beyond its base SELECT/INSERT/UPDATE.
+-- Unlinking a bad identity removes the person's AD objectGUID crosswalk row so a
+-- wrong/stale GUID can't keep matching; that needs DELETE on person_source_id.
+GRANT DELETE ON \`${DB_NAME}\`.person_source_id TO '${APP_USER_DB}'@'${DB_HOST_GRANT}';
+
 -- 3) Write-back importer — limited writer for the OneSync write-back jobs.
 GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.onesync_writeback   TO '${WB_USER}'@'${DB_HOST_GRANT}';
 GRANT INSERT, UPDATE, SELECT ON \`${DB_NAME}\`.account_sync_status TO '${WB_USER}'@'${DB_HOST_GRANT}';

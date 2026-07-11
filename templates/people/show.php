@@ -94,6 +94,57 @@ $eventTitle = [
             Not yet assigned. OneSync will mint these once the record is activated.
           <?php endif; ?>
         </div>
+
+        <?php
+        // Is there an AD crosswalk link (any state) to unlink? Unlink must be
+        // available even when no username was minted — a bad correlation links a
+        // GUID with no username, and that's exactly what needs removing.
+        $hasAdLink = false;
+        foreach (($sourceIds ?? []) as $__sid) {
+            if (strtolower((string) ($__sid['system'] ?? '')) === 'ad') {
+                $hasAdLink = true;
+                break;
+            }
+        }
+        ?>
+        <?php if (!empty($canAdmin) && ($p['username'] || $hasAdLink)): ?>
+        <div class="identity-actions" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; border-top:1px solid #E4EBF0; padding-top:12px;">
+          <?php if ($p['username']): ?>
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/rename')) ?>" style="margin:0;"
+                data-idm-prompt
+                data-prompt-field="old_name"
+                data-prompt="Schedule a username/email rename for this person? The employee, principal, and IT will be emailed and the change applies after the notice period.&#10;&#10;Previous name (optional) — enter it for the notice, or leave blank. Cancel to abort.">
+            <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+            <input type="hidden" name="old_name" value="">
+            <button type="submit" class="btn btn--sm btn--ghost">Rename (last-name change)</button>
+          </form>
+          <?php endif; ?>
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/unlink')) ?>" style="margin:0;"
+                data-idm-prompt
+                data-prompt-field="reason"
+                data-prompt="Unlink this identity? This removes the AD objectGUID crosswalk (and clears any username/email/UPN + the lock) so the reconciler re-assigns a corrected identity. Use for a wrong name / employee id / bad correlation.&#10;&#10;Reason (optional, e.g. HR typo). Cancel to abort.">
+            <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+            <input type="hidden" name="reason" value="">
+            <button type="submit" class="btn btn--sm btn--danger"><?= $p['username'] ? 'Unlink username' : 'Unlink AD account' ?></button>
+          </form>
+        </div>
+        <?php endif; ?>
+
+        <?php if (!empty($canAdmin)): ?>
+        <div class="identity-actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-top:1px solid #E4EBF0; padding-top:12px;">
+          <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/raptor-override')) ?>" style="margin:0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+            <label for="raptor_group_override" class="kv__label" style="margin:0;">Raptor role exception</label>
+            <select id="raptor_group_override" name="raptor_group_override" class="select" style="max-width:280px;">
+              <?php foreach (($raptorOptions ?? []) as $rk => $rlabel): ?>
+              <option value="<?= e((string) $rk) ?>"<?= ((string) ($raptorOverride ?? '') === (string) $rk) ? ' selected' : '' ?>><?= e((string) $rlabel) ?></option>
+              <?php endforeach; ?>
+            </select>
+            <button type="submit" class="btn btn--sm btn--ghost">Save</button>
+            <span class="muted" style="font-size:12px;">Overrides the title-based Raptor group; applied on the next group sync.</span>
+          </form>
+        </div>
+        <?php endif; ?>
       </div>
 
       <!-- Demographics -->
@@ -384,4 +435,7 @@ $eventTitle = [
 </div>
 <?php if (!empty($adaxesConfigured) || !empty($googleConfigured)): ?>
 <script src="<?= e(asset('assets/js/person-live-panels.js')) ?>" defer></script>
+<?php endif; ?>
+<?php if (!empty($canAdmin)): ?>
+<script src="<?= e(asset('assets/js/person-actions.js')) ?>" defer></script>
 <?php endif; ?>

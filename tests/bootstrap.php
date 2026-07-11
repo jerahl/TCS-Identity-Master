@@ -9,6 +9,9 @@ declare(strict_types=1);
 
 $root = dirname(__DIR__);
 
+// Never sleep between Adaxes retry attempts during the test run.
+putenv('ADAXES_RETRY_DELAY_MS=0');
+
 require $root . '/src/helpers.php';
 
 if (is_file($root . '/vendor/autoload.php')) {

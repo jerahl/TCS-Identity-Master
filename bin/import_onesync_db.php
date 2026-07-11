@@ -21,6 +21,14 @@ require __DIR__ . '/../src/bootstrap.php';
 
 $dryRun = in_array('--dry-run', array_slice($_SERVER['argv'] ?? [], 1), true);
 
+// Cutover switch: once IDM is authoritative for AD/Google, an admin turns the
+// OneSync DB sync OFF (ONESYNC_DB_SYNC_ENABLED=false). Skip cleanly (exit 0) so a
+// cron that's still scheduled doesn't error or record a run.
+if (!OneSyncResultImporter::syncEnabled()) {
+    echo "OneSync DB sync is disabled (cutover) — skipping. Re-enable ONESYNC_DB_SYNC_ENABLED to resume.\n";
+    exit(0);
+}
+
 // Record the run in service_run so the admin "Services" page can show when the
 // OneSync DB sync last ran and with what outcome. Dry runs aren't recorded (they
 // change nothing). Logging never blocks the actual import — start() returns null

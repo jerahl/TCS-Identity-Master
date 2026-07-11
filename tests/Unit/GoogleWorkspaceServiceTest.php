@@ -150,6 +150,81 @@ final class GoogleWorkspaceServiceTest extends TestCase
         self::assertSame('E1', $body['externalIds'][0]['value']);
     }
 
+    public function testAssignLicensePostsToLicensingApi(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        putenv('GOOGLE_LICENSE_PRODUCT=101031');
+        try {
+            $captured = null;
+            $svc = $this->service(['status' => 200, 'body' => '{}'], $captured);
+            $res = $svc->assignLicense('jsmith@x.org');
+
+            self::assertTrue($res['ok']);
+            self::assertSame('POST', $captured['method']);
+            self::assertStringContainsString('/product/101031/sku/1010310008/user', $captured['url']);
+            self::assertSame(['userId' => 'jsmith@x.org'], json_decode((string) $captured['body'], true));
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+            putenv('GOOGLE_LICENSE_PRODUCT');
+        }
+    }
+
+    public function testRemoveLicenseTreats404AsSuccess(): void
+    {
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        putenv('GOOGLE_LICENSE_SKU=1010310008');
+        putenv('GOOGLE_LICENSE_PRODUCT=101031');
+        try {
+            $captured = null;
+            // 404 = not assigned → idempotent success.
+            $svc = $this->service(['status' => 404, 'body' => (string) json_encode(['error' => ['message' => 'Not Found']])], $captured);
+            $res = $svc->removeLicense('jsmith@x.org');
+
+            self::assertTrue($res['ok']);
+            self::assertSame('DELETE', $captured['method']);
+            self::assertStringContainsString('/product/101031/sku/1010310008/user/jsmith%40x.org', $captured['url']);
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+            putenv('GOOGLE_LICENSE_SKU');
+            putenv('GOOGLE_LICENSE_PRODUCT');
+        }
+    }
+
+    public function testLicenseDisabledWhenNotConfigured(): void
+    {
+        // Flag on but no SKU → licenseEnabled() false, writes refuse without HTTP.
+        putenv('GOOGLE_LICENSE_ENABLED=true');
+        try {
+            $captured = null;
+            $svc = $this->service(['status' => 200, 'body' => '{}'], $captured);
+            self::assertFalse($svc->licenseEnabled());
+            $res = $svc->assignLicense('jsmith@x.org');
+            self::assertFalse($res['ok']);
+            self::assertNull($captured); // never called Google
+        } finally {
+            putenv('GOOGLE_LICENSE_ENABLED');
+        }
+    }
+
+    public function testMoveUserPatchesOrgUnitPathOnly(): void
+    {
+        $captured = null;
+        $svc = $this->service($this->userResponse(), $captured);
+
+        $res = $svc->moveUser('1234', 'tcs/faculty/disabled');
+
+        self::assertTrue($res['ok']);
+        self::assertSame('PATCH', $captured['method']);
+        self::assertStringContainsString('/users/1234', $captured['url']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('/tcs/faculty/disabled', $body['orgUnitPath']); // normalized leading slash
+        self::assertArrayNotHasKey('name', $body);       // OU-only — no name/suspend/externalId
+        self::assertArrayNotHasKey('suspended', $body);
+        self::assertArrayNotHasKey('externalIds', $body);
+    }
+
     public function testCreateUserRequiresGoldenEmail(): void
     {
         $captured = null;

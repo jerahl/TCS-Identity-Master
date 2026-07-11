@@ -3,7 +3,7 @@
  * @var array $services @var array $feeds @var array $studentSync
  * @var ?array $onesyncLast @var array $recentRuns @var string $csrf
  * @var bool $canRunFeeds @var bool $canRunStudents @var bool $canRunOnesync
- * @var bool $canAdmin
+ * @var bool $onesyncEnabled @var bool $onesyncEnvLocked @var bool $canAdmin
  */
 use App\Service\ServiceRunLog;
 use App\View\Present;
@@ -134,11 +134,31 @@ $runForm = static function (string $action, string $label, bool $enabled, string
       <h2 class="panel__title" style="margin-bottom:4px;">OneSync DB sync</h2>
       <p class="panel__note">Pulls provisioning results from OneSync's database into <span class="mono">account_sync_status</span> (<span class="mono">bin/import_onesync_db.php</span>).</p>
     </div>
-    <?= $runForm('/admin/run/onesync-db', 'Run OneSync DB sync',
-        $canRunOnesync,
-        "Pull OneSync provisioning results now?\n\nReads OneSync's database and updates per-account sync status, synchronously — the page may take a moment.",
-        'OneSync DB not configured') ?>
+    <div style="display:flex; gap:8px; align-items:center; flex:0 0 auto;">
+      <?php if (!empty($canAdmin)): ?>
+        <?php if (!empty($onesyncEnvLocked)): ?>
+          <span class="muted" style="font-size:11.5px;">Locked in .env (ONESYNC_DB_SYNC_ENABLED)</span>
+        <?php else: ?>
+          <form method="post" action="<?= e(url('/admin/onesync-sync')) ?>" style="margin:0;">
+            <input type="hidden" name="_csrf" value="<?= e($csrf) ?>">
+            <input type="hidden" name="enable" value="<?= !empty($onesyncEnabled) ? '0' : '1' ?>">
+            <button type="submit" class="btn btn--sm <?= !empty($onesyncEnabled) ? 'btn--danger' : 'btn--ghost' ?>" title="<?= !empty($onesyncEnabled) ? 'Turn the OneSync DB sync off for cutover' : 'Turn the OneSync DB sync back on' ?>">
+              <?= !empty($onesyncEnabled) ? 'Disable (cutover)' : 'Re-enable sync' ?>
+            </button>
+          </form>
+        <?php endif; ?>
+      <?php endif; ?>
+      <?= $runForm('/admin/run/onesync-db', 'Run OneSync DB sync',
+          $canRunOnesync && !empty($onesyncEnabled),
+          "Pull OneSync provisioning results now?\n\nReads OneSync's database and updates per-account sync status, synchronously — the page may take a moment.",
+          empty($onesyncEnabled) ? 'Sync disabled (cutover)' : 'OneSync DB not configured') ?>
+    </div>
   </div>
+  <?php if (empty($onesyncEnabled)): ?>
+    <div class="card--pad" style="border-left:4px solid #CBD5E1; background:#F8FAFC; font-size:12.5px; margin-bottom:10px;">
+      <strong>Cutover mode.</strong> The OneSync DB sync is turned <strong>off</strong> — IDM is authoritative for AD/Google and provisioning results are no longer pulled from OneSync. Re-enable it above to fall back.
+    </div>
+  <?php endif; ?>
   <?php if ($onesyncLast === null): ?>
     <p class="muted" style="font-size:12.5px;">No OneSync DB sync has been recorded yet. It runs from cron via <span class="mono">bin/import_onesync_db.php</span>, or with the button above.</p>
   <?php else:

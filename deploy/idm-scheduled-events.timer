@@ -1,0 +1,12 @@
+[Unit]
+Description=Run TCS Identity scheduled-events processor on a short interval
+
+[Timer]
+# Every 15 minutes. Events are due-by-time; this just needs to run often enough
+# that cutovers/reminders/removals fire within the granularity you want.
+OnCalendar=*:0/15
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -41,6 +41,7 @@ final class GoogleWorkspaceService
 {
     /** Directory API + OAuth2 endpoints (host is fixed; overridable for tests). */
     private const DEFAULT_API_BASE = 'https://admin.googleapis.com/admin/directory/v1';
+    private const DEFAULT_LICENSING_BASE = 'https://licensing.googleapis.com/apps/licensing/v1';
     private const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
     private const DEFAULT_SCOPES = 'https://www.googleapis.com/auth/admin.directory.user';
 
@@ -57,6 +58,12 @@ final class GoogleWorkspaceService
     private string $customer;
     private string $domain;
     private int $timeout;
+    /** Licensing: Education Plus (staff) assign/remove — off unless configured. */
+    private bool $licenseEnabled;
+    private string $licenseSku;
+    private string $licenseProduct;
+    private int $licenseSeats;
+    private string $licensingBase;
 
     /** Access token resolved from the JWT handshake (or a test-injected static token), cached per instance. */
     private ?string $accessToken;
@@ -110,6 +117,15 @@ final class GoogleWorkspaceService
 
         $this->apiBase  = rtrim($apiBase ?? (string) Config::get('GOOGLE_API_BASE', self::DEFAULT_API_BASE), '/');
         $this->tokenUri = trim($tokenUri ?? (string) Config::get('GOOGLE_TOKEN_URI', self::DEFAULT_TOKEN_URI));
+
+        // Licensing (Enterprise License Manager). SKU is the Education Plus staff
+        // SKU; product is inferred by GAM but required for the HTTP API. Seats = the
+        // subscription's seat cap (0 = uncapped: don't gate on availability).
+        $this->licenseEnabled = Config::bool('GOOGLE_LICENSE_ENABLED', false);
+        $this->licenseSku     = trim((string) Config::get('GOOGLE_LICENSE_SKU', ''));
+        $this->licenseProduct = trim((string) Config::get('GOOGLE_LICENSE_PRODUCT', ''));
+        $this->licenseSeats   = max(0, (int) Config::get('GOOGLE_LICENSE_SEATS', '0'));
+        $this->licensingBase  = rtrim((string) Config::get('GOOGLE_LICENSING_API_BASE', self::DEFAULT_LICENSING_BASE), '/');
         $this->scopes   = trim($scopes ?? (string) Config::get('GOOGLE_SCOPES', self::DEFAULT_SCOPES)) ?: self::DEFAULT_SCOPES;
 
         // A test-injected access token skips the whole JWT handshake.
@@ -517,6 +533,163 @@ final class GoogleWorkspaceService
         return self::writeOk('edit', self::normalizeUser($res['data']));
     }
 
+    /**
+     * Move a Google account to a different org unit (OU-only patch — leaves name,
+     * suspension, etc. untouched). Used to relocate suspended users to the disabled
+     * OU and to heal active users whose OU has drifted from their building's.
+     *
+     * @return WriteResult
+     */
+    public function moveUser(string $userKey, string $orgUnitPath): array
+    {
+        if (!$this->configured()) {
+            return self::writeFail('edit', 'Direct Google provisioning is off.');
+        }
+        $body = ['orgUnitPath' => self::normalizeOu($orgUnitPath)];
+        if ($this->gam !== null) {
+            $res = $this->gam->updateUser($userKey, $body);
+            return $res['ok'] ? self::writeOk('edit', self::normalizeUser($res['data'])) : self::writeFail('edit', $res['error']);
+        }
+        $res = $this->request('PATCH', $this->apiBase . '/users/' . rawurlencode($userKey), (string) json_encode($body));
+        return $res['ok'] ? self::writeOk('edit', self::normalizeUser($res['data'])) : self::writeFail('edit', $res['error']);
+    }
+
+    // ---- licensing (Education Plus staff) --------------------------------------
+
+    /** True when license management is switched on AND a SKU is configured. */
+    public function licenseEnabled(): bool
+    {
+        return $this->licenseEnabled && $this->licenseSku !== '';
+    }
+
+    /** Configured seat cap (0 = uncapped: no availability gate). */
+    public function licenseSeats(): int
+    {
+        return $this->licenseSeats;
+    }
+
+    /**
+     * Assign the configured license SKU to a user. Idempotent. Callers should
+     * check seat availability (licenseUsage) first when a cap is set.
+     *
+     * @return array{ok:bool,error:?string}
+     */
+    public function assignLicense(string $userKey): array
+    {
+        if (!$this->licenseEnabled()) {
+            return ['ok' => false, 'error' => 'License management is off (GOOGLE_LICENSE_ENABLED + GOOGLE_LICENSE_SKU).'];
+        }
+        $userKey = trim($userKey);
+        if ($userKey === '') {
+            return ['ok' => false, 'error' => 'No user to license.'];
+        }
+        if ($this->gam !== null) {
+            return $this->gam->addLicense($userKey, $this->licenseSku, $this->licenseProduct);
+        }
+        if ($this->licenseProduct === '') {
+            return ['ok' => false, 'error' => 'GOOGLE_LICENSE_PRODUCT is required for the API backend.'];
+        }
+        $url = $this->licensingBase . '/product/' . rawurlencode($this->licenseProduct)
+             . '/sku/' . rawurlencode($this->licenseSku) . '/user';
+        $res = $this->request('POST', $url, (string) json_encode(['userId' => $userKey]));
+        // 409 = already assigned → idempotent success.
+        if ($res['ok'] || ($res['status'] ?? 0) === 409) {
+            return ['ok' => true, 'error' => null];
+        }
+        return ['ok' => false, 'error' => $res['error']];
+    }
+
+    /**
+     * Remove the configured license SKU from a user. Idempotent (a 404 = not
+     * assigned = success).
+     *
+     * @return array{ok:bool,error:?string}
+     */
+    public function removeLicense(string $userKey): array
+    {
+        if (!$this->licenseEnabled()) {
+            return ['ok' => false, 'error' => 'License management is off (GOOGLE_LICENSE_ENABLED + GOOGLE_LICENSE_SKU).'];
+        }
+        $userKey = trim($userKey);
+        if ($userKey === '') {
+            return ['ok' => false, 'error' => 'No user to unlicense.'];
+        }
+        if ($this->gam !== null) {
+            return $this->gam->deleteLicense($userKey, $this->licenseSku, $this->licenseProduct);
+        }
+        if ($this->licenseProduct === '') {
+            return ['ok' => false, 'error' => 'GOOGLE_LICENSE_PRODUCT is required for the API backend.'];
+        }
+        $url = $this->licensingBase . '/product/' . rawurlencode($this->licenseProduct)
+             . '/sku/' . rawurlencode($this->licenseSku) . '/user/' . rawurlencode($userKey);
+        $res = $this->request('DELETE', $url);
+        if ($res['ok'] || ($res['status'] ?? 0) === 404) {
+            return ['ok' => true, 'error' => null];
+        }
+        return ['ok' => false, 'error' => $res['error']];
+    }
+
+    /**
+     * Current usage of the configured SKU: the set of assigned users (lowercased
+     * email/id) and the used count, so the sync can both gate on seat availability
+     * and tell per-user whether a license is held — from ONE lookup per run.
+     * Returns null members when it can't be determined (degrade to "unknown").
+     *
+     * @return array{ok:bool, users:array<string,true>|null, used:?int, seats:int, available:?int}
+     */
+    public function licenseUsage(): array
+    {
+        $seats = $this->licenseSeats;
+        if (!$this->licenseEnabled()) {
+            return ['ok' => false, 'users' => null, 'used' => null, 'seats' => $seats, 'available' => null];
+        }
+        $users = $this->gam !== null
+            ? $this->gam->listLicenseUsers($this->licenseSku, $this->licenseProduct)
+            : $this->httpLicenseUsers();
+        if ($users === null) {
+            return ['ok' => false, 'users' => null, 'used' => null, 'seats' => $seats, 'available' => null];
+        }
+        $used = count($users);
+        $available = $seats > 0 ? max(0, $seats - $used) : null; // null = uncapped
+        return ['ok' => true, 'users' => $users, 'used' => $used, 'seats' => $seats, 'available' => $available];
+    }
+
+    /**
+     * HTTP-backend assignment list for the configured SKU (paged, bounded). Null on
+     * any error so the caller degrades to "unknown" rather than a false empty.
+     *
+     * @return array<string,true>|null
+     */
+    private function httpLicenseUsers(): ?array
+    {
+        if ($this->licenseProduct === '') {
+            return null;
+        }
+        $set = [];
+        $pageToken = '';
+        for ($page = 0; $page < 50; $page++) { // bound: 50 pages × 100 = 5000
+            $url = $this->licensingBase . '/product/' . rawurlencode($this->licenseProduct)
+                 . '/sku/' . rawurlencode($this->licenseSku) . '/users'
+                 . '?customerId=' . rawurlencode($this->customer) . '&maxResults=100'
+                 . ($pageToken !== '' ? '&pageToken=' . rawurlencode($pageToken) : '');
+            $res = $this->request('GET', $url);
+            if (!$res['ok']) {
+                return null;
+            }
+            foreach ((array) ($res['data']['items'] ?? []) as $item) {
+                $id = trim((string) ($item['userId'] ?? ''));
+                if ($id !== '') {
+                    $set[strtolower($id)] = true;
+                }
+            }
+            $pageToken = trim((string) ($res['data']['nextPageToken'] ?? ''));
+            if ($pageToken === '') {
+                break;
+            }
+        }
+        return $set;
+    }
+
     /** Suspend (disable) a Google account. Reversible via restoreUser(). @return WriteResult */
     public function suspendUser(string $userKey): array
     {
@@ -527,6 +700,35 @@ final class GoogleWorkspaceService
     public function restoreUser(string $userKey): array
     {
         return $this->setSuspended($userKey, false, 'enable');
+    }
+
+    /**
+     * Add a secondary email alias to a Google account (keeps delivering the old
+     * address after a rename). @return array{ok:bool,error:?string}
+     */
+    public function addAlias(string $userKey, string $alias): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Direct Google provisioning is off.'];
+        }
+        if ($this->gam !== null) {
+            return $this->gam->addAlias($userKey, $alias);
+        }
+        $res = $this->request('POST', $this->apiBase . '/users/' . rawurlencode($userKey) . '/aliases', (string) json_encode(['alias' => $alias]));
+        return ['ok' => $res['ok'], 'error' => $res['error']];
+    }
+
+    /** Remove a secondary email alias. @return array{ok:bool,error:?string} */
+    public function removeAlias(string $userKey, string $alias): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => 'Direct Google provisioning is off.'];
+        }
+        if ($this->gam !== null) {
+            return $this->gam->removeAlias($alias);
+        }
+        $res = $this->request('DELETE', $this->apiBase . '/users/' . rawurlencode($userKey) . '/aliases/' . rawurlencode($alias));
+        return ['ok' => $res['ok'], 'error' => $res['error']];
     }
 
     private function setSuspended(string $userKey, bool $suspended, string $action): array
@@ -777,7 +979,7 @@ final class GoogleWorkspaceService
     }
 
     /** Normalize an OU path to Google's leading-slash form ('/', '/Faculty'). */
-    private static function normalizeOu(?string $ou): string
+    public static function normalizeOu(?string $ou): string
     {
         $ou = trim((string) $ou);
         if ($ou === '' || $ou === '/') {

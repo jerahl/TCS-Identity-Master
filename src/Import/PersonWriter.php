@@ -82,21 +82,28 @@ final class PersonWriter
         return $personId;
     }
 
-    /** Ensure the (system, source_key) crosswalk points at this person. */
+    /**
+     * Ensure the (system, source_key) crosswalk points at this person and is
+     * active. Portable upsert (select → insert or update) so it runs on both the
+     * app's MySQL and the sqlite used by the test suite; a brand-new link is
+     * audited, an existing one is refreshed quietly.
+     */
     public function attachSourceId(int $personId, string $system, string $sourceKey, string $actor): void
     {
         $before = $this->findSourceId($system, $sourceKey);
-        $stmt = $this->db->prepare(
-            'INSERT INTO person_source_id (person_id, system, source_key, is_active, last_seen)
-             VALUES (:pid, :system, :key, 1, CURRENT_TIMESTAMP)
-             ON DUPLICATE KEY UPDATE person_id = VALUES(person_id), is_active = 1, last_seen = CURRENT_TIMESTAMP'
-        );
-        $stmt->execute([':pid' => $personId, ':system' => $system, ':key' => $sourceKey]);
-
         if ($before === null) {
+            $this->db->prepare(
+                'INSERT INTO person_source_id (person_id, system, source_key, is_active, last_seen)
+                 VALUES (:pid, :system, :key, 1, CURRENT_TIMESTAMP)'
+            )->execute([':pid' => $personId, ':system' => $system, ':key' => $sourceKey]);
             $this->audit->log('source_id', (int) $this->db->lastInsertId(), 'insert', null,
                 ['person_id' => $personId, 'system' => $system, 'source_key' => $sourceKey], $actor);
+            return;
         }
+        $this->db->prepare(
+            'UPDATE person_source_id SET person_id = :pid, is_active = 1, last_seen = CURRENT_TIMESTAMP
+             WHERE system = :system AND source_key = :key'
+        )->execute([':pid' => $personId, ':system' => $system, ':key' => $sourceKey]);
     }
 
     /**
@@ -266,6 +273,110 @@ final class PersonWriter
                 ['summary' => 'AD account linked via live verification: ' . implode('; ', $notes) . '.'], $actor);
         }
 
+        return $notes;
+    }
+
+    /**
+     * Apply a rename cutover to the golden record: set the new username/email/upn
+     * (the account stays LOCKED — this is a sanctioned change, not an unlock).
+     * Audited + a lifecycle event. Returns whether anything changed.
+     */
+    public function applyRename(int $personId, string $newUsername, string $newEmail, string $newUpn, string $actor): bool
+    {
+        $stmt = $this->db->prepare('SELECT username, email, upn FROM person WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        $before = $stmt->fetch();
+        if ($before === false) {
+            return false;
+        }
+        $this->db->prepare(
+            'UPDATE person
+                SET username = :u, email = :e, upn = :pn,
+                    username_assigned_at = CURRENT_TIMESTAMP, username_locked = 1, updated_by = :actor
+              WHERE person_id = :id'
+        )->execute([':u' => $newUsername, ':e' => $newEmail, ':pn' => $newUpn, ':actor' => $actor, ':id' => $personId]);
+
+        $this->audit->log('person', $personId, 'update',
+            ['username' => $before['username'], 'email' => $before['email'], 'upn' => $before['upn']],
+            ['username' => $newUsername, 'email' => $newEmail, 'upn' => $newUpn], $actor);
+        $this->audit->lifecycle($personId, 'username_assigned',
+            ['summary' => "Rename applied: {$before['username']} → {$newUsername} (email {$newEmail})."], $actor);
+        return true;
+    }
+
+    /**
+     * Unlink a person's assigned identity — for when the wrong name/employee id
+     * caused a bad username to be minted/linked. Clears username/email/upn and the
+     * lock (so the minter can re-assign a correct one), and REMOVES the person's
+     * `ad` crosswalk row(s) entirely (objectGUID link) so a wrong/stale GUID can
+     * neither resolve here nor block re-linking that GUID elsewhere. Does NOT touch
+     * the live AD account itself (IT deletes/renames that, or the reconciler creates
+     * a fresh corrected account). Audited + a lifecycle event. Returns the change
+     * notes (empty if there was nothing linked).
+     *
+     * @return list<string>
+     */
+    public function unlinkUsername(int $personId, string $actor, ?string $reason = null): array
+    {
+        $stmt = $this->db->prepare('SELECT username, email, upn, username_locked FROM person WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        $p = $stmt->fetch();
+        if ($p === false) {
+            return [];
+        }
+
+        $notes = [];
+        $hadIdentity = trim((string) $p['username']) !== '' || trim((string) $p['email']) !== '' || trim((string) $p['upn']) !== '';
+        if ($hadIdentity) {
+            $this->db->prepare(
+                'UPDATE person
+                    SET username = NULL, email = NULL, upn = NULL,
+                        username_assigned_at = NULL, username_locked = 0, updated_by = :actor
+                  WHERE person_id = :id'
+            )->execute([':actor' => $actor, ':id' => $personId]);
+            $this->audit->log('person', $personId, 'update',
+                ['username' => $p['username'], 'email' => $p['email'], 'upn' => $p['upn'], 'username_locked' => $p['username_locked']],
+                ['username' => null, 'email' => null, 'upn' => null, 'username_locked' => 0], $actor);
+            $notes[] = 'cleared username/email/UPN and unlocked';
+        }
+
+        // Remove the AD crosswalk entirely (active OR inactive) so the wrong/stale
+        // objectGUID can't resolve here or block re-linking it to the right person.
+        // The app DB role may lack DELETE (least privilege); if so, fall back to
+        // deactivating the row — an inactive AD link no longer resolves a GUID
+        // (see AdaxesService::adObjectGuid), so verify still stops matching it.
+        $adRows = $this->db->prepare("SELECT id, source_key, is_active FROM person_source_id WHERE person_id = :id AND system = 'ad'");
+        $adRows->execute([':id' => $personId]);
+        $removed = 0;
+        $deactivated = 0;
+        foreach ($adRows->fetchAll() as $r) {
+            $rid = (int) $r['id'];
+            try {
+                $this->db->prepare('DELETE FROM person_source_id WHERE id = :rid')->execute([':rid' => $rid]);
+                $this->audit->log('source_id', $rid, 'delete',
+                    ['system' => 'ad', 'source_key' => $r['source_key'], 'is_active' => (int) $r['is_active']],
+                    ['reason' => 'username unlinked'], $actor);
+                $removed++;
+            } catch (\PDOException $e) {
+                // No DELETE privilege → soft-unlink so the operation still succeeds.
+                $this->db->prepare('UPDATE person_source_id SET is_active = 0 WHERE id = :rid')->execute([':rid' => $rid]);
+                $this->audit->log('source_id', $rid, 'update',
+                    ['is_active' => (int) $r['is_active']],
+                    ['is_active' => 0, 'source_key' => $r['source_key'], 'reason' => 'username unlinked (no DELETE grant — deactivated)'], $actor);
+                $deactivated++;
+            }
+        }
+        if ($removed > 0) {
+            $notes[] = "removed {$removed} AD crosswalk link(s)";
+        }
+        if ($deactivated > 0) {
+            $notes[] = "deactivated {$deactivated} AD crosswalk link(s) (grant DELETE on person_source_id to remove fully)";
+        }
+
+        if ($notes !== []) {
+            $summary = 'Username unlinked' . ($reason !== null && trim($reason) !== '' ? ' (' . trim($reason) . ')' : '') . ': ' . implode('; ', $notes) . '.';
+            $this->audit->lifecycle($personId, 'update', ['summary' => $summary], $actor);
+        }
         return $notes;
     }
 
@@ -640,7 +751,7 @@ final class PersonWriter
         $stmt = $this->db->prepare(
             'SELECT person_type, status, first_name, middle_name, last_name, preferred_name, dob, gender,
                     ethnicity_source, ethnicity_code, alsde_id, employee_id, primary_school_id,
-                    board_approval_date, board_approval_note, notes
+                    board_approval_date, board_approval_note, notes, raptor_group_override
              FROM person WHERE person_id = :id'
         );
         $stmt->execute([':id' => $personId]);

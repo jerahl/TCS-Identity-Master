@@ -58,6 +58,8 @@ final class AdminController extends Controller
             'canRunStudents' => FeedSync::powerSchoolOdbcEnabled(),
             'canRunOnesync'  => OneSyncResultImporter::sourceIds() !== []
                 && trim((string) Config::get('ONESYNC_DB_HOST', '')) !== '',
+            'onesyncEnabled' => OneSyncResultImporter::syncEnabled(),
+            'onesyncEnvLocked' => Config::isEnvLocked('ONESYNC_DB_SYNC_ENABLED'),
             'csrf'         => Csrf::token(),
         ], 'admin', 'Configuration  /  Services', 'Services — TCS Identity Master');
     }
@@ -148,6 +150,10 @@ final class AdminController extends Controller
             $this->flash('OneSync DB sync is not configured (set ONESYNC_DB_* and ONESYNC_DB_SOURCE_ID_*).');
             return $this->redirect(url('/admin'));
         }
+        if (!OneSyncResultImporter::syncEnabled()) {
+            $this->flash('OneSync DB sync is turned off for cutover — re-enable it below before running.');
+            return $this->redirect(url('/admin'));
+        }
 
         $actor = $this->currentUser()['name'];
         $runId = $this->runs->start('onesync_db', 'manual', $actor);
@@ -167,6 +173,31 @@ final class AdminController extends Controller
             $this->runs->finish($runId, 'failed', [], $e->getMessage());
             $this->auditRun('onesync_db', 'failed', $e->getMessage(), $actor);
             $this->flash('OneSync DB sync failed: ' . $e->getMessage());
+        }
+        return $this->redirect(url('/admin'));
+    }
+
+    /**
+     * Cutover switch: enable/disable the OneSync DB sync (admin). Turning it off
+     * stops IDM from pulling provisioning results from OneSync — the cutover step
+     * once IDM is authoritative for AD/Google. Persisted as a whitelisted
+     * app_setting (ONESYNC_DB_SYNC_ENABLED) via SettingsService::setBool.
+     */
+    public function toggleOnesync(): string
+    {
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect(url('/admin'));
+        }
+        $enable = ($_POST['enable'] ?? '') === '1';
+        try {
+            (new \App\Service\SettingsService())->setBool('ONESYNC_DB_SYNC_ENABLED', $enable, $this->currentUser()['name']);
+            $this->flash($enable
+                ? 'OneSync DB sync re-enabled — provisioning results will be pulled from OneSync again.'
+                : 'OneSync DB sync disabled (cutover) — IDM is now authoritative; OneSync results are no longer pulled.');
+        } catch (\Throwable $e) {
+            error_log('[idm] onesync toggle: ' . $e->getMessage());
+            $this->flash('Could not change the OneSync DB sync switch: ' . $e->getMessage());
         }
         return $this->redirect(url('/admin'));
     }

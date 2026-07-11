@@ -10,6 +10,7 @@ use App\Import\ImportSource;
 use App\Http\Upload;
 use App\Service\GoogleWorkspaceService;
 use App\Service\ImportService;
+use App\Service\ServiceRunLog;
 use App\Support\Csrf;
 use App\Sync\FeedSync;
 use App\Sync\GoogleSync;
@@ -166,17 +167,27 @@ final class ImportController extends Controller
             return $this->redirect(url('/import'));
         }
         $dryRun = !empty($_POST['dry_run']);
+        $actor = $this->currentUser()['name'];
+        // Record real runs in service_run so the Services page shows the last run.
+        $runLog = $dryRun ? null : new ServiceRunLog();
+        $runId  = $runLog?->start('google', 'manual', $actor);
         try {
-            $r = $sync->run($dryRun, $this->currentUser()['name']);
+            $r = $sync->run($dryRun, $actor);
             $c = $r['counts'];
             if ($r['blocked']) {
+                $runLog?->finish($runId, 'failed', $c, (string) ($r['note'] ?? 'blocked by guardrail'));
                 $this->flash($r['note'] ?? 'Google sync blocked by the threshold guardrail — nothing written.');
             } else {
-                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · in-sync %d · no-email %d · errors %d',
+                $runLog?->finish($runId, $c['errors'] > 0 ? 'failed' : 'complete', $c, sprintf(
+                    'created %d · pushed %d · suspended %d · moved %d · licensed %d · unlicensed %d · errors %d',
+                    $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['licensed'], $c['unlicensed'], $c['errors']));
+                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · moved %d · licensed %d · unlicensed %d%s · errors %d',
                     $dryRun ? 'Google sync (dry run)' : 'Google sync',
-                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['in_sync'], $c['no_email'], $c['errors']));
+                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['licensed'], $c['unlicensed'],
+                    $c['license_blocked'] > 0 ? " · {$c['license_blocked']} blocked (no seats)" : '', $c['errors']));
             }
         } catch (\Throwable $e) {
+            $runLog?->finish($runId, 'failed', [], $e->getMessage());
             error_log('[idm] google sync: ' . $e->getMessage());
             $this->flash('Google sync failed: ' . $e->getMessage());
         }

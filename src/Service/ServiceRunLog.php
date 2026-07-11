@@ -27,6 +27,8 @@ final class ServiceRunLog
         'onesync_db' => 'OneSync DB sync',
         'feeds'      => 'Feed imports',
         'students'   => 'Students sync',
+        'adaxes'     => 'Active Directory sync (Adaxes)',
+        'google'     => 'Google Workspace sync',
     ];
 
     private ?PDO $pdo;

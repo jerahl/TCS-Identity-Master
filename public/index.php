@@ -114,6 +114,16 @@ try {
     $router->post('/settings/api-keys/create', $guard('view', static fn() => $apiKeys->create()));
     $router->post('/settings/api-keys/revoke', $guard('view', static fn() => $apiKeys->revoke()));
 
+    // Configuration settings (admin-only; the provisioning / OU / group knobs).
+    $settings = new \App\Controller\SettingsController();
+    $router->get('/settings/config', $guard('admin', static fn() => $settings->index()));
+    $router->post('/settings/config/save', $guard('admin', static fn() => $settings->save()));
+
+    // Editable email templates (admin-only; rename/alias notices).
+    $emailTpl = new \App\Controller\EmailTemplateController();
+    $router->get('/settings/email-templates', $guard('admin', static fn() => $emailTpl->index()));
+    $router->post('/settings/email-templates/save', $guard('admin', static fn() => $emailTpl->save()));
+
     // ---- Edit (editor / admin) ----
     $router->post('/review/confirm', $guard('edit', static fn() => $review->confirm()));
     $router->post('/review/reject', $guard('edit', static fn() => $review->reject()));
@@ -130,6 +140,9 @@ try {
     $router->get('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->editForm($p)));
     $router->post('/people/{id}/edit', $guard('edit', static fn(array $p) => $person->update($p)));
     $router->post('/people/{id}/disable', $guard('edit', static fn(array $p) => $person->disable($p)));
+    $router->post('/people/{id}/unlink', $guard('admin', static fn(array $p) => $person->unlink($p)));
+    $router->post('/people/{id}/rename', $guard('admin', static fn(array $p) => $person->rename($p)));
+    $router->post('/people/{id}/raptor-override', $guard('admin', static fn(array $p) => $person->raptorOverride($p)));
     // Direct-to-Google provisioning (bypasses OneSync): link/create/push/suspend/restore.
     $router->post('/people/{id}/google/{action}', $guard('edit', static fn(array $p) => $google->act($p)));
     $router->post('/people/{id}/reconcile', $guard('edit', static fn(array $p) => $person->reconcile($p)));
@@ -151,6 +164,7 @@ try {
     $router->post('/admin/run/feeds', $guard('admin', static fn() => $admin->runFeeds()));
     $router->post('/admin/run/students', $guard('admin', static fn() => $admin->runStudents()));
     $router->post('/admin/run/onesync-db', $guard('admin', static fn() => $admin->runOnesyncDb()));
+    $router->post('/admin/onesync-sync', $guard('admin', static fn() => $admin->toggleOnesync()));
     $router->get('/security', $guard('admin', static fn() => $security->index()));
 
     $router->setNotFound(static fn() => $page->notFound());

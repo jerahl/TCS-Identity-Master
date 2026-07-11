@@ -59,6 +59,16 @@ final class OneSyncResultImporter
         return array_values($ids);
     }
 
+    /**
+     * Whether the OneSync DB sync is switched on. It defaults ON; an admin turns
+     * it OFF at cutover (ONESYNC_DB_SYNC_ENABLED=false), once IDM is authoritative
+     * for AD/Google, so provisioning results stop being pulled from OneSync.
+     */
+    public static function syncEnabled(): bool
+    {
+        return Config::bool('ONESYNC_DB_SYNC_ENABLED', true);
+    }
+
     /** os_export_log.actionStatus -> account_sync_status.last_status. */
     public static function status(int $code): string
     {

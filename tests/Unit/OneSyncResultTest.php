@@ -52,6 +52,19 @@ final class OneSyncResultTest extends TestCase
         putenv('ONESYNC_DB_SOURCE_ID_FACULTY');
     }
 
+    public function testSyncEnabledDefaultsOnAndTogglesOffForCutover(): void
+    {
+        putenv('ONESYNC_DB_SYNC_ENABLED'); // unset → default ON
+        self::assertTrue(OneSyncResultImporter::syncEnabled());
+
+        putenv('ONESYNC_DB_SYNC_ENABLED=false'); // cutover
+        try {
+            self::assertFalse(OneSyncResultImporter::syncEnabled());
+        } finally {
+            putenv('ONESYNC_DB_SYNC_ENABLED');
+        }
+    }
+
     public function testSourceIdsFallsBackToLegacyAndDedupes(): void
     {
         putenv('ONESYNC_DB_SOURCE_ID_STUDENTS');
