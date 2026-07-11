@@ -7,6 +7,12 @@ declare(strict_types=1);
  * accounts from the golden record through the Adaxes REST API, bypassing OneSync
  * (see docs/adaxes-provisioning-design.md). IDM is the writer.
  *
+ * --dry-run doubles as the change report: it reads live AD and prints, per
+ * person, what is currently set vs. what the sync would change — edits and moves
+ * render as "current → proposed" (e.g. `userPrincipalName: stale@x → new@x`,
+ * `move OU=OldBuilding,… → OU=CO,…`), disables show the live account is still
+ * enabled, and groups show the +add/-remove delta. Nothing is written.
+ *
  *   php bin/adaxes_sync.php --dry-run                 # preview everything, write nothing
  *   php bin/adaxes_sync.php --dry-run --phases=disable # preview one phase
  *   php bin/adaxes_sync.php --phases=disable,edit      # apply (requires ADAXES_WRITE_ENABLED=true)

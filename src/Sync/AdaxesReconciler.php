@@ -289,7 +289,7 @@ final class AdaxesReconciler
             if ($attrs !== []) {
                 $acted = true;
                 if (!$apply) {
-                    $this->item($out, $pid, $name, 'edit', 'would-edit', 'push ' . self::attrsSummary($attrs));
+                    $this->item($out, $pid, $name, 'edit', 'would-edit', self::changeSummary($attrs, $adAttrs));
                 } else {
                     $res = $this->writer->modify($guid, $attrs);
                     if (!$res['ok']) {
@@ -307,7 +307,9 @@ final class AdaxesReconciler
             if ($moveTo !== null) {
                 $acted = true;
                 if (!$apply) {
-                    $this->item($out, $pid, $name, 'edit', 'would-move', 'move to ' . $moveTo);
+                    $currentContainer = self::parentDn(trim((string) ($adAttrs['distinguishedname'] ?? '')));
+                    $this->item($out, $pid, $name, 'edit', 'would-move',
+                        'move ' . ($currentContainer !== '' ? $currentContainer : '(unknown)') . ' → ' . $moveTo);
                 } else {
                     $res = $this->writer->move($guid, $moveTo);
                     if (!$res['ok']) {
@@ -1176,6 +1178,28 @@ final class AdaxesReconciler
         $parts = [];
         foreach ($attrs as $k => $v) {
             $parts[] = $k . '=' . $v;
+        }
+        return implode(', ', $parts);
+    }
+
+    /**
+     * A "current → proposed" change summary for the dry-run report: for each
+     * attribute the edit would push, show what live AD holds now (or "(unset)"
+     * when the account has no value) alongside the value IDM would write. This is
+     * what makes --dry-run a genuine what's-set-now vs. what-would-change report
+     * rather than a list of intended new values. $adAttrs is the normalized
+     * (lowercase-keyed) live-AD attribute map, so the "before" side is the
+     * account's real current value.
+     *
+     * @param array<string,string> $attrs   proposed attr => new value
+     * @param array<string,string> $adAttrs normalized live-AD attributes
+     */
+    private static function changeSummary(array $attrs, array $adAttrs): string
+    {
+        $parts = [];
+        foreach ($attrs as $attr => $new) {
+            $current = trim((string) ($adAttrs[strtolower($attr)] ?? ''));
+            $parts[] = $attr . ': ' . ($current === '' ? '(unset)' : $current) . ' → ' . $new;
         }
         return implode(', ', $parts);
     }

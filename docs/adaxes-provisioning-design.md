@@ -466,8 +466,11 @@ Beyond create/edit/disable/groups, IDM owns the human side of identity changes.
    the minter skips them entirely.
 4. **Threshold valves** on both disable (ratio) and create (absolute count).
 5. **Audit everything** to `audit_log` + `lifecycle_event`, actor `system:adaxes_sync`.
-6. **Dry-run** (`--dry-run`) on the reconciler prints intended writes and changes
-   nothing — required before every real run during rollout.
+6. **Dry-run** (`--dry-run`) on the reconciler is also the change report: it
+   reads live AD and prints, per person, what is currently set vs. what would
+   change — edits/moves as `current → proposed`, disables showing the account is
+   still enabled, groups as the +add/-remove delta — and changes nothing.
+   Required before every real run during rollout.
 7. **Off by default** — `ADAXES_WRITE_ENABLED=false` until deliberately enabled.
 8. **TLS verification stays on** (existing `ADAXES_CA_FILE` / `ADAXES_VERIFY_TLS`).
 

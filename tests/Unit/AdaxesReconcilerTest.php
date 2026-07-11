@@ -395,6 +395,73 @@ final class AdaxesReconcilerTest extends TestCase
         }
     }
 
+    public function testDryRunEditReportShowsCurrentVsProposed(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Ed', 'last_name' => 'It',
+            'username' => 'edit', 'email' => 'edit@tusc.k12.al.us', 'upn' => 'edit@tusc.k12.al.us',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // AD holds a stale UPN and NO mail — the report must show the live "before"
+        // value (and "(unset)" when the account has none) next to the proposed one.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'edit',
+            'userPrincipalName' => 'stale@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: true, phases: ['edit']);
+
+        self::assertSame('would-edit', $res['edit']['items'][0]['outcome']);
+        $detail = $res['edit']['items'][0]['detail'];
+        self::assertStringContainsString('userPrincipalName: stale@tusc.k12.al.us → edit@tusc.k12.al.us', $detail);
+        self::assertStringContainsString('mail: (unset) → edit@tusc.k12.al.us', $detail);
+        self::assertSame([], $calls); // read-only preview
+    }
+
+    public function testDryRunMoveReportShowsCurrentContainerVsTarget(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Jo', 'last_name' => 'Smith',
+            'username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us', 'upn' => 'jsmith@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Identity + department match; only the container is wrong.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'jsmith',
+            'userPrincipalName' => 'jsmith@tusc.k12.al.us',
+            'mail'              => 'jsmith@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'distinguishedName' => 'CN=Jo Smith,OU=OldBuilding,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: true, phases: ['edit']);
+
+        $move = null;
+        foreach ($res['edit']['items'] as $it) {
+            if ($it['outcome'] === 'would-move') {
+                $move = $it;
+                break;
+            }
+        }
+        self::assertNotNull($move, 'expected a would-move report line');
+        self::assertSame(
+            'move OU=OldBuilding,' . self::BASE_DN . ' → OU=CO,OU=Faculty,' . self::BASE_DN,
+            $move['detail'],
+        );
+        self::assertSame([], $calls); // read-only preview
+    }
+
     // ---- create -------------------------------------------------------------
 
     public function testCreatesNetNewFacultyHireLinksGuidAndStampsGolden(): void
