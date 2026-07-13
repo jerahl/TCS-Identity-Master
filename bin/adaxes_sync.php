@@ -8,10 +8,15 @@ declare(strict_types=1);
  * (see docs/adaxes-provisioning-design.md). IDM is the writer.
  *
  * --dry-run doubles as the change report: it reads live AD and prints, per
- * person, what is currently set vs. what the sync would change — edits and moves
- * render as "current → proposed" (e.g. `userPrincipalName: stale@x → new@x`,
- * `move OU=OldBuilding,… → OU=CO,…`), disables show the live account is still
- * enabled, and groups show the +add/-remove delta. Nothing is written.
+ * person, what is currently set vs. what the sync would change — edits, moves,
+ * and leaver expirations render as "current → proposed" (e.g.
+ * `userPrincipalName: stale@x → new@x`, `move OU=OldBuilding,… → OU=CO,…`,
+ * `accountExpires: Never → 2026-07-13`), and groups show the +add/-remove delta.
+ * Nothing is written.
+ *
+ * The "disable" phase expires leavers rather than flipping accountDisabled: it
+ * sets accountExpires to today (an immediate lock-out) and stamps `description`
+ * with "Account expired set by TCS-IDM on {date}".
  *
  *   php bin/adaxes_sync.php --dry-run                 # preview everything, write nothing
  *   php bin/adaxes_sync.php --dry-run --phases=disable # preview one phase

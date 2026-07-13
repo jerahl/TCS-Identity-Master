@@ -136,23 +136,31 @@ mailbox — handled by the same AD-search check.
 Each phase is independently shippable and leaves the system in a consistent state.
 Writes are **off by default** behind `ADAXES_WRITE_ENABLED=false`.
 
-### Phase 1 — Disable (lowest risk, highest immediate value)
+### Phase 1 — Expire leavers (lowest risk, highest immediate value)
 
-Leavers get disabled in AD promptly instead of waiting on OneSync's next read.
+Leavers get locked out in AD promptly instead of waiting on OneSync's next read.
+Rather than flipping `accountDisabled`, the reconciler **expires** the account:
+it sets `accountExpires` to today (an immediate lock-out) and stamps
+`description` with `Account expired set by TCS-IDM on {date}` so the reason is
+visible directly in AD. Expiring (vs. disabling) leaves the account in a state
+Adaxes/AD already understand for a departed user and keeps a dated audit trail on
+the object itself.
 
-- New `AdaxesWriter::disable(objectGuid)` — sets `accountDisabled=true`
-  (or the `userAccountControl` `0x2` bit; endpoint configurable). `enable()` is the
-  inverse for reactivations.
+- The write is a plain `AdaxesWriter::modify()` (PATCH of `accountExpires` +
+  `description`) — no dedicated disable endpoint needed. `AdaxesWriter::disable()`
+  / `enable()` remain available for reactivations and other callers.
 - New reconciler `bin/adaxes_sync.php` (dry-run capable). For Phase 1 it acts only
   on people with `person.status='disabled'` **and** a linked `objectGUID`, whose
-  live AD account is still enabled (confirmed via `verify()`).
-- Source of "who to disable" is the **existing** logic — the "Not in NextGen —
+  live AD account is **not already expired** (a past-or-today `accountExpires` is a
+  no-op; `Never` or a future date is brought forward to today), confirmed via
+  `verify()`.
+- Source of "who to expire" is the **existing** logic — the "Not in NextGen —
   review to disable" queue + `flag_disable_candidates.php`. IDM already decides
   *who*; this makes IDM *do* it.
-- **Guardrail:** never disable a person with no linked GUID (a search hit alone is
+- **Guardrail:** never touch a person with no linked GUID (a search hit alone is
   not enough — could be the wrong account). Threshold valve
   (`ADAXES_WRITE_MAX_DISABLES_RATIO`, mirrors `NEXTGEN_DROPOUT_MAX_RATIO`) blocks a
-  mass-disable from a truncated feed.
+  mass-expire from a truncated feed.
 
 ### Phase 2 — Edit / attribute drift
 

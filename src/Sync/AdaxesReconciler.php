@@ -147,12 +147,18 @@ final class AdaxesReconciler
         return $result;
     }
 
-    // ---- Phase 1: disable ---------------------------------------------------
+    // ---- Phase 1: disable (expire leavers) ----------------------------------
 
     /**
-     * Disable leavers: people whose golden status is 'disabled', who have a linked
-     * objectGUID, and whose live AD account is still enabled. A ratio valve blocks
-     * a mass-disable from a truncated feed.
+     * Expire leavers: people whose golden status is 'disabled', who have a linked
+     * objectGUID, and whose live AD account is not already expired. Rather than
+     * flipping accountDisabled, IDM sets the account's expiration date to today
+     * (an immediate, auditable lock-out) and stamps `description` with
+     * "Account expired set by TCS-IDM on {date}" so the reason is visible in AD.
+     * A ratio valve blocks a mass change from a truncated feed.
+     *
+     * An account whose accountExpires is already a past-or-today date is a no-op
+     * (nothing to change, no description churn).
      *
      * @return array{blocked:bool,candidates:int,applied:int,noop:int,skipped:int,errors:int,items:list<Item>}
      */
@@ -162,7 +168,8 @@ final class AdaxesReconciler
 
         $people = $this->fetchPeople("status = 'disabled'", $limit);
         $this->emit('phase', ['phase' => 'disable', 'total' => count($people)]);
-        $candidates = [];   // [personId => [person, guid, name]]
+        $today = gmdate('Y-m-d');
+        $candidates = [];   // [personId => [person, guid, name, expiry, description]]
 
         foreach ($people as $p) {
             $pid = (int) $p['person_id'];
@@ -188,18 +195,21 @@ final class AdaxesReconciler
                 continue;
             }
 
-            $enabled = AdaxesService::accountEnabledFromEnvelope($env);
-            if ($enabled === null) {
-                $out['skipped']++;
-                $this->item($out, $pid, $name, 'disable', 'skip', 'AD did not report account state — not acting');
-                continue;
-            }
-            if ($enabled === false) {
+            // Already expired (a real, past-or-today expiration date) → nothing to
+            // do. 'Never' or a future date still needs bringing forward to today.
+            $expiry = AdaxesService::accountExpiryFromEnvelope($env);
+            if ($expiry !== null && $expiry !== 'Never' && $expiry <= $today) {
                 $out['noop']++;
-                $this->item($out, $pid, $name, 'disable', 'noop', 'already disabled in AD');
+                $this->item($out, $pid, $name, 'disable', 'noop', 'AD account already expired (' . $expiry . ')');
                 continue;
             }
-            $candidates[$pid] = ['person' => $p, 'guid' => $guid, 'name' => $name];
+            $adAttrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
+            $candidates[$pid] = [
+                'guid'        => $guid,
+                'name'        => $name,
+                'expiry'      => $expiry,
+                'description' => trim((string) ($adAttrs['description'] ?? '')),
+            ];
         }
 
         $out['candidates'] = count($candidates);
@@ -207,32 +217,44 @@ final class AdaxesReconciler
             return $out;
         }
 
-        // Ratio valve: block a mass-disable relative to the linked population.
+        // Ratio valve: block a mass-expire relative to the linked population.
         $linkedTotal = $this->countLinkedAdAccounts();
         if ($linkedTotal >= $this->disableGuardMin && ($out['candidates'] / $linkedTotal) > $this->maxDisableRatio) {
             $out['blocked'] = true;
             foreach ($candidates as $pid => $c) {
                 $this->item($out, $pid, $c['name'], 'disable', 'blocked',
-                    sprintf('would disable %d of %d linked (> %.0f%%) — blocked; investigate the feed', $out['candidates'], $linkedTotal, $this->maxDisableRatio * 100));
+                    sprintf('would expire %d of %d linked (> %.0f%%) — blocked; investigate the feed', $out['candidates'], $linkedTotal, $this->maxDisableRatio * 100));
             }
             return $out;
         }
 
+        $desc      = 'Account expired set by TCS-IDM on ' . $today;
+        $expiresFt = (string) self::accountExpiresFileTime($today);
+        $attrs     = ['accountExpires' => $expiresFt, 'description' => $desc];
+
         foreach ($candidates as $pid => $c) {
+            // Dry-run report: show what AD holds now vs. what would be written.
+            $currentForReport = [
+                'accountexpires' => ($c['expiry'] === null || $c['expiry'] === '') ? '' : (string) $c['expiry'],
+                'description'    => $c['description'],
+            ];
             if (!$apply) {
-                $this->item($out, $pid, $c['name'], 'disable', 'would-disable', 'AD account enabled; would disable');
+                $this->item($out, $pid, $c['name'], 'disable', 'would-expire',
+                    self::changeSummary(['accountExpires' => $today, 'description' => $desc], $currentForReport));
                 continue;
             }
-            $res = $this->writer->disable($c['guid']);
+            $res = $this->writer->modify($c['guid'], $attrs);
             if (!$res['ok']) {
                 $out['errors']++;
                 $this->item($out, $pid, $c['name'], 'disable', 'error', (string) $res['error']);
                 continue;
             }
-            $this->audit->log('person', $pid, 'update', ['ad_account' => 'enabled'], ['ad_account' => 'disabled'], self::ACTOR);
-            $this->audit->lifecycle($pid, 'disable', ['summary' => 'AD account disabled via Adaxes (objectGUID ' . $c['guid'] . ').'], self::ACTOR);
+            $this->audit->log('person', $pid, 'update',
+                ['accountExpires' => $c['expiry'] ?? 'unset'],
+                ['accountExpires' => $today, 'description' => $desc], self::ACTOR);
+            $this->audit->lifecycle($pid, 'disable', ['summary' => 'AD account expired via Adaxes as of ' . $today . ' (objectGUID ' . $c['guid'] . ').'], self::ACTOR);
             $out['applied']++;
-            $this->item($out, $pid, $c['name'], 'disable', 'disabled', 'AD account disabled');
+            $this->item($out, $pid, $c['name'], 'disable', 'expired', 'accountExpires set to ' . $today . '; description updated');
         }
 
         return $out;

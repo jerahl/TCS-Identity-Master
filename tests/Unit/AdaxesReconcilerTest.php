@@ -132,14 +132,15 @@ final class AdaxesReconcilerTest extends TestCase
 
     // ---- disable ------------------------------------------------------------
 
-    public function testDisablesLinkedLeaverWhoseAdIsStillEnabled(): void
+    public function testExpiresLinkedLeaverBySettingAccountExpiresAndDescription(): void
     {
         $db = $this->db();
         $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Jo', 'last_name' => 'Leaver']);
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountDisabled' => 'false']]);
+        // AD account has no expiration yet (accountExpires 0 = never) → expire it.
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountExpires' => '0']]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
 
         $res = $rec->run(dryRun: false, phases: ['disable']);
@@ -147,12 +148,42 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(1, $res['disable']['applied']);
         self::assertSame(0, $res['disable']['errors']);
         self::assertFalse($res['disable']['blocked']);
-        // The writer was asked to disable (a PATCH toggling accountDisabled).
+
+        // The write is a modify (PATCH) that sets accountExpires + description,
+        // NOT an accountDisabled toggle.
         self::assertNotEmpty($calls);
         self::assertSame('PATCH', $calls[0]['method']);
-        // A disable lifecycle event was recorded.
+        $props = [];
+        foreach (json_decode((string) $calls[0]['body'], true)['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        $today = gmdate('Y-m-d');
+        // accountExpires = midnight UTC of today, as a Windows FILETIME.
+        $expectFt = (string) ((strtotime($today . ' 00:00:00 UTC') + 11644473600) * 10000000);
+        self::assertSame($expectFt, $props['accountExpires']);
+        self::assertSame('Account expired set by TCS-IDM on ' . $today, $props['description']);
+        self::assertArrayNotHasKey('accountDisabled', $props); // no longer a disable toggle
+
+        // A disable lifecycle event was still recorded (the leaver lock-out).
         $ev = $db->query("SELECT event_type FROM lifecycle_event WHERE person_id = 1")->fetchColumn();
         self::assertSame('disable', $ev);
+    }
+
+    public function testAlreadyExpiredAdAccountIsANoOp(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Al', 'last_name' => 'Ready']);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // A past accountExpirationDate → already expired, nothing to change.
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'already', 'accountExpirationDate' => '2020-01-01']]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(0, $res['disable']['applied']);
+        self::assertSame(1, $res['disable']['noop']);
+        self::assertSame([], $calls); // never hit the writer
     }
 
     public function testUnlinkedLeaverIsRoutedToReviewNotWritten(): void
@@ -172,20 +203,27 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame([], $calls); // never hit the writer
     }
 
-    public function testAlreadyDisabledAdAccountIsANoOp(): void
+    public function testDryRunExpireReportShowsCurrentVsProposed(): void
     {
         $db = $this->db();
-        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Al', 'last_name' => 'Ready']);
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Jo', 'last_name' => 'Leaver']);
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'already', 'accountDisabled' => 'true']]);
+        // Never-expiring account with an existing description → the report shows
+        // both current values next to what would be written.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName' => 'joleaver', 'accountExpires' => '0', 'description' => 'Teacher',
+        ]]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
-        $res = $rec->run(dryRun: false, phases: ['disable']);
+        $res = $rec->run(dryRun: true, phases: ['disable']);
 
-        self::assertSame(0, $res['disable']['applied']);
-        self::assertSame(1, $res['disable']['noop']);
-        self::assertSame([], $calls);
+        self::assertSame('would-expire', $res['disable']['items'][0]['outcome']);
+        $today = gmdate('Y-m-d');
+        $detail = $res['disable']['items'][0]['detail'];
+        self::assertStringContainsString('accountExpires: Never → ' . $today, $detail);
+        self::assertStringContainsString('description: Teacher → Account expired set by TCS-IDM on ' . $today, $detail);
+        self::assertSame([], $calls); // read-only preview
     }
 
     public function testDisableRatioValveBlocksMassDisable(): void
@@ -1049,12 +1087,12 @@ final class AdaxesReconcilerTest extends TestCase
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'dryrun', 'accountDisabled' => 'false']]);
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'dryrun', 'accountExpires' => '0']]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
         $res = $rec->run(dryRun: true, phases: ['disable']);
 
         self::assertTrue($res['dry_run']);
-        self::assertSame('would-disable', $res['disable']['items'][0]['outcome']);
+        self::assertSame('would-expire', $res['disable']['items'][0]['outcome']);
         self::assertSame([], $calls); // read-only preview
         self::assertSame(0, (int) $db->query('SELECT COUNT(*) FROM lifecycle_event')->fetchColumn());
     }
@@ -1066,7 +1104,7 @@ final class AdaxesReconcilerTest extends TestCase
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountDisabled' => 'false']]);
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountExpires' => '0']]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
 
         $events = [];
@@ -1083,7 +1121,7 @@ final class AdaxesReconcilerTest extends TestCase
 
         $items = array_values(array_filter($events, static fn($e) => $e[0] === 'item'));
         self::assertCount(1, $items);
-        self::assertSame('would-disable', $items[0][1]['outcome']);
+        self::assertSame('would-expire', $items[0][1]['outcome']);
         self::assertSame(1, $items[0][1]['person_id']);
     }
 
@@ -1094,7 +1132,7 @@ final class AdaxesReconcilerTest extends TestCase
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'off', 'accountDisabled' => 'false']]);
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'off', 'accountExpires' => '0']]);
         // Writer NOT enabled → configured() false.
         $writerFetch = function (string $m, string $u, array $h, ?string $b) use (&$calls): ?array {
             $calls[] = $u;
@@ -1107,7 +1145,7 @@ final class AdaxesReconcilerTest extends TestCase
 
         self::assertFalse($res['write_enabled']);
         self::assertSame([], $calls);
-        // The candidate was still identified, just not written (would-disable).
-        self::assertSame('would-disable', $res['disable']['items'][0]['outcome']);
+        // The candidate was still identified, just not written (would-expire).
+        self::assertSame('would-expire', $res['disable']['items'][0]['outcome']);
     }
 }

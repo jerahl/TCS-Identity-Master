@@ -483,6 +483,20 @@ final class AdaxesService
     }
 
     /**
+     * The live AD account expiration from a verify() envelope: 'Never', a 'Y-m-d'
+     * date, or null when AD returned no expiration attribute at all. Mirrors
+     * accountEnabledFromEnvelope so the reconciler can read the current expiry
+     * without reaching into the raw attribute shape.
+     *
+     * @param Envelope $envelope
+     */
+    public static function accountExpiryFromEnvelope(array $envelope): ?string
+    {
+        $attrs = is_array($envelope['attributes'] ?? null) ? $envelope['attributes'] : [];
+        return self::accountExpiry($attrs);
+    }
+
+    /**
      * The identity values from a verify() envelope that may be adopted as the
      * golden record: sAMAccountName→username, userPrincipalName→upn, mail→email,
      * plus the objectGUID for the crosswalk link. Shaped exactly for
