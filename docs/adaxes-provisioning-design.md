@@ -140,8 +140,9 @@ Writes are **off by default** behind `ADAXES_WRITE_ENABLED=false`.
 
 Leavers get locked out in AD promptly instead of waiting on OneSync's next read.
 Rather than flipping `accountDisabled`, the reconciler **expires** the account:
-it sets `accountExpires` to today (an immediate lock-out) and stamps
-`description` with `Account expired set by TCS-IDM on {date}` so the reason is
+it sets `accountExpires` to the person's **end date** when one is set (otherwise
+today) and stamps `description` with `Account expired set by TCS-IDM on {run
+date}` (the date IDM acted, independent of the expiry date) so the reason is
 visible directly in AD. Expiring (vs. disabling) leaves the account in a state
 Adaxes/AD already understand for a departed user and keeps a dated audit trail on
 the object itself.
@@ -151,9 +152,9 @@ the object itself.
   / `enable()` remain available for reactivations and other callers.
 - New reconciler `bin/adaxes_sync.php` (dry-run capable). For Phase 1 it acts only
   on people with `person.status='disabled'` **and** a linked `objectGUID`, whose
-  live AD account is **not already expired** (a past-or-today `accountExpires` is a
-  no-op; `Never` or a future date is brought forward to today), confirmed via
-  `verify()`.
+  live AD account is **not already expired as intended** (already on the desired
+  date is a no-op; with no end date, any past-or-today expiry is a no-op),
+  confirmed via `verify()`.
 - Source of "who to expire" is the **existing** logic — the "Not in NextGen —
   review to disable" queue + `flag_disable_candidates.php`. IDM already decides
   *who*; this makes IDM *do* it.

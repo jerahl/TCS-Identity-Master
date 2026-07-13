@@ -151,14 +151,16 @@ final class AdaxesReconciler
 
     /**
      * Expire leavers: people whose golden status is 'disabled', who have a linked
-     * objectGUID, and whose live AD account is not already expired. Rather than
-     * flipping accountDisabled, IDM sets the account's expiration date to today
-     * (an immediate, auditable lock-out) and stamps `description` with
-     * "Account expired set by TCS-IDM on {date}" so the reason is visible in AD.
-     * A ratio valve blocks a mass change from a truncated feed.
+     * objectGUID, and whose live AD account is not already expired as intended.
+     * Rather than flipping accountDisabled, IDM sets the account's expiration date
+     * to the person's end date when one is set (otherwise today) and stamps
+     * `description` with "Account expired set by TCS-IDM on {date}" (the run date,
+     * recording when IDM acted) so the reason is visible in AD. A ratio valve
+     * blocks a mass change from a truncated feed.
      *
-     * An account whose accountExpires is already a past-or-today date is a no-op
-     * (nothing to change, no description churn).
+     * No-op (no description churn) when the account is already expired on exactly
+     * the desired date, or — when there is no end date to honor — already expired
+     * on any past-or-today date.
      *
      * @return array{blocked:bool,candidates:int,applied:int,noop:int,skipped:int,errors:int,items:list<Item>}
      */
@@ -195,10 +197,24 @@ final class AdaxesReconciler
                 continue;
             }
 
-            // Already expired (a real, past-or-today expiration date) → nothing to
-            // do. 'Never' or a future date still needs bringing forward to today.
+            // Desired expiry date: the person's position end date when set,
+            // otherwise today (normalized to Y-m-d so it compares against the
+            // account's decoded accountExpires).
+            $desiredDate = $today;
+            $endDate = trim((string) ($p['end_date'] ?? ''));
+            if ($endDate !== '') {
+                $ts = strtotime($endDate . ' 00:00:00 UTC');
+                if ($ts !== false) {
+                    $desiredDate = gmdate('Y-m-d', $ts);
+                }
+            }
+
+            // Already handled → no-op (no description churn): expired on exactly
+            // the desired date, or — with no end date to honor — already expired
+            // on any past-or-today date.
             $expiry = AdaxesService::accountExpiryFromEnvelope($env);
-            if ($expiry !== null && $expiry !== 'Never' && $expiry <= $today) {
+            $realExpiry = $expiry !== null && $expiry !== 'Never';
+            if ($realExpiry && ($expiry === $desiredDate || ($endDate === '' && $expiry <= $today))) {
                 $out['noop']++;
                 $this->item($out, $pid, $name, 'disable', 'noop', 'AD account already expired (' . $expiry . ')');
                 continue;
@@ -208,6 +224,7 @@ final class AdaxesReconciler
                 'guid'        => $guid,
                 'name'        => $name,
                 'expiry'      => $expiry,
+                'desiredDate' => $desiredDate,
                 'description' => trim((string) ($adAttrs['description'] ?? '')),
             ];
         }
@@ -228,11 +245,16 @@ final class AdaxesReconciler
             return $out;
         }
 
-        $desc      = 'Account expired set by TCS-IDM on ' . $today;
-        $expiresFt = (string) self::accountExpiresFileTime($today);
-        $attrs     = ['accountExpires' => $expiresFt, 'description' => $desc];
+        // The description records WHEN IDM acted (the run date), independent of the
+        // expiry date it sets (which may be a past/future end date).
+        $desc = 'Account expired set by TCS-IDM on ' . $today;
 
         foreach ($candidates as $pid => $c) {
+            $desiredDate = $c['desiredDate'];
+            $attrs = [
+                'accountExpires' => (string) self::accountExpiresFileTime($desiredDate),
+                'description'    => $desc,
+            ];
             // Dry-run report: show what AD holds now vs. what would be written.
             $currentForReport = [
                 'accountexpires' => ($c['expiry'] === null || $c['expiry'] === '') ? '' : (string) $c['expiry'],
@@ -240,7 +262,7 @@ final class AdaxesReconciler
             ];
             if (!$apply) {
                 $this->item($out, $pid, $c['name'], 'disable', 'would-expire',
-                    self::changeSummary(['accountExpires' => $today, 'description' => $desc], $currentForReport));
+                    self::changeSummary(['accountExpires' => $desiredDate, 'description' => $desc], $currentForReport));
                 continue;
             }
             $res = $this->writer->modify($c['guid'], $attrs);
@@ -251,10 +273,10 @@ final class AdaxesReconciler
             }
             $this->audit->log('person', $pid, 'update',
                 ['accountExpires' => $c['expiry'] ?? 'unset'],
-                ['accountExpires' => $today, 'description' => $desc], self::ACTOR);
-            $this->audit->lifecycle($pid, 'disable', ['summary' => 'AD account expired via Adaxes as of ' . $today . ' (objectGUID ' . $c['guid'] . ').'], self::ACTOR);
+                ['accountExpires' => $desiredDate, 'description' => $desc], self::ACTOR);
+            $this->audit->lifecycle($pid, 'disable', ['summary' => 'AD account expired via Adaxes as of ' . $desiredDate . ' (objectGUID ' . $c['guid'] . ').'], self::ACTOR);
             $out['applied']++;
-            $this->item($out, $pid, $c['name'], 'disable', 'expired', 'accountExpires set to ' . $today . '; description updated');
+            $this->item($out, $pid, $c['name'], 'disable', 'expired', 'accountExpires set to ' . $desiredDate . '; description updated');
         }
 
         return $out;

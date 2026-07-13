@@ -15,8 +15,8 @@ declare(strict_types=1);
  * Nothing is written.
  *
  * The "disable" phase expires leavers rather than flipping accountDisabled: it
- * sets accountExpires to today (an immediate lock-out) and stamps `description`
- * with "Account expired set by TCS-IDM on {date}".
+ * sets accountExpires to the person's end date when one is set (otherwise today)
+ * and stamps `description` with "Account expired set by TCS-IDM on {run date}".
  *
  *   php bin/adaxes_sync.php --dry-run                 # preview everything, write nothing
  *   php bin/adaxes_sync.php --dry-run --phases=disable # preview one phase

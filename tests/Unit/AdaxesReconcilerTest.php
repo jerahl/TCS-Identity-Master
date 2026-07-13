@@ -169,6 +169,52 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame('disable', $ev);
     }
 
+    public function testExpiresOnEndDateWhenOneIsPresent(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'disabled', 'first_name' => 'End', 'last_name' => 'Dated',
+            'end_date' => '2026-06-30',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'enddated', 'accountExpires' => '0']]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(1, $res['disable']['applied']);
+        $props = [];
+        foreach (json_decode((string) $calls[0]['body'], true)['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        // accountExpires = midnight UTC of the END DATE, not today.
+        $expectFt = (string) ((strtotime('2026-06-30 00:00:00 UTC') + 11644473600) * 10000000);
+        self::assertSame($expectFt, $props['accountExpires']);
+        // description still records the run date (when IDM acted).
+        self::assertSame('Account expired set by TCS-IDM on ' . gmdate('Y-m-d'), $props['description']);
+    }
+
+    public function testNoOpWhenAlreadyExpiredOnTheEndDate(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'disabled', 'first_name' => 'Al', 'last_name' => 'Ready',
+            'end_date' => '2026-06-30',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // AD already expires on exactly the end date → nothing to change.
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'already', 'accountExpirationDate' => '2026-06-30']]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(0, $res['disable']['applied']);
+        self::assertSame(1, $res['disable']['noop']);
+        self::assertSame([], $calls);
+    }
+
     public function testAlreadyExpiredAdAccountIsANoOp(): void
     {
         $db = $this->db();
