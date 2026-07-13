@@ -127,9 +127,31 @@ final class RenameServiceTest extends TestCase
             self::assertContains('it@tusc.k12.al.us', $captured['cc']);
             self::assertStringContainsString('John Smith to John Jones', $captured['body']);
             self::assertStringContainsString('jsmith  ->  jjones', $captured['body']);
+            // {days_remaining}: notice sent 07-10, cutover 07-17 → 7 days.
+            self::assertStringContainsString('In 7 days', $captured['body']);
         } finally {
             putenv('IT_NOTIFY_EMAIL');
         }
+    }
+
+    public function testNoticeVarsIncludesDaysRemaining(): void
+    {
+        $plan = [
+            'name' => 'John Jones', 'old_username' => 'jsmith', 'new_username' => 'jjones',
+            'old_email' => 'jsmith@tusc.k12.al.us', 'new_email' => 'jjones@tusc.k12.al.us',
+        ];
+        $vars = RenameService::noticeVars($plan, 'John Smith', '2026-07-17', '2026-07-10');
+        self::assertSame(7, $vars['days_remaining']);
+        self::assertSame('2026-07-17', $vars['cutover_date']);
+    }
+
+    public function testDaysUntilComputesWholeCalendarDaysAndNeverNegative(): void
+    {
+        self::assertSame(7, RenameService::daysUntil('2026-07-17', '2026-07-10'));
+        self::assertSame(1, RenameService::daysUntil('2026-07-11', '2026-07-10'));
+        self::assertSame(0, RenameService::daysUntil('2026-07-10', '2026-07-10'));
+        // A target already in the past reads as 0, not negative.
+        self::assertSame(0, RenameService::daysUntil('2026-07-01', '2026-07-10'));
     }
 
     public function testApproveIsIdempotentViaDedupe(): void

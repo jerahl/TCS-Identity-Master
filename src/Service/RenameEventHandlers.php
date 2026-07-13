@@ -174,11 +174,13 @@ final class RenameEventHandlers
         $p = ScheduledEventService::payloadOf($event);
         $pid = (int) ($event['person_id'] ?? 0);
         $old = (string) ($p['old_email'] ?? '');
+        $removeDate = (string) ($p['remove_date'] ?? '');
         $msg = $this->templates->render('alias_reminder', [
-            'name'        => (string) ($p['name'] ?? ''),
-            'old_email'   => $old,
-            'new_email'   => (string) ($p['new_email'] ?? ''),
-            'remove_date' => (string) ($p['remove_date'] ?? ''),
+            'name'           => (string) ($p['name'] ?? ''),
+            'old_email'      => $old,
+            'new_email'      => (string) ($p['new_email'] ?? ''),
+            'remove_date'    => $removeDate,
+            'days_remaining' => RenameService::daysUntil($removeDate, substr($now, 0, 10)),
         ]);
         $this->mailer->send($this->recipientsFor($pid) ?: [(string) Config::get('IT_NOTIFY_EMAIL', '')], $msg['subject'], $msg['body'], [], $pid, 'alias_reminder', self::ACTOR);
         return ['ok' => true, 'note' => "reminder for {$old}"];

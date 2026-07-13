@@ -122,7 +122,7 @@ final class RenameService
         // Notice to the employee (their current/old address), principal, and IT.
         $to = [$plan['old_email']];
         $cc = array_merge($this->principalEmails($personId), $this->itEmails());
-        $msg = $this->templates->render('rename_notice', self::noticeVars($plan, $oldName, $cutoverDate));
+        $msg = $this->templates->render('rename_notice', self::noticeVars($plan, $oldName, $cutoverDate, substr($now, 0, 10)));
         $this->mailer->send($to, $msg['subject'], $msg['body'], $cc, $personId, 'rename_notice', $actor);
 
         $this->audit->lifecycle($personId, 'update',
@@ -132,23 +132,40 @@ final class RenameService
     }
 
     /**
-     * The {placeholder} values for the rename-notice email.
+     * The {placeholder} values for the rename-notice email. $fromDate (Y-m-d, the
+     * day the notice is sent) anchors {days_remaining}; defaults to today.
      *
      * @param array<string,mixed> $plan
      * @return array<string,string|int>
      */
-    public static function noticeVars(array $plan, ?string $oldName, string $cutoverDate): array
+    public static function noticeVars(array $plan, ?string $oldName, string $cutoverDate, ?string $fromDate = null): array
     {
         return [
-            'name'         => (string) $plan['name'],
-            'old_name'     => ($oldName !== null && trim($oldName) !== '') ? trim($oldName) : 'the previous name on file',
-            'old_username' => (string) $plan['old_username'],
-            'new_username' => (string) $plan['new_username'],
-            'old_email'    => (string) $plan['old_email'],
-            'new_email'    => (string) $plan['new_email'],
-            'cutover_date' => $cutoverDate,
-            'alias_days'   => max(1, (int) Config::get('RENAME_ALIAS_DAYS', '90')),
+            'name'           => (string) $plan['name'],
+            'old_name'       => ($oldName !== null && trim($oldName) !== '') ? trim($oldName) : 'the previous name on file',
+            'old_username'   => (string) $plan['old_username'],
+            'new_username'   => (string) $plan['new_username'],
+            'old_email'      => (string) $plan['old_email'],
+            'new_email'      => (string) $plan['new_email'],
+            'cutover_date'   => $cutoverDate,
+            'days_remaining' => self::daysUntil($cutoverDate, $fromDate),
+            'alias_days'     => max(1, (int) Config::get('RENAME_ALIAS_DAYS', '90')),
         ];
+    }
+
+    /**
+     * Whole calendar days from $fromDate (default today) until $targetDate, both
+     * Y-m-d. Never negative — a past target reads as 0 ("today"). Used for the
+     * {days_remaining} email placeholder.
+     */
+    public static function daysUntil(string $targetDate, ?string $fromDate = null): int
+    {
+        $target = strtotime(substr(trim($targetDate), 0, 10) . ' 00:00:00 UTC');
+        $from   = strtotime(($fromDate !== null ? substr(trim($fromDate), 0, 10) : gmdate('Y-m-d')) . ' 00:00:00 UTC');
+        if ($target === false || $from === false) {
+            return 0;
+        }
+        return max(0, (int) round(($target - $from) / 86400));
     }
 
     // ---- lookups ------------------------------------------------------------
