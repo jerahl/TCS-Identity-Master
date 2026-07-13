@@ -51,6 +51,37 @@ systemctl list-timers idm-onesync-db.timer
 runs a missed job after downtime. Logs go to the journal
 (`journalctl -u idm-onesync-db.service`).
 
+## Google Workspace sync
+
+Reconciles the golden record directly to Google Workspace, bypassing OneSync
+(`bin/sync_google.php`). Requires the `GOOGLE_*` service-account settings in the
+app `.env`.
+
+```sh
+sudo cp deploy/idm-google-sync.service /etc/systemd/system/
+sudo cp deploy/idm-google-sync.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# Dry-run once to preview what it would change (writes nothing)
+sudo -u www-data php /var/www/idm/bin/sync_google.php --dry-run
+
+# Run once now for real to verify
+sudo systemctl start idm-google-sync.service
+journalctl -u idm-google-sync.service -n 100 --no-pager
+
+# Enable the nightly timer
+sudo systemctl enable --now idm-google-sync.timer
+systemctl list-timers idm-google-sync.timer
+```
+
+**Enable the `.timer`, not the `.service`.** Like every job here, the `.service`
+is a `Type=oneshot` unit triggered by its timer, so it has no `[Install]`
+section — `systemctl enable idm-google-sync.service` will fail with *"unit files
+have no installation config"*. That is expected: enabling the **timer** is what
+schedules it; you only `start` the service to run it on demand. Schedule it to
+run **after** the nightly feed imports so it reconciles the freshest golden
+record.
+
 ## Students passthrough
 
 Pulls active/future student enrollments from PowerSchool over ODBC into the
