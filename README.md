@@ -679,6 +679,25 @@ Resource Officer" → `contractor`; "Substitute" / "Long-term Substitute" → `s
 **and** whose current type differs are written; each change is audited and added
 to the person timeline. Idempotent — safe to re-run.
 
+**Reclassify OU=Subs members from an Adaxes report (one-time).** When existing AD
+substitutes sit in `OU=Subs` but IDM has them typed as something else, an Adaxes
+reconciler `--dry-run` shows them as `[WOULD-MOVE] … move OU=Subs,… → …` (IDM
+would relocate them out of the Subs OU). Feed that report to this import to fix
+the golden record instead: it sets `person_type = sub` and sets each person's
+primary assignment title to the account's live AD description (read straight from
+the report — the reconciler surfaces the current AD description as the left side
+of a `description: X → Y` drift; no drift means the title already matches AD, so
+it's left alone).
+
+```sh
+php bin/adaxes_sync.php --dry-run > /tmp/adaxes.txt          # generate the report
+php bin/reclass_subs_from_report.php --file=/tmp/adaxes.txt --dry-run   # preview
+php bin/reclass_subs_from_report.php --file=/tmp/adaxes.txt             # apply
+```
+
+Empty/`(unset)` AD descriptions never blank out a title. Audited and idempotent;
+after applying, the next sync keeps these accounts in `OU=Subs`.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 usernames back **straight to the DB** (no files): insert into the
 `onesync_writeback` landing table. The exact table + column map (and the
