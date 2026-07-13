@@ -921,12 +921,14 @@ final class AdaxesReconciler
      *
      * All provisioned accounts nest under a shared parent OU (AD_PARENT_OU,
      * "OU=Faculty" at TCS). Contractors/subs/interns get a type-specific leaf OU
-     * as the innermost segment (faculty/staff none); two title-driven rules trump
+     * as the innermost segment (faculty/staff none); three title-driven rules trump
      * the type leaf: transportation staff (bus drivers, bus aides, …) live in a
-     * transportation OU with NO building segment, and SROs get an SRO leaf above
-     * their building. e.g. a contractor at Central Office → OU=PTC,OU=CO,OU=Faculty,
-     * <base>; a bus aide → OU=trans,OU=Faculty,<base>; an SRO at BHS →
-     * OU=SRO,OU=BHS,OU=Faculty,<base>.
+     * transportation OU with NO building segment, SROs get an SRO leaf above their
+     * building, and substitutes (by title, whatever their person_type) get the Subs
+     * leaf above their building. e.g. a contractor at Central Office →
+     * OU=PTC,OU=CO,OU=Faculty,<base>; a bus aide → OU=trans,OU=Faculty,<base>; an
+     * SRO at BHS → OU=SRO,OU=BHS,OU=Faculty,<base>; a substitute at CO →
+     * OU=Subs,OU=CO,OU=Faculty,<base>.
      *
      * @param array<string,mixed> $p
      */
@@ -950,7 +952,13 @@ final class AdaxesReconciler
         }
 
         $parts = [];
-        $leaf = $this->typeLeafOu((string) ($p['person_type'] ?? ''));
+        // Substitutes are identified by TITLE ("Substitute", "Long-term
+        // Substitute"), not just person_type: many arrive through the NextGen /
+        // PowerSchool feed as staff/faculty and would otherwise land at the root
+        // building OU. Title trumps the type leaf so they get the Subs OU.
+        $leaf = self::isSubstitute($p)
+            ? $this->typeLeafOu('sub')
+            : $this->typeLeafOu((string) ($p['person_type'] ?? ''));
         if ($leaf !== '') {
             $parts[] = $leaf;
         }
@@ -1047,6 +1055,18 @@ final class AdaxesReconciler
     private static function isSro(array $p): bool
     {
         return (bool) preg_match('/\bSRO\b|school\s+resource\s+officer/i', (string) ($p['title'] ?? ''));
+    }
+
+    /**
+     * Substitute title rule (see placement): "Substitute", "Long-term
+     * Substitute", "Substitute Teacher", … — anyone whose job title says
+     * substitute belongs in the Subs OU under their building, regardless of the
+     * person_type the feed stamped them with. Matched as a whole word so it never
+     * false-matches an unrelated title.
+     */
+    private static function isSubstitute(array $p): bool
+    {
+        return (bool) preg_match('/\bsubstitutes?\b/i', (string) ($p['title'] ?? ''));
     }
 
     /**

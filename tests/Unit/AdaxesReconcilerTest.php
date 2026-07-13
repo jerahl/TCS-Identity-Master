@@ -840,6 +840,87 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame('OU=SRO,OU=BHS,OU=Faculty,DC=example,DC=org', $body['path']);
     }
 
+    /**
+     * Substitutes are placed in the Subs OU under their building based on TITLE,
+     * even when the feed stamped them staff/faculty (person_type != 'sub'). The
+     * reported bug: they were landing at the root building OU instead.
+     */
+    #[DataProvider('substituteTitles')]
+    public function testSubstituteTitleGetsSubsLeafRegardlessOfType(string $type, string $title): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => $type, 'status' => 'pending',
+            'first_name' => 'Sub', 'last_name' => 'Teacher', 'primary_school_id' => 5,
+        ]);
+        $db->prepare("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, ?, 1)")->execute([$title]);
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        self::assertNotNull($create, "no create POST for {$title}");
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=Subs,OU=CO,OU=Faculty,DC=example,DC=org', $body['path'], "{$title} ({$type})");
+    }
+
+    /** @return array<string,array{0:string,1:string}> */
+    public static function substituteTitles(): array
+    {
+        return [
+            'staff substitute'         => ['staff', 'Substitute'],
+            'faculty long-term sub'    => ['faculty', 'Long-term Substitute'],
+            'staff substitute teacher' => ['staff', 'Substitute Teacher'],
+        ];
+    }
+
+    public function testSubstituteInWrongOuIsMovedToSubsLeaf(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Sub', 'last_name' => 'Teacher',
+            'username' => 'steacher', 'email' => 'steacher@tusc.k12.al.us', 'upn' => 'steacher@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Long-term Substitute', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Identity + department match; the account sits at the root building OU
+        // (the bug) and must move down into OU=Subs.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'steacher',
+            'userPrincipalName' => 'steacher@tusc.k12.al.us',
+            'mail'              => 'steacher@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'distinguishedName' => 'CN=Sub Teacher,OU=CO,OU=Faculty,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertContains('moved', array_column($res['edit']['items'], 'outcome'));
+        $move = null;
+        foreach ($calls as $c) {
+            if (str_contains($c['url'], '/move')) {
+                $move = $c;
+                break;
+            }
+        }
+        self::assertNotNull($move, 'expected a move to the Subs OU');
+        $body = json_decode((string) $move['body'], true);
+        self::assertSame('OU=Subs,OU=CO,OU=Faculty,' . self::BASE_DN, $body['newParent']);
+    }
+
     public function testEditPushesTitleAndDepartmentDrift(): void
     {
         $db = $this->db();
