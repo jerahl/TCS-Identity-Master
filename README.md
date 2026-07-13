@@ -660,6 +660,25 @@ Only rows whose casing actually changes are written; common exceptions are cased
 correctly (`McDonald`, `O'Brien`, `Smith-Jones`, generational suffix `III`). Each
 change is audited and added to the person timeline. Idempotent — safe to re-run.
 
+**Reclassify person_type by title (one-time).** Feeds sometimes deliver a
+substitute, intern, SRO, or transportation employee typed generically as
+`staff`/`faculty`. This backfill reads each person's primary job title and sets
+`person_type` to match, so classification (and the Adaxes OU placement / group
+policy that keys off it) is correct:
+
+```sh
+php bin/fix_person_types_by_title.php --dry-run   # preview what would change
+php bin/fix_person_types_by_title.php             # apply
+```
+
+Title → type, first match wins (mirrors `AdaxesReconciler`'s title rules):
+transportation (`bus …`, `AD_TRANSPORTATION_TITLES`) → `staff`; SRO / "School
+Resource Officer" → `contractor`; "Substitute" / "Long-term Substitute" → `sub`;
+"Intern" → `intern`. Whole-word matching avoids false hits (`Business`,
+`Internal`, `Internship Coordinator`). Only people whose title matches a category
+**and** whose current type differs are written; each change is audited and added
+to the person timeline. Idempotent — safe to re-run.
+
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 usernames back **straight to the DB** (no files): insert into the
 `onesync_writeback` landing table. The exact table + column map (and the
