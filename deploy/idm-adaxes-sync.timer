@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the TCS Identity Adaxes AD reconciler (nightly)
+
+[Timer]
+# 04:30 daily — after the feed imports (03:15) have refreshed the golden record.
+# Writes are gated by ADAXES_WRITE_ENABLED; until that's true a real run only
+# reports what it *would* do and changes nothing. A --dry-run pass first
+# (manually or a second unit) is wise during rollout. Adjust to taste.
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

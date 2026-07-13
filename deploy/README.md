@@ -82,6 +82,40 @@ schedules it; you only `start` the service to run it on demand. Schedule it to
 run **after** the nightly feed imports so it reconciles the freshest golden
 record.
 
+## Adaxes AD reconciler
+
+Reconciles the golden record directly to Active Directory through the Adaxes REST
+API — create / edit / disable / groups (`bin/adaxes_sync.php`). Requires the
+`ADAXES_*` settings in the app `.env` (base URL + a token, or username/password).
+
+```sh
+sudo cp deploy/idm-adaxes-sync.service /etc/systemd/system/
+sudo cp deploy/idm-adaxes-sync.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# Dry-run once to preview every change (writes nothing, needs no write credential)
+sudo -u www-data php /var/www/idm/bin/adaxes_sync.php --dry-run
+
+# Run once now to verify
+sudo systemctl start idm-adaxes-sync.service
+journalctl -u idm-adaxes-sync.service -n 100 --no-pager
+
+# Enable the nightly timer
+sudo systemctl enable --now idm-adaxes-sync.timer
+systemctl list-timers idm-adaxes-sync.timer
+```
+
+**Enable the `.timer`, not the `.service`** (see the note under *Google Workspace
+sync* — the oneshot service has no `[Install]` section by design).
+
+**Writes are off until you turn them on.** Until `ADAXES_WRITE_ENABLED=true` (and
+a write credential is set) even a real run only *reports* what it would do and
+changes nothing, so it's safe to schedule early — dry-run it first, then enable
+writes deliberately per the rollout runbook in
+[`../docs/adaxes-provisioning-design.md`](../docs/adaxes-provisioning-design.md).
+Schedule it to run **after** the nightly feed imports so it reconciles the
+freshest golden record. Each real run is recorded on the admin Services page.
+
 ## Students passthrough
 
 Pulls active/future student enrollments from PowerSchool over ODBC into the
