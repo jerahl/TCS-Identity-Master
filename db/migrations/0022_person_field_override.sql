@@ -4,7 +4,7 @@
 -- reverting it to the source value. One row per pinned (person, field); `field`
 -- is the golden-record column name, or 'title' for the primary assignment title.
 CREATE TABLE IF NOT EXISTS person_field_override (
-  person_id  INT          NOT NULL,
+  person_id  BIGINT       NOT NULL,            -- matches person.person_id (FK type must match)
   field      VARCHAR(64)  NOT NULL,            -- golden column name, or 'title'
   actor      VARCHAR(60)  NULL,                -- who pinned it
   note       VARCHAR(255) NULL,                -- optional reason / context

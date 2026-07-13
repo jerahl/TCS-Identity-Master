@@ -160,7 +160,7 @@ CREATE TABLE assignment (
 -- here so feed imports leave it alone instead of reverting it. `field` is the
 -- golden-record column name, or 'title' for the primary assignment title.
 CREATE TABLE person_field_override (
-  person_id  INT          NOT NULL,
+  person_id  BIGINT       NOT NULL,
   field      VARCHAR(64)  NOT NULL,
   actor      VARCHAR(60)  NULL,
   note       VARCHAR(255) NULL,
