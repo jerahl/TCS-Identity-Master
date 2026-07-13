@@ -64,9 +64,10 @@ $classify = static function (string $title) use ($extraTransport): ?string {
     if ($t === '') {
         return null;
     }
-    // Transportation: "bus" as a whole word (so "Business" never matches), plus
-    // any configured extra keywords. Bus Drivers/Aides/Monitors are district staff.
-    if (preg_match('/\bbus\b/i', $t)) {
+    // Transportation: "bus" as a whole word (so "Business" never matches) or any
+    // title naming "Transportation", plus any configured extra keywords. Bus
+    // Drivers/Aides/Monitors and Transportation staff are district staff.
+    if (preg_match('/\bbus\b/i', $t) || stripos($t, 'transportation') !== false) {
         return 'staff';
     }
     foreach ($extraTransport as $kw) {

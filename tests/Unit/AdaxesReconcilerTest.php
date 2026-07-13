@@ -52,6 +52,7 @@ final class AdaxesReconcilerTest extends TestCase
             id INTEGER PRIMARY KEY, person_id INTEGER, system TEXT, source_key TEXT,
             is_active INTEGER DEFAULT 1, first_seen TEXT, last_seen TEXT)');
         $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, ad_ou TEXT)');
+        $db->exec('CREATE TABLE school_code_alias (alias_id INTEGER PRIMARY KEY, school_id INTEGER, system TEXT, code TEXT)');
         $db->exec('CREATE TABLE assignment (
             id INTEGER PRIMARY KEY, person_id INTEGER, school_id INTEGER, title TEXT,
             is_primary INTEGER DEFAULT 1)');
@@ -782,6 +783,8 @@ final class AdaxesReconcilerTest extends TestCase
             'bus driver'  => ['Bus Driver'],
             'bus monitor' => ['Bus Monitor'],
             'school bus aide' => ['School Bus Aide'],
+            'transportation coordinator' => ['Transportation Coordinator'],
+            'director of transportation' => ['Director of Transportation'],
         ];
     }
 
@@ -919,6 +922,83 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertNotNull($move, 'expected a move to the Subs OU');
         $body = json_decode((string) $move['body'], true);
         self::assertSame('OU=Subs,OU=CO,OU=Faculty,' . self::BASE_DN, $body['newParent']);
+    }
+
+    public function testTransportationLocationCodeGetsTransOuRegardlessOfTitle(): void
+    {
+        $db = $this->db();
+        // School 42 is the transportation depot: its NextGen code is 8410.
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (42, 'Transportation Dept', 'OU=CO')");
+        $db->exec("INSERT INTO school_code_alias (school_id, system, code) VALUES (42, 'nextgen', '8410')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'staff', 'status' => 'pending',
+            'first_name' => 'Dee', 'last_name' => 'Spatcher', 'primary_school_id' => 42,
+        ]);
+        // A title with no transportation keyword at all — the LOCATION is what
+        // classifies them as transportation.
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 42, 'Dispatcher', 1)");
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['applied']);
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path']); // trans OU, no building
+        $props = [];
+        foreach ($body['properties'] as $pr) {
+            $props[$pr['name']] = $pr['value'];
+        }
+        self::assertSame('Transportation', $props['department']); // override, not the building name
+    }
+
+    public function testTransportationTitleIsMovedToTransOu(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Tara', 'last_name' => 'Transit',
+            'username' => 'ttransit', 'email' => 'ttransit@tusc.k12.al.us', 'upn' => 'ttransit@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        // "Transportation" in the title (no "bus") — must still land in OU=trans.
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Transportation Coordinator', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Department already the transportation override; only the OU is wrong
+        // (account sits under the building instead of the transportation OU).
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'ttransit',
+            'userPrincipalName' => 'ttransit@tusc.k12.al.us',
+            'mail'              => 'ttransit@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Transportation',
+            'physicalDeliveryOfficeName' => 'Transportation',
+            'title'             => 'Transportation Coordinator',
+            'description'       => 'Transportation Coordinator',
+            'distinguishedName' => 'CN=Tara Transit,OU=CO,OU=Faculty,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertContains('moved', array_column($res['edit']['items'], 'outcome'));
+        $move = null;
+        foreach ($calls as $c) {
+            if (str_contains($c['url'], '/move')) {
+                $move = $c;
+                break;
+            }
+        }
+        self::assertNotNull($move, 'expected a move to the transportation OU');
+        $body = json_decode((string) $move['body'], true);
+        self::assertSame('OU=trans,OU=Faculty,' . self::BASE_DN, $body['newParent']); // no building OU
     }
 
     public function testEditPushesTitleAndDepartmentDrift(): void

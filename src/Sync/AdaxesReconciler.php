@@ -66,6 +66,9 @@ final class AdaxesReconciler
     /** Per-run cache: group cn (lowercased) → resolved DN/GUID, or '' if not found. */
     private array $groupIdCache = [];
 
+    /** Per-run cache: school_ids that are transportation locations (null = unresolved). */
+    private ?array $transportationSchoolIds = null;
+
     public function __construct(
         private readonly PDO $db,
         private readonly AdaxesService $read,
@@ -533,7 +536,7 @@ final class AdaxesReconciler
                 (string) ($p['title'] ?? ''),
                 (string) ($p['person_type'] ?? ''),
                 $this->schoolToken($p),
-                self::isTransportation($p),
+                $this->isTransportation($p),
                 (string) ($p['raptor_group_override'] ?? ''),
             );
 
@@ -797,7 +800,7 @@ final class AdaxesReconciler
      */
     private function desiredDepartment(array $p): string
     {
-        if (self::isTransportation($p)) {
+        if ($this->isTransportation($p)) {
             return trim((string) (Config::get('AD_DEPT_TRANSPORTATION', '') ?: Config::get('AD_DEPT_BUS_DRIVER', 'Transportation')));
         }
         return $this->schoolRow($p)['name'];
@@ -936,7 +939,7 @@ final class AdaxesReconciler
     {
         $tail = array_values(array_filter([$this->parentOu, $this->baseDn], static fn($s) => $s !== ''));
 
-        if (self::isTransportation($p)) {
+        if ($this->isTransportation($p)) {
             $transOu = trim((string) (Config::get('AD_OU_TRANSPORTATION', '') ?: Config::get('AD_OU_BUS_DRIVER', 'OU=trans')), ' ,');
             return implode(',', array_merge([$transOu], $tail));
         }
@@ -1022,16 +1025,22 @@ final class AdaxesReconciler
     }
 
     /**
-     * Transportation title rule (see placement/desiredDepartment): everyone whose
-     * job is transportation — Bus Driver, Bus Aide, Bus Monitor, Bus Assistant, …
-     * "bus" is matched as a WHOLE WORD so it covers all of those without false-
-     * matching "Business". Extra, non-"bus" transportation titles (e.g. a mechanic
-     * or dispatcher) can be added via AD_TRANSPORTATION_TITLES.
+     * Transportation rule (see placement/desiredDepartment). True when either:
+     *  - the TITLE is transportation — Bus Driver/Aide/Monitor/Assistant, … or any
+     *    title that names "Transportation" (Transportation Coordinator, Director of
+     *    Transportation, …). "bus" is matched as a WHOLE WORD so it covers all of
+     *    those without false-matching "Business"; "transportation" is a plain
+     *    substring (distinctive enough not to false-match). Extra titles (e.g. a
+     *    mechanic or dispatcher) can be added via AD_TRANSPORTATION_TITLES; or
+     *  - the person's primary BUILDING is a transportation location, i.e. its
+     *    NextGen code is in AD_TRANSPORTATION_SCHOOL_CODES (default 8410) — so
+     *    everyone housed at the transportation depot lands in the trans OU no
+     *    matter what their individual title says.
      */
-    private static function isTransportation(array $p): bool
+    private function isTransportation(array $p): bool
     {
         $title = (string) ($p['title'] ?? '');
-        if (preg_match('/\bbus\b/i', $title)) {
+        if (preg_match('/\bbus\b/i', $title) || stripos($title, 'transportation') !== false) {
             return true;
         }
         foreach (self::extraTransportationKeywords() as $kw) {
@@ -1039,7 +1048,43 @@ final class AdaxesReconciler
                 return true;
             }
         }
+        $schoolId = $p['primary_school_id'] ?? null;
+        if ($schoolId !== null && $schoolId !== '' && isset($this->transportationSchoolIds()[(int) $schoolId])) {
+            return true;
+        }
         return false;
+    }
+
+    /**
+     * The set of school_ids that are transportation locations — buildings whose
+     * NextGen code is listed in AD_TRANSPORTATION_SCHOOL_CODES (default "8410", the
+     * TCS transportation depot). Resolved once per run via school_code_alias and
+     * cached. Keyed by school_id for O(1) membership tests.
+     *
+     * @return array<int,true>
+     */
+    private function transportationSchoolIds(): array
+    {
+        if ($this->transportationSchoolIds !== null) {
+            return $this->transportationSchoolIds;
+        }
+        $codes = array_values(array_filter(
+            array_map('trim', explode(',', (string) Config::get('AD_TRANSPORTATION_SCHOOL_CODES', '8410'))),
+            static fn($s) => $s !== '',
+        ));
+        if ($codes === []) {
+            return $this->transportationSchoolIds = [];
+        }
+        $ph = implode(',', array_fill(0, count($codes), '?'));
+        $stmt = $this->db->prepare(
+            "SELECT DISTINCT school_id FROM school_code_alias WHERE system = 'nextgen' AND code IN ({$ph})"
+        );
+        $stmt->execute($codes);
+        $ids = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $ids[(int) $r['school_id']] = true;
+        }
+        return $this->transportationSchoolIds = $ids;
     }
 
     /** Extra transportation title keywords (substring, case-insensitive). @return list<string> */
