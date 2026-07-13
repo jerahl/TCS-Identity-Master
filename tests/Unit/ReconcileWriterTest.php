@@ -34,6 +34,9 @@ final class ReconcileWriterTest extends TestCase
             zip_code TEXT, updated_by TEXT)');
         $db->exec('CREATE TABLE assignment (
             id INTEGER PRIMARY KEY, person_id INTEGER, title TEXT)');
+        $db->exec('CREATE TABLE person_field_override (
+            person_id INTEGER, field TEXT, actor TEXT, note TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (person_id, field))');
         $db->exec('CREATE TABLE audit_log (id INTEGER PRIMARY KEY, entity TEXT, entity_id INTEGER, action TEXT,
             before_json TEXT, after_json TEXT, actor TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)');
         $db->exec('CREATE TABLE lifecycle_event (id INTEGER PRIMARY KEY, person_id INTEGER, event_type TEXT,

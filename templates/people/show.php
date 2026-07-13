@@ -316,6 +316,17 @@ $eventTitle = [
             <td>
               <span style="color:#22343F; font-weight:500;"><?= e($f['label']) ?></span>
               <?php if ($f['pii']): ?> <span class="pii-tag">PII</span><?php endif; ?>
+              <?php if (!empty($f['overridden'])): ?>
+                <span title="Manually overridden — feed imports won’t change this field" style="margin-left:6px; font-size:10px; font-weight:600; color:#8A5A00; background:#FBEFD5; border-radius:9px; padding:1px 7px;">📌 manual</span>
+                <?php if (!empty($canEdit) && !empty($f['overrideField'])): ?>
+                  <form method="post" action="<?= e(url('/people/' . $p['person_id'] . '/field-override/clear')) ?>" style="display:inline; margin-left:4px;">
+                    <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
+                    <input type="hidden" name="field" value="<?= e($f['overrideField']) ?>">
+                    <button type="submit" title="Stop pinning — let imports sync this field again"
+                      style="cursor:pointer; font-size:10px; font-weight:600; color:#8A5A00; background:none; border:none; text-decoration:underline; padding:0;">unpin</button>
+                  </form>
+                <?php endif; ?>
+              <?php endif; ?>
               <div class="mono" style="font-size:10.5px; color:#9AA9B4;"><?= e($f['nextgen'] ?? '—') ?> · <?= e($f['powerschool'] ?? '—') ?></div>
             </td>
             <?php

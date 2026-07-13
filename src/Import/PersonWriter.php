@@ -386,6 +386,83 @@ final class PersonWriter
         return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
     }
 
+    // ---- Manual field overrides --------------------------------------------
+    //
+    // When an operator hand-edits a golden field, it is pinned in
+    // person_field_override so feed imports leave it alone (updateHrFields /
+    // upsertAssignment skip pinned fields). Only feed-owned fields are pinnable —
+    // pinning a field the feeds don't touch (status, notes, …) would be a no-op.
+
+    /**
+     * The golden/assignment fields the feeds own, and therefore the only fields a
+     * manual edit can pin. Matches updateHrFields()'s HR candidates plus the
+     * assignment 'title'. Anything not listed here is never recorded as an
+     * override (the importer wouldn't overwrite it anyway).
+     */
+    private const PINNABLE_FIELDS = [
+        'first_name', 'last_name', 'middle_name', 'preferred_name', 'dob', 'gender',
+        'ethnicity_source', 'ethnicity_code', 'alsde_id', 'employee_id', 'primary_school_id',
+        'hire_date', 'position_start_date', 'end_date', 'hr_email', 'position_number',
+        'cctr_description', 'phone', 'address1', 'address2', 'city', 'state_code', 'zip_code',
+        'person_type', 'title',
+    ];
+
+    /**
+     * The set of fields pinned as manually overridden for a person (golden column
+     * names, plus 'title' for the assignment title). Empty when none.
+     *
+     * @return list<string>
+     */
+    public function fieldOverrides(int $personId): array
+    {
+        $stmt = $this->db->prepare('SELECT field FROM person_field_override WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        return array_map(static fn($r) => (string) $r['field'], $stmt->fetchAll());
+    }
+
+    /**
+     * Pin a field as manually overridden (idempotent — re-pinning refreshes the
+     * actor/note). No-op for a field the feeds don't own (see PINNABLE_FIELDS).
+     * Portable upsert (delete-then-insert) so it behaves the same on MariaDB and
+     * the sqlite test DB.
+     */
+    public function recordFieldOverride(int $personId, string $field, string $actor, ?string $note = null): void
+    {
+        if (!in_array($field, self::PINNABLE_FIELDS, true)) {
+            return;
+        }
+        $this->db->prepare('DELETE FROM person_field_override WHERE person_id = :id AND field = :f')
+            ->execute([':id' => $personId, ':f' => $field]);
+        $this->db->prepare(
+            'INSERT INTO person_field_override (person_id, field, actor, note) VALUES (:id, :f, :actor, :note)'
+        )->execute([':id' => $personId, ':f' => $field, ':actor' => $actor, ':note' => $note]);
+    }
+
+    /**
+     * Remove a field's manual-override pin so imports resume syncing it. Audited +
+     * a lifecycle note. Returns whether a pin was actually removed.
+     */
+    public function clearFieldOverride(int $personId, string $field, string $actor): bool
+    {
+        $stmt = $this->db->prepare('DELETE FROM person_field_override WHERE person_id = :id AND field = :f');
+        $stmt->execute([':id' => $personId, ':f' => $field]);
+        if ($stmt->rowCount() === 0) {
+            return false;
+        }
+        $this->audit->log('person', $personId, 'update', ['override' => $field], ['override' => null], $actor);
+        $this->audit->lifecycle($personId, 'update',
+            ['summary' => "Cleared manual override on {$field} — imports will sync it again."], $actor);
+        return true;
+    }
+
+    /** Pin every field in $fields that the feeds own (ignores the rest). */
+    private function recordFieldOverrides(int $personId, array $fields, string $actor, ?string $note = null): void
+    {
+        foreach ($fields as $field) {
+            $this->recordFieldOverride($personId, (string) $field, $actor, $note);
+        }
+    }
+
     /**
      * Update HR-owned fields on an existing person from an incoming row. Only
      * fields the feed actually provides are written (never blank out existing
@@ -398,7 +475,7 @@ final class PersonWriter
             return false;
         }
 
-        $changes = self::diffHrFields($before, $row);
+        $changes = self::diffHrFields($before, $row, $this->fieldOverrides($personId));
         if ($changes === []) {
             return false;
         }
@@ -461,13 +538,20 @@ final class PersonWriter
      * existing value, only write when different" rules as updateHrFields(). Shared
      * by the real write and the dry-run preview so they can never disagree.
      *
+     * Fields listed in $overridden are pinned (manually edited) and skipped, so a
+     * feed value never reverts a hand-edit.
+     *
      * @param array<string,mixed> $before a person snapshot (snapshot())
+     * @param list<string> $overridden golden columns pinned as manually overridden
      * @return list<array{field:string,from:?string,to:?string}>
      */
-    public static function diffHrFields(array $before, NormalizedRow $row): array
+    public static function diffHrFields(array $before, NormalizedRow $row, array $overridden = []): array
     {
         $changes = [];
         foreach (self::hrCandidates($row) as $col => $val) {
+            if (in_array($col, $overridden, true)) {
+                continue; // manually overridden — imports leave it alone
+            }
             if ($val === null && !in_array($col, self::HR_REQUIRED, true)) {
                 continue; // feed didn't provide it — leave as-is
             }
@@ -492,7 +576,7 @@ final class PersonWriter
     public function previewHrChanges(int $personId, NormalizedRow $row): array
     {
         $before = $this->snapshot($personId);
-        return $before === null ? [] : self::diffHrFields($before, $row);
+        return $before === null ? [] : self::diffHrFields($before, $row, $this->fieldOverrides($personId));
     }
 
     /** True if a (system, source_key) crosswalk row already exists (so no new link would be made). */
@@ -544,10 +628,14 @@ final class PersonWriter
      * incoming row. On create, returns every field; on update, only the columns
      * that differ. Keys are column names, values the incoming value.
      *
+     * Columns in $overridden are pinned (manually edited) and skipped on update so
+     * a feed value never reverts a hand-edit; on create nothing is pinned yet.
+     *
      * @param array<string,mixed>|null $existing
+     * @param list<string> $overridden assignment columns pinned as manually overridden
      * @return array<string,?string>
      */
-    public static function diffAssignment(?array $existing, NormalizedRow $row): array
+    public static function diffAssignment(?array $existing, NormalizedRow $row, array $overridden = []): array
     {
         $vals = self::assignmentValues($row);
         if ($existing === null) {
@@ -555,6 +643,9 @@ final class PersonWriter
         }
         $changed = [];
         foreach ($vals as $col => $val) {
+            if (in_array($col, $overridden, true)) {
+                continue; // manually overridden — imports leave it alone
+            }
             if ((string) ($existing[$col] ?? '') !== (string) ($val ?? '')) {
                 $changed[$col] = $val;
             }
@@ -583,7 +674,7 @@ final class PersonWriter
         $existing = $find->fetch();
         $existing = $existing === false ? null : $existing;
 
-        $changed = $existing === null ? [] : self::diffAssignment($existing, $row);
+        $changed = $existing === null ? [] : self::diffAssignment($existing, $row, $this->fieldOverrides($personId));
         return [
             'action'      => $existing === null ? 'create' : ($changed === [] ? 'unchanged' : 'update'),
             'school_id'   => $row->schoolId,
@@ -637,6 +728,10 @@ final class PersonWriter
             }
         }
         $summary = $changed === [] ? 'Record edited' : 'Edited ' . implode(', ', $changed);
+        // Pin the feed-owned fields the operator actually changed so a later
+        // import can't revert them (non-feed fields like status/notes are ignored
+        // by recordFieldOverrides).
+        $this->recordFieldOverrides($personId, $changed, $actor, $summary);
         $this->audit->lifecycle($personId, $event, ['summary' => $summary], $actor);
 
         return true;
@@ -676,12 +771,14 @@ final class PersonWriter
 
         $set = [];
         $params = [];
+        $changedCols = [];
         foreach ($values as $col => $val) {
             if ((string) ($before[$col] ?? '') === (string) ($val ?? '')) {
                 continue; // unchanged
             }
             $set[] = "{$col} = :{$col}";
             $params[":{$col}"] = $val;
+            $changedCols[] = $col;
         }
         if ($set === []) {
             return false;
@@ -691,6 +788,9 @@ final class PersonWriter
         $params[':actor'] = $actor;
         $this->db->prepare('UPDATE person SET ' . implode(', ', $set) . ', updated_by = :actor WHERE person_id = :id')
             ->execute($params);
+
+        // Pin the hand-edited fields so a later import can't revert them.
+        $this->recordFieldOverrides($personId, $changedCols, $actor, $summary);
 
         $after = $this->snapshot($personId);
         $this->audit->log('person', $personId, 'update', $before, $after, $actor);
@@ -727,6 +827,8 @@ final class PersonWriter
 
         $this->db->prepare("UPDATE assignment SET {$column} = :v WHERE id = :aid AND person_id = :pid")
             ->execute([':v' => $val, ':aid' => $assignmentId, ':pid' => $personId]);
+        // Pin the hand-edited assignment field so a later import can't revert it.
+        $this->recordFieldOverride($personId, $column, $actor, $summary);
         $this->audit->log('assignment', $assignmentId, 'update', [$column => $row['cur']], [$column => $val], $actor);
         $this->audit->lifecycle($personId, 'update', ['summary' => $summary], $actor);
         return true;
@@ -771,21 +873,25 @@ final class PersonWriter
         $source = self::assignmentSource($row->system);
 
         $find = $this->db->prepare(
-            'SELECT id FROM assignment WHERE person_id = :pid AND school_id = :sid AND source = :src LIMIT 1'
+            'SELECT id, title FROM assignment WHERE person_id = :pid AND school_id = :sid AND source = :src LIMIT 1'
         );
         $find->execute([':pid' => $personId, ':sid' => $row->schoolId, ':src' => $source]);
-        $existingId = $find->fetchColumn();
+        $existing = $find->fetch();
 
-        if ($existingId !== false) {
+        if ($existing !== false) {
+            // A manually overridden title is preserved; other columns still sync.
+            $title = in_array('title', $this->fieldOverrides($personId), true)
+                ? ($existing['title'] ?? null)
+                : $row->title;
             $this->db->prepare(
                 'UPDATE assignment SET title = :title, job_code = :jc, fte = :fte, is_primary = :pri,
                         effective_date = :eff, end_date = :end WHERE id = :id'
             )->execute([
-                ':title' => $row->title, ':jc' => $row->jobCode, ':fte' => $row->fte,
+                ':title' => $title, ':jc' => $row->jobCode, ':fte' => $row->fte,
                 ':pri' => $row->isPrimary ? 1 : 0, ':eff' => $row->hireDate, ':end' => $row->endDate,
-                ':id' => (int) $existingId,
+                ':id' => (int) $existing['id'],
             ]);
-            $assignmentId = (int) $existingId;
+            $assignmentId = (int) $existing['id'];
         } else {
             $this->db->prepare(
                 'INSERT INTO assignment (person_id, school_id, title, job_code, fte, is_primary, effective_date, end_date, source)

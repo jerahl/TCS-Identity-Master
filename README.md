@@ -264,6 +264,16 @@ Interns and contractors live **only in IDM** (manual records, no NextGen/PowerSc
 feed); their panel shows the current IDM values and notes there is nothing to
 reconcile.
 
+**Manual overrides pin a field against imports.** When an operator hand-edits a
+golden field — through the person **Edit** form or by picking a value in the
+reconciliation panel — that field is flagged in `person_field_override` and shown
+with a **📌 manual** badge. Subsequent feed imports **skip pinned fields** (the
+dry-run preview reflects this too), so a hand-edit is never silently reverted to
+the source value. Only feed-owned fields are pinnable (demographics, employee id,
+primary school, `person_type`, and the assignment title); `status`, notes, and
+other IDM-owned fields aren't affected because imports never touch them. Click
+**unpin** on the field to hand it back to the feeds. Migration `0022`.
+
 > The PowerSchool side of the comparison comes from a field snapshot captured on
 > each PowerSchool import. **Records imported before this feature (or by a failed
 > pull) have no snapshot** — the panel says so and prompts a re-import rather than

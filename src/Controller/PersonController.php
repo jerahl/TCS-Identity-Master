@@ -126,7 +126,7 @@ final class PersonController extends Controller
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
-            'fieldMap'       => FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly),
+            'fieldMap'       => FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly, $this->people->fieldOverrides($id)),
             'fieldGroups'    => FieldMap::GROUPS,
             'hasNextGen'     => $hasNextGen,
             'hasPowerSchool' => $hasPowerSchool,
@@ -506,6 +506,44 @@ final class PersonController extends Controller
         } catch (\Throwable $e) {
             error_log('[idm] raptor override: ' . $e->getMessage());
             $this->flash('Could not save the Raptor role exception: ' . $e->getMessage());
+        }
+        return $this->redirect($back);
+    }
+
+    /**
+     * Clear a field's manual-override pin so imports resume syncing it (the inverse
+     * of the automatic pin a hand-edit sets). Admin-only, CSRF-guarded.
+     */
+    public function clearFieldOverride(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id) . '#reconcile';
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        if ($id <= 0 || $this->people->find($id) === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        $field = trim((string) ($_POST['field'] ?? ''));
+        if ($field === '') {
+            $this->flash('No field specified.');
+            return $this->redirect($back);
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $cleared = (new PersonWriter($db, new AuditService($db)))
+                ->clearFieldOverride($id, $field, $this->currentUser()['name']);
+            $this->flash($cleared
+                ? "Manual override cleared — imports will sync {$field} again on the next run."
+                : "{$field} wasn’t pinned — nothing changed.");
+        } catch (\Throwable $e) {
+            error_log('[idm] clear field override: ' . $e->getMessage());
+            $this->flash('Could not clear the override: ' . $e->getMessage());
         }
         return $this->redirect($back);
     }

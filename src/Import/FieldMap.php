@@ -152,7 +152,7 @@ final class FieldMap
      * @param array<string,mixed>|null $psFields PowerSchool field snapshot
      * @return array<int,array{key:string,label:string,group:string,nextgen:?string,powerschool:?string,pii:bool,ngValue:string,psValue:string,state:string,golden:?string,overridable:bool}>
      */
-    public static function reconcileRows(array $person, ?array $primary, ?array $ngRaw, ?array $psFields, bool $idmOnly = false): array
+    public static function reconcileRows(array $person, ?array $primary, ?array $ngRaw, ?array $psFields, bool $idmOnly = false, array $overrides = []): array
     {
         $hasNg = $ngRaw !== null;
         $hasPs = $psFields !== null;
@@ -187,11 +187,28 @@ final class FieldMap
                 // pick NextGen vs PowerSchool for it (both sides comparable).
                 'golden'      => self::goldenColumn($f['key']),
                 'overridable' => self::isOverridable($f),
+                // The stored override column for this field ('title' for the
+                // assignment), and whether it is currently pinned (imports skip it).
+                'overrideField' => self::goldenColumn($f['key']) ?? self::assignmentColumn($f['key']),
+                'overridden'  => self::isOverridden($f['key'], $overrides),
                 'ngIsGolden'  => $ngValue !== '' && self::valuesEqual($f['key'], $ngValue, $goldenValue),
                 'psIsGolden'  => $psValue !== '' && self::valuesEqual($f['key'], $psValue, $goldenValue),
             ];
         }
         return $rows;
+    }
+
+    /**
+     * Whether a reconcile field is pinned as manually overridden. $overrides holds
+     * pinned golden column names (plus 'title'); a field maps to its golden column,
+     * else its assignment column.
+     *
+     * @param list<string> $overrides
+     */
+    private static function isOverridden(string $key, array $overrides): bool
+    {
+        $col = self::goldenColumn($key) ?? self::assignmentColumn($key);
+        return $col !== null && in_array($col, $overrides, true);
     }
 
     /** True when a reconcile field can be resolved by picking a source value. */
