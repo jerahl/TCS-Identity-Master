@@ -1135,8 +1135,74 @@ final class AdaxesReconcilerTest extends TestCase
         $res = $rec->run(dryRun: false, phases: ['create']);
 
         self::assertSame(0, $res['create']['applied']);
-        self::assertSame(1, $res['create']['review']);
+        self::assertSame(1, $res['create']['review']); // locked but no AD account found
         self::assertSame([], $calls); // never minted/created
+    }
+
+    /** A read fake whose /search returns one account with the given properties. */
+    private function readSearchHit(array $props): AdaxesService
+    {
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use ($props): ?array {
+            if (str_contains($url, '/search')) {
+                return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => $props]]])];
+            }
+            return ['status' => 404, 'body' => 'not found']; // no GUID crosswalk to GET
+        };
+        return new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch, null, null, null, null, 'read-token');
+    }
+
+    public function testLockedPersonWithMatchingAdAccountIsAutoCorrelated(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Julia', 'last_name' => 'Horn',
+            'username' => 'jhorn', 'username_locked' => 1, 'email' => 'jhorn@tusc.k12.al.us',
+            'upn' => 'jhorn@tusc.k12.al.us', 'employee_id' => '15246', 'primary_school_id' => 5,
+        ]);
+        // No 'ad' crosswalk row → she lands in the create population.
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'        => self::NEWGUID,
+            'sAMAccountName'    => 'jhorn',                 // == her locked golden username
+            'mail'              => 'jhorn@tusc.k12.al.us',  // == her golden email
+            'userPrincipalName' => 'jhorn@tusc.k12.al.us',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['correlated']);
+        self::assertSame(0, $res['create']['review']);
+        self::assertSame(0, $res['create']['applied']); // linked, NOT recreated
+        self::assertSame([], $calls);                    // no WRITE to AD
+        // The objectGUID is now linked in the crosswalk, so next run she leaves create.
+        $guid = $db->query("SELECT source_key FROM person_source_id WHERE person_id = 1 AND system = 'ad' AND is_active = 1")->fetchColumn();
+        self::assertSame(self::NEWGUID, $guid);
+    }
+
+    public function testLockedPersonWithMismatchedAdAccountStaysInReview(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Julia', 'last_name' => 'Horn',
+            'username' => 'jhorn', 'username_locked' => 1, 'email' => 'jhorn@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        // The account found bears a DIFFERENT sAMAccountName → not an unambiguous
+        // match → stays in review, never linked.
+        $read = $this->readSearchHit([
+            'objectGUID'     => self::NEWGUID,
+            'sAMAccountName' => 'someoneelse',
+            'mail'           => 'someoneelse@tusc.k12.al.us',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(0, $res['create']['correlated']);
+        self::assertSame(1, $res['create']['review']);
+        self::assertFalse($db->query("SELECT 1 FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
     }
 
     public function testCreateCapDefersOverflow(): void

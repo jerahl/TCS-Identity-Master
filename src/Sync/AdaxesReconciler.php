@@ -31,8 +31,9 @@ use PDO;
  *     task, routed to review, never a write.
  *  2. Create only when truly new — no linked GUID AND no AD search hit.
  *  3. Username immutability — a username_locked person is never re-minted; in the
- *     create phase a locked-but-unlinked person is routed to review (correlate
- *     their existing account) rather than minted a second identity.
+ *     create phase a locked-but-unlinked person is auto-correlated to the existing
+ *     AD account that bears their username when the match is unambiguous (else
+ *     routed to review) — never minted a second identity.
  *  4. Threshold valves — a ratio cap on disables and an absolute cap on creates,
  *     so a truncated feed can't trigger a mass change.
  *  5. Audit everything (audit_log + lifecycle_event), actor system:adaxes_sync.
@@ -392,7 +393,7 @@ final class AdaxesReconciler
      */
     private function runCreate(bool $apply, ?int $limit): array
     {
-        $out = ['applied' => 0, 'skipped' => 0, 'review' => 0, 'errors' => 0, 'capped' => 0, 'items' => []];
+        $out = ['applied' => 0, 'correlated' => 0, 'skipped' => 0, 'review' => 0, 'errors' => 0, 'capped' => 0, 'items' => []];
 
         // Only people with NO active 'ad' crosswalk row at all.
         $people = $this->fetchPeople(
@@ -407,12 +408,13 @@ final class AdaxesReconciler
             $name = self::displayName($p);
 
             // Immutability: a person who already carries a locked username but has
-            // no AD link is anomalous (an existing identity with no linked account).
-            // Never mint/create a second account for them — that is a correlation
-            // task. Route to review.
+            // no AD link is an existing identity with no stored objectGUID. Never
+            // mint/create a second account — instead try to CORRELATE (link) the
+            // AD account that already bears this locked username. Only an
+            // unambiguous match is linked automatically; anything else is left for
+            // a human. This stops such people recurring in the create phase forever.
             if (!empty($p['username_locked'])) {
-                $out['review']++;
-                $this->item($out, $pid, $name, 'create', 'review', 'locked username but no AD link — correlate the existing account, do not create');
+                $this->correlate($out, $pid, $name, $p, $apply);
                 continue;
             }
 
@@ -497,6 +499,73 @@ final class AdaxesReconciler
         }
 
         return $out;
+    }
+
+    /**
+     * Correlate a locked-but-unlinked person to their existing AD account: look it
+     * up live and, when the match is UNAMBIGUOUS, link the objectGUID into the
+     * crosswalk (adopting username/email/upn) instead of routing to review every
+     * run. "Unambiguous" = an objectGUID is present, the account's sAMAccountName
+     * equals the person's locked golden username, and (when the golden record has
+     * an email) the account's mail agrees. Anything short of that still goes to
+     * review for a human — we never link the wrong account, and never create.
+     *
+     * @param array<string,mixed> $out phase accumulator (by ref)
+     * @param array<string,mixed> $p   person row
+     */
+    private function correlate(array &$out, int $pid, string $name, array $p, bool $apply): void
+    {
+        $username    = trim((string) ($p['username'] ?? ''));
+        $goldenEmail = trim((string) ($p['email'] ?? ''));
+
+        $env = $this->read->verify($p, $this->sourceIdsFor($pid));
+        if (!$env['ok']) {
+            $out['errors']++;
+            $this->item($out, $pid, $name, 'create', 'error', (string) $env['error']);
+            return;
+        }
+        if (!$env['found']) {
+            $out['review']++;
+            $this->item($out, $pid, $name, 'create', 'review', 'locked username but no matching AD account found — investigate/correlate manually');
+            return;
+        }
+
+        $cand = AdaxesService::goldenCandidate($env);
+        $unambiguous = $cand['guid'] !== null
+            && $username !== '' && self::eqCi($cand['username'], $username)
+            && ($goldenEmail === '' || $cand['email'] === '' || self::eqCi($cand['email'], $goldenEmail));
+
+        if (!$unambiguous) {
+            $out['review']++;
+            $detail = $cand['guid'] === null
+                ? 'AD account found but no objectGUID returned — correlate manually'
+                : sprintf('AD account (%s / %s) does not confidently match golden (%s / %s) — correlate manually',
+                    $cand['username'] ?: '—', $cand['email'] ?: '—', $username ?: '—', $goldenEmail ?: '—');
+            $this->item($out, $pid, $name, 'create', 'review', $detail);
+            return;
+        }
+
+        if (!$apply) {
+            $this->item($out, $pid, $name, 'create', 'would-correlate', 'link existing AD account ' . $cand['guid']);
+            return;
+        }
+
+        $this->people->linkAdAccount($pid, [
+            'guid'     => $cand['guid'],
+            'username' => $cand['username'],
+            'email'    => $goldenEmail !== '' ? $goldenEmail : $cand['email'],
+            'upn'      => trim((string) ($p['upn'] ?? '')) !== '' ? (string) $p['upn'] : $cand['upn'],
+        ], self::ACTOR);
+        $this->audit->lifecycle($pid, 'update',
+            ['summary' => 'Correlated to existing AD account (objectGUID ' . $cand['guid'] . ') — linked, not recreated.'], self::ACTOR);
+        $out['correlated']++;
+        $this->item($out, $pid, $name, 'create', 'correlated', 'linked existing AD account ' . $cand['guid']);
+    }
+
+    /** Case-insensitive equality of two trimmed strings. */
+    private static function eqCi(string $a, string $b): bool
+    {
+        return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
     }
 
     // ---- Phase 4: groups ----------------------------------------------------
