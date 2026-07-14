@@ -178,6 +178,22 @@ final class AdaxesWriterTest extends TestCase
         self::assertSame('false', self::props(json_decode((string) $captured['body'], true))['accountDisabled']);
     }
 
+    public function testClearExpirationPatchesEmptyAccountExpiresValues(): void
+    {
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+
+        $res = $w->clearExpiration('2b6160e2-ad91-419c-8960-cf672c75528f');
+        self::assertTrue($res['ok']);
+        self::assertSame('PATCH', $captured['method']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $body['directoryObject']);
+        // A single accountExpires property with an empty value list = clear (never).
+        self::assertCount(1, $body['properties']);
+        self::assertSame('accountExpires', $body['properties'][0]['propertyName']);
+        self::assertSame([], $body['properties'][0]['values']);
+    }
+
     public function testRenameSendsSamAccountNameUnlikeModify(): void
     {
         $captured = null;

@@ -251,6 +251,27 @@ The final phase. IDM mints identity and creates the account.
     `OU=SRO,OU=BHS,OU=Faculty,<base>`.
 - After create: set `username`/`email`/`upn` on the golden record, `username_locked=1`,
   activate a `pending` person, write `create` + `username_assigned` lifecycle events.
+- **Correlate before create — and re-enable returning employees.** Every create
+  candidate is first looked up live (`verify()`). A hit means the account already
+  exists, so the reconciler **correlates** (links the `objectGUID`, adopts
+  `username`/`email`/`upn`, activates the person) instead of minting a duplicate.
+  The match must be **unambiguous** — an `objectGUID` plus either the locked golden
+  username equal to the account's `sAMAccountName` (mail agreeing when both are set)
+  **or**, for a not-yet-minted person, the golden `employee_id` equal to the
+  account's `employeeID` with the surname (`sn`) agreeing. Anything short of that
+  goes to **review**, never linked blindly.
+  - **Returning employee (existing account is disabled/expired).** When the matched
+    account is currently locked out — `accountDisabled` set, or `accountExpires` a
+    past date — the reconciler **re-enables** it as part of the correlate: it clears
+    `accountDisabled` (`enable()`), resets the expiry (to the person's new
+    `end_date` when one is set, otherwise clears it back to *never* via
+    `clearExpiration()`), and stamps `description` with `Account re-enabled by
+    TCS-IDM on {run date} (returning employee)`. Counted as **rehired** (a distinct
+    action on the Services summary); audited with a `create` lifecycle event. If the
+    disabled account does **not** confidently match, it is routed to review flagged
+    as a possible returning employee for a human to correlate + re-enable. Clearing
+    `accountExpires` to *never* (an empty Timestamp value list) is best-effort so a
+    version-specific clear can never turn a successful reactivation into an error.
 - **OneSync cutover:** disable OneSync's AD destination (its `destinations/{id}/status`).
   OneSync keeps running for Google Workspace (separate branch). The
   `import_writeback` / `/api/onesync/username` inbound paths become no-ops for AD

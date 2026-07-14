@@ -51,6 +51,9 @@ final class AdaxesService
         'accountExpires', 'accountExpirationDate',
         'department', 'title', 'whenChanged',
         'physicalDeliveryOfficeName', 'description', 'info',
+        // sn + employeeID let the reconciler cross-check a returning-employee match
+        // (employee number + surname) before re-enabling an existing account.
+        'sn', 'employeeID',
     ];
 
     /**

@@ -29,11 +29,13 @@ use PDO;
  *  1. Link before write — edit/disable only ever act on a person with a linked,
  *     well-formed objectGUID; a search hit without a stored GUID is a correlation
  *     task, routed to review, never a write.
- *  2. Create only when truly new — no linked GUID AND no AD search hit.
+ *  2. Create only when truly new — no linked GUID AND no live AD hit. A hit is
+ *     correlated (linked), never recreated; if that existing account is disabled or
+ *     expired (a returning employee) it is re-enabled as part of the correlate.
  *  3. Username immutability — a username_locked person is never re-minted; in the
- *     create phase a locked-but-unlinked person is auto-correlated to the existing
- *     AD account that bears their username when the match is unambiguous (else
- *     routed to review) — never minted a second identity.
+ *     create phase an unlinked person is auto-correlated to the existing AD account
+ *     when the match is unambiguous (locked username, or employee number + surname)
+ *     — else routed to review — never minted a second identity.
  *  4. Threshold valves — a ratio cap on disables and an absolute cap on creates,
  *     so a truncated feed can't trigger a mass change.
  *  5. Audit everything (audit_log + lifecycle_event), actor system:adaxes_sync.
@@ -393,7 +395,7 @@ final class AdaxesReconciler
      */
     private function runCreate(bool $apply, ?int $limit): array
     {
-        $out = ['applied' => 0, 'correlated' => 0, 'skipped' => 0, 'review' => 0, 'errors' => 0, 'capped' => 0, 'items' => []];
+        $out = ['applied' => 0, 'correlated' => 0, 'rehired' => 0, 'skipped' => 0, 'review' => 0, 'errors' => 0, 'capped' => 0, 'items' => []];
 
         // Only people with NO active 'ad' crosswalk row at all.
         $people = $this->fetchPeople(
@@ -406,15 +408,32 @@ final class AdaxesReconciler
         foreach ($people as $p) {
             $pid = (int) $p['person_id'];
             $name = self::displayName($p);
+            $sourceIds = $this->sourceIdsFor($pid);
 
-            // Immutability: a person who already carries a locked username but has
-            // no AD link is an existing identity with no stored objectGUID. Never
-            // mint/create a second account — instead try to CORRELATE (link) the
-            // AD account that already bears this locked username. Only an
-            // unambiguous match is linked automatically; anything else is left for
-            // a human. This stops such people recurring in the create phase forever.
+            // Look the person up in live AD once. A hit means the account already
+            // exists — a returning employee whose old account was disabled/expired,
+            // a locked-but-unlinked identity, or a prior OneSync mint — so we
+            // CORRELATE (link, and re-enable when it was locked out), never create a
+            // duplicate. Only a clean miss is a true net-new hire. This is also the
+            // net-new confirmation (an unambiguous "nothing there") the create
+            // guardrail requires.
+            $env = $this->read->verify($p, $sourceIds);
+            if (!$env['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', (string) $env['error']);
+                continue;
+            }
+            if ($env['found']) {
+                $this->correlate($out, $pid, $name, $p, $apply, $env);
+                continue;
+            }
+
+            // No live account. Immutability: a person who already carries a locked
+            // username but has no AD link is an existing identity we could not find
+            // — never mint a second account; leave it for a human to correlate.
             if (!empty($p['username_locked'])) {
-                $this->correlate($out, $pid, $name, $p, $apply);
+                $out['review']++;
+                $this->item($out, $pid, $name, 'create', 'review', 'locked username but no matching AD account found — investigate/correlate manually');
                 continue;
             }
 
@@ -430,20 +449,6 @@ final class AdaxesReconciler
                 continue;
             }
             $ou = $placement;
-
-            // Confirm net-new: an AD search must return nothing. A hit means the
-            // account exists but isn't linked → correlation task, not a create.
-            $search = $this->read->search($p);
-            if (!$search['ok']) {
-                $out['errors']++;
-                $this->item($out, $pid, $name, 'create', 'error', (string) $search['error']);
-                continue;
-            }
-            if ($search['found']) {
-                $out['review']++;
-                $this->item($out, $pid, $name, 'create', 'review', 'AD account already exists but is unlinked — correlate, do not create');
-                continue;
-            }
 
             // Mint (or reuse a pre-assigned, locked username).
             try {
@@ -502,64 +507,167 @@ final class AdaxesReconciler
     }
 
     /**
-     * Correlate a locked-but-unlinked person to their existing AD account: look it
-     * up live and, when the match is UNAMBIGUOUS, link the objectGUID into the
-     * crosswalk (adopting username/email/upn) instead of routing to review every
-     * run. "Unambiguous" = an objectGUID is present, the account's sAMAccountName
-     * equals the person's locked golden username, and (when the golden record has
-     * an email) the account's mail agrees. Anything short of that still goes to
-     * review for a human — we never link the wrong account, and never create.
+     * Correlate a person to the existing AD account the create-phase lookup found:
+     * when the match is UNAMBIGUOUS, link the objectGUID into the crosswalk
+     * (adopting username/email/upn, activating a pending person) instead of routing
+     * to review every run — and, when that account is currently locked out
+     * (disabled, or expired in the past), RE-ENABLE it. That locked-out case is the
+     * returning employee: a fresh golden record whose old AD account still exists
+     * but was expired/disabled when they left. We reactivate the original account
+     * rather than minting a second one.
+     *
+     * "Unambiguous" = an objectGUID is present AND a strong identity agreement:
+     * either the person's locked golden username equals the account's
+     * sAMAccountName (with mail agreeing when both are set), OR — for a person not
+     * yet minted (the typical returning employee) — the employee number matches the
+     * account's employeeID and the surname agrees. Anything short of that still
+     * goes to review for a human; we never link the wrong account, and never create.
      *
      * @param array<string,mixed> $out phase accumulator (by ref)
      * @param array<string,mixed> $p   person row
+     * @param array<string,mixed> $env the verify() envelope for this person (found)
      */
-    private function correlate(array &$out, int $pid, string $name, array $p, bool $apply): void
+    private function correlate(array &$out, int $pid, string $name, array $p, bool $apply, array $env): void
     {
         $username    = trim((string) ($p['username'] ?? ''));
         $goldenEmail = trim((string) ($p['email'] ?? ''));
+        $employeeId  = trim((string) ($p['employee_id'] ?? ''));
+        $lastName    = trim((string) ($p['last_name'] ?? ''));
 
-        $env = $this->read->verify($p, $this->sourceIdsFor($pid));
-        if (!$env['ok']) {
-            $out['errors']++;
-            $this->item($out, $pid, $name, 'create', 'error', (string) $env['error']);
-            return;
-        }
-        if (!$env['found']) {
-            $out['review']++;
-            $this->item($out, $pid, $name, 'create', 'review', 'locked username but no matching AD account found — investigate/correlate manually');
-            return;
-        }
+        $cand  = AdaxesService::goldenCandidate($env);
+        $attrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
+        $adEmployeeId = trim((string) ($attrs['employeeid'] ?? ''));
+        $adSurname    = trim((string) ($attrs['sn'] ?? ''));
 
-        $cand = AdaxesService::goldenCandidate($env);
-        $unambiguous = $cand['guid'] !== null
-            && $username !== '' && self::eqCi($cand['username'], $username)
+        // Two ways to be confident: the locked username matches (email agreeing), or
+        // — for a not-yet-minted returning employee — the employee number + surname.
+        $byUsername = $username !== '' && self::eqCi($cand['username'], $username)
             && ($goldenEmail === '' || $cand['email'] === '' || self::eqCi($cand['email'], $goldenEmail));
+        $byEmployee = $employeeId !== '' && $adEmployeeId !== '' && self::eqCi($adEmployeeId, $employeeId)
+            && $lastName !== '' && $adSurname !== '' && self::eqCi($adSurname, $lastName);
+        $unambiguous = $cand['guid'] !== null && ($byUsername || $byEmployee);
+
+        // Is the existing account locked out — the returning-employee signal? Either
+        // accountDisabled is set, or accountExpires is a real past date. "Unknown"
+        // (neither attribute returned) is treated as not-locked-out (never assume).
+        $enabled = AdaxesService::accountEnabledFromEnvelope($env);
+        $expiry  = AdaxesService::accountExpiryFromEnvelope($env);
+        $today   = gmdate('Y-m-d');
+        $isDisabled = $enabled === false;
+        $isExpired  = $expiry !== null && $expiry !== 'Never' && $expiry < $today;
+        $lockedOut  = $isDisabled || $isExpired;
 
         if (!$unambiguous) {
             $out['review']++;
-            $detail = $cand['guid'] === null
-                ? 'AD account found but no objectGUID returned — correlate manually'
-                : sprintf('AD account (%s / %s) does not confidently match golden (%s / %s) — correlate manually',
+            if ($cand['guid'] === null) {
+                $detail = 'AD account found but no objectGUID returned — correlate manually';
+            } elseif ($lockedOut) {
+                $detail = sprintf(
+                    'returning employee? existing AD account (%s) is %s but does not confidently match golden (username %s / employee id %s) — correlate & re-enable manually',
+                    $cand['username'] ?: '—', $isDisabled ? 'disabled' : 'expired', $username ?: '—', $employeeId ?: '—'
+                );
+            } else {
+                $detail = sprintf('AD account (%s / %s) does not confidently match golden (%s / %s) — correlate, do not create',
                     $cand['username'] ?: '—', $cand['email'] ?: '—', $username ?: '—', $goldenEmail ?: '—');
+            }
             $this->item($out, $pid, $name, 'create', 'review', $detail);
             return;
         }
 
         if (!$apply) {
-            $this->item($out, $pid, $name, 'create', 'would-correlate', 'link existing AD account ' . $cand['guid']);
+            if ($lockedOut) {
+                $this->item($out, $pid, $name, 'create', 'would-rehire',
+                    'returning employee — re-enable (' . ($isDisabled ? 'disabled' : 'expired') . ') and link existing AD account ' . $cand['guid']);
+            } else {
+                $this->item($out, $pid, $name, 'create', 'would-correlate', 'link existing AD account ' . $cand['guid']);
+            }
             return;
         }
 
+        // Adopt the identity + link the GUID (activates a pending person).
         $this->people->linkAdAccount($pid, [
             'guid'     => $cand['guid'],
             'username' => $cand['username'],
             'email'    => $goldenEmail !== '' ? $goldenEmail : $cand['email'],
             'upn'      => trim((string) ($p['upn'] ?? '')) !== '' ? (string) $p['upn'] : $cand['upn'],
         ], self::ACTOR);
-        $this->audit->lifecycle($pid, 'update',
-            ['summary' => 'Correlated to existing AD account (objectGUID ' . $cand['guid'] . ') — linked, not recreated.'], self::ACTOR);
-        $out['correlated']++;
-        $this->item($out, $pid, $name, 'create', 'correlated', 'linked existing AD account ' . $cand['guid']);
+
+        if (!$lockedOut) {
+            $this->audit->lifecycle($pid, 'update',
+                ['summary' => 'Correlated to existing AD account (objectGUID ' . $cand['guid'] . ') — linked, not recreated.'], self::ACTOR);
+            $out['correlated']++;
+            $this->item($out, $pid, $name, 'create', 'correlated', 'linked existing AD account ' . $cand['guid']);
+            return;
+        }
+
+        // Returning employee: re-enable so the reactivated account isn't locked out.
+        $this->rehire($out, $pid, $name, $p, $cand['guid'], $isDisabled, $isExpired, $expiry, $today);
+    }
+
+    /**
+     * Reactivate a returning employee's existing (linked) AD account: clear the
+     * disabled flag, reset the expiration (to a future end date when one is set,
+     * else clear it back to "never"), and stamp the description. Called only after
+     * a confident correlate has already linked the objectGUID.
+     *
+     * Clearing accountDisabled and setting a future accountExpires are strict — a
+     * failure surfaces as a per-person error. Clearing the expiration to "never" is
+     * best-effort (the Timestamp-clear shape is Adaxes-version-specific) so it can
+     * never turn a successful reactivation into a reported failure.
+     *
+     * @param array<string,mixed> $out phase accumulator (by ref)
+     * @param array<string,mixed> $p   person row
+     */
+    private function rehire(array &$out, int $pid, string $name, array $p, string $guid, bool $isDisabled, bool $isExpired, ?string $expiry, string $today): void
+    {
+        $stamp = 'Account re-enabled by TCS-IDM on ' . $today . ' (returning employee)';
+        $notes = [];
+
+        if ($isDisabled) {
+            $res = $this->writer->enable($guid);
+            if (!$res['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', 'linked ' . $guid . ' but re-enable failed — enable: ' . (string) $res['error']);
+                return;
+            }
+            $notes[] = 'cleared accountDisabled';
+        }
+
+        // Reset the expiry so a prior expire-leaver date doesn't immediately re-lock
+        // the reactivated account: to the future end date when one is set, otherwise
+        // clear it to "never".
+        $endDate   = trim((string) ($p['end_date'] ?? ''));
+        $futureIso = ($endDate !== '' && $endDate >= $today) ? self::accountExpiresIso($endDate) : null;
+
+        if ($futureIso !== null) {
+            $res = $this->writer->modify($guid, ['accountExpires' => $futureIso, 'description' => $stamp]);
+            if (!$res['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', 'linked ' . $guid . ' but re-enable failed — modify: ' . (string) $res['error']);
+                return;
+            }
+            $notes[] = 'accountExpires set to ' . $endDate;
+        } else {
+            $res = $this->writer->modify($guid, ['description' => $stamp]);
+            if (!$res['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', 'linked ' . $guid . ' but re-enable failed — modify: ' . (string) $res['error']);
+                return;
+            }
+            if ($isExpired) {
+                // Best-effort clear-to-never (never fails the reactivation).
+                $clr = $this->writer->clearExpiration($guid);
+                $notes[] = $clr['ok'] ? 'accountExpires cleared (never)' : 'accountExpires clear skipped (' . (string) $clr['error'] . ')';
+            }
+        }
+
+        $this->audit->log('person', $pid, 'update',
+            ['accountDisabled' => $isDisabled ? 'true' : 'false', 'accountExpires' => $expiry ?? 'unset'],
+            ['reenabled' => true], self::ACTOR);
+        $this->audit->lifecycle($pid, 'create',
+            ['summary' => "Re-enabled returning employee's existing AD account (objectGUID " . $guid . ') — ' . implode('; ', $notes) . '; linked, not recreated.'], self::ACTOR);
+        $out['rehired']++;
+        $this->item($out, $pid, $name, 'create', 'rehired', 're-enabled & linked existing AD account ' . $guid . ' — ' . implode('; ', $notes));
     }
 
     /** Case-insensitive equality of two trimmed strings. */

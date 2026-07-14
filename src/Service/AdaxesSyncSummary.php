@@ -24,7 +24,7 @@ final class AdaxesSyncSummary
 
     /** The order counts are shown within a phase. */
     private const COUNT_ORDER = [
-        'applied', 'created', 'correlated', 'added', 'removed',
+        'applied', 'created', 'correlated', 'rehired', 'added', 'removed',
         'review', 'capped', 'blocked', 'candidates', 'noop', 'skipped', 'errors',
     ];
 
@@ -32,6 +32,7 @@ final class AdaxesSyncSummary
     private const COUNT_LABELS = [
         'created'    => 'Created',
         'correlated' => 'Correlated',
+        'rehired'    => 'Rehired',
         'added'      => 'Groups added',
         'removed'    => 'Groups removed',
         'review'     => 'Needs review',
@@ -90,7 +91,7 @@ final class AdaxesSyncSummary
                 $cells[] = ['label' => self::labelFor($key, $ck), 'key' => $ck, 'value' => $v];
             }
             $attention += (int) ($pc['review'] ?? 0);
-            foreach (['applied', 'created', 'correlated', 'added', 'removed'] as $a) {
+            foreach (['applied', 'created', 'correlated', 'rehired', 'added', 'removed'] as $a) {
                 $actions += (int) ($pc[$a] ?? 0);
             }
             $phases[] = [

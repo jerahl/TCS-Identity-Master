@@ -66,6 +66,25 @@ final class AdaxesSyncSummaryTest extends TestCase
         self::assertArrayNotHasKey('capped', $labels);
     }
 
+    public function testRehiredCountsAsAnActionAndIsLabelled(): void
+    {
+        $counts = [
+            'errors' => 0,
+            'phases' => [
+                'create' => ['applied' => 1, 'correlated' => 2, 'rehired' => 3, 'review' => 0, 'errors' => 0],
+            ],
+        ];
+        $s = AdaxesSyncSummary::fromRun(['status' => 'complete', 'counts_json' => json_encode($counts)]);
+        self::assertNotNull($s);
+        // actions = created 1 + correlated 2 + rehired 3 = 6.
+        self::assertSame(6, $s['actions']);
+
+        $create = $s['phases'][0];
+        $labels = array_column($create['cells'], 'label', 'key');
+        self::assertSame('Rehired', $labels['rehired']);
+        self::assertSame(3, array_column($create['cells'], 'value', 'key')['rehired']);
+    }
+
     public function testToleratesMissingOrBadCountsJson(): void
     {
         $s = AdaxesSyncSummary::fromRun(['status' => 'complete', 'counts_json' => 'not json']);

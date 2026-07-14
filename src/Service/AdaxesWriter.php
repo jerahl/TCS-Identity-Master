@@ -306,6 +306,35 @@ final class AdaxesWriter
     }
 
     /**
+     * Clear accountExpires so the account never expires — the inverse of the
+     * expire-leaver write. Sending an empty value list for the property removes it
+     * (Adaxes "clear a property"). Used when reactivating a returning employee whose
+     * old account carried a past expiration and who has no new end date to honor.
+     *
+     * @return ToggleResult
+     */
+    public function clearExpiration(string $objectGuid): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        }
+        $objectGuid = trim($objectGuid);
+        if ($objectGuid === '') {
+            return ['ok' => false, 'error' => 'No objectGUID.', 'changed' => false];
+        }
+        // An empty values array clears the property (never expires). propertyList()
+        // can't emit an empty list from a scalar, so the property is built directly.
+        $body = [
+            'directoryObject' => $objectGuid,
+            'properties'      => [['propertyName' => 'accountExpires', 'propertyType' => 'Timestamp', 'values' => []]],
+        ];
+        $res = $this->request('PATCH', $this->baseUrl . '/' . $this->modifyPath, (string) json_encode($body));
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => true]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => false];
+    }
+
+    /**
      * Add a member to a group via the Adaxes REST API:
      *   POST {base}/api/directoryObjects/groupMembers  {"group": …, "newMember": …}
      * Both $group and $member are directory identifiers (distinguishedName or

@@ -157,7 +157,7 @@ foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
         }
     }
     $summary = [];
-    foreach (['candidates', 'applied', 'added', 'removed', 'edited', 'created', 'correlated', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
+    foreach (['candidates', 'applied', 'added', 'removed', 'edited', 'created', 'correlated', 'rehired', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
         if (isset($r[$k])) {
             $summary[] = "{$k} {$r[$k]}";
         }
@@ -182,7 +182,7 @@ if ($runLog !== null) {
                 }
             }
             $counts['phases'][$phase] = $phaseCounts;
-            foreach (['applied', 'added', 'removed', 'created', 'correlated', 'errors'] as $k) {
+            foreach (['applied', 'added', 'removed', 'created', 'correlated', 'rehired', 'errors'] as $k) {
                 if (isset($result[$phase][$k]) && $result[$phase][$k] > 0) {
                     $counts["{$phase}_{$k}"] = (int) $result[$phase][$k];
                 }

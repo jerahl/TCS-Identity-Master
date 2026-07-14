@@ -1205,6 +1205,169 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertFalse($db->query("SELECT 1 FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
     }
 
+    /**
+     * A returning employee: a fresh (not-yet-minted) golden record whose OLD AD
+     * account still exists but is DISABLED. The create phase must NOT mint a second
+     * account — it correlates to the existing one (matched by employee number +
+     * surname), re-enables it, and resets the expiry to the new future end date.
+     */
+    public function testReturningEmployeeWithDisabledAdAccountIsReEnabledAndLinked(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'Wel', 'last_name' => 'Back',
+            'employee_id' => '55501', 'primary_school_id' => 5, 'end_date' => '2027-05-31',
+        ]);
+        // No username, no 'ad' crosswalk → she lands in the create population.
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'      => self::NEWGUID,
+            'sAMAccountName'  => 'wback',
+            'mail'            => 'wback@tusc.k12.al.us',
+            'employeeID'      => '55501',   // == her golden employee number
+            'sn'              => 'Back',     // == her golden surname
+            'accountDisabled' => 'true',     // the returning-employee signal
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['rehired']);
+        self::assertSame(0, $res['create']['correlated']);
+        self::assertSame(0, $res['create']['applied']);   // linked, NOT recreated
+        self::assertSame(0, $res['create']['review']);
+        self::assertSame(0, $res['create']['errors']);
+
+        // The old account is now linked, and she's activated (username adopted).
+        $guid = $db->query("SELECT source_key FROM person_source_id WHERE person_id = 1 AND system = 'ad' AND is_active = 1")->fetchColumn();
+        self::assertSame(self::NEWGUID, $guid);
+        $p = $db->query('SELECT username, status FROM person WHERE person_id = 1')->fetch();
+        self::assertSame('wback', $p['username']);
+        self::assertSame('active', $p['status']);
+
+        // No create POST; the writes are the re-enable (accountDisabled=false) plus
+        // the expiry reset to the new end date with a description stamp.
+        $bodies = array_map(static fn($c) => self::props(json_decode((string) $c['body'], true)), $calls);
+        self::assertStringNotContainsString('createIn', implode(' ', array_map(static fn($c) => (string) $c['body'], $calls)));
+        $disabledFlag = null;
+        $expires = null;
+        $desc = null;
+        foreach ($bodies as $b) {
+            if (array_key_exists('accountDisabled', $b)) {
+                $disabledFlag = $b['accountDisabled'];
+            }
+            if (array_key_exists('accountExpires', $b)) {
+                $expires = $b['accountExpires'];
+            }
+            if (array_key_exists('description', $b)) {
+                $desc = $b['description'];
+            }
+        }
+        self::assertSame('false', $disabledFlag);                 // re-enabled
+        self::assertSame('2027-05-31T00:00:00Z', $expires);       // reset to new end date
+        self::assertStringContainsString('returning employee', (string) $desc);
+    }
+
+    /**
+     * A returning employee whose old account was EXPIRED (not disabled) by the
+     * expire-leaver phase and who now has NO end date: re-enabling clears the
+     * expiration back to "never" (an empty accountExpires value list).
+     */
+    public function testReturningEmployeeExpiredAccountIsClearedToNever(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'Ray', 'last_name' => 'Turn',
+            'employee_id' => '55502', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'            => self::NEWGUID,
+            'sAMAccountName'        => 'rturn',
+            'employeeID'            => '55502',
+            'sn'                    => 'Turn',
+            'accountExpirationDate' => '2020-01-01',   // a past expiry → locked out
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['rehired']);
+        self::assertSame(0, $res['create']['errors']);
+
+        // No accountDisabled write (it wasn't disabled); a description stamp and a
+        // clear of accountExpires (empty values array = never expires).
+        $joined = implode(' | ', array_map(static fn($c) => (string) $c['body'], $calls));
+        self::assertStringNotContainsString('accountDisabled', $joined);
+        $cleared = false;
+        foreach ($calls as $c) {
+            $body = json_decode((string) $c['body'], true);
+            foreach (($body['properties'] ?? []) as $prop) {
+                if (($prop['propertyName'] ?? '') === 'accountExpires' && ($prop['values'] ?? null) === []) {
+                    $cleared = true;
+                }
+            }
+        }
+        self::assertTrue($cleared, 'expected an accountExpires clear (empty values)');
+    }
+
+    /**
+     * A disabled account that does NOT confidently match (guid present but neither
+     * the username nor the employee-number+surname agree) is never auto-re-enabled
+     * — it goes to review flagged as a possible returning employee, with no writes.
+     */
+    public function testReturningEmployeeAmbiguousDisabledAccountGoesToReview(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'May', 'last_name' => 'Be',
+            'employee_id' => '999', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'      => self::NEWGUID,
+            'sAMAccountName'  => 'someoneelse',
+            'employeeID'      => 'different',   // ≠ 999
+            'sn'              => 'Other',        // ≠ Be
+            'accountDisabled' => 'true',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(0, $res['create']['rehired']);
+        self::assertSame(1, $res['create']['review']);
+        self::assertSame([], $calls);   // nothing written — never re-enabled blindly
+        self::assertStringContainsString('returning employee', $res['create']['items'][0]['detail']);
+        self::assertFalse($db->query("SELECT 1 FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
+    }
+
+    /** Dry-run reports the rehire as would-rehire and writes nothing. */
+    public function testReturningEmployeeDryRunReportsWouldRehire(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'Wel', 'last_name' => 'Back',
+            'employee_id' => '55501', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'      => self::NEWGUID,
+            'sAMAccountName'  => 'wback',
+            'employeeID'      => '55501',
+            'sn'              => 'Back',
+            'accountDisabled' => 'true',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: true, phases: ['create']);
+
+        self::assertSame(0, $res['create']['rehired']);
+        self::assertSame('would-rehire', $res['create']['items'][0]['outcome']);
+        self::assertSame([], $calls);
+        self::assertFalse($db->query("SELECT 1 FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
+    }
+
     public function testCreateCapDefersOverflow(): void
     {
         putenv('ADAXES_WRITE_MAX_CREATES=1');
