@@ -556,13 +556,23 @@ final class AdaxesWriter
             }
         }
 
-        // properties: list form [{name,value}] or map form {name:value}.
+        // properties: list form [{name,value}] / [{propertyName,values:[…]}] or
+        // map form {name:value}. The propertyName/values shape is the one the
+        // write endpoints themselves use, and some builds echo it back.
         $props = $data['properties'] ?? null;
         if (is_array($props)) {
             if (array_is_list($props)) {
                 foreach ($props as $p) {
-                    if (is_array($p) && strtolower((string) ($p['name'] ?? '')) === 'objectguid' && is_scalar($p['value'] ?? null)) {
-                        $candidates[] = (string) $p['value'];
+                    if (!is_array($p)) {
+                        continue;
+                    }
+                    $name = $p['name'] ?? $p['propertyName'] ?? '';
+                    if (strtolower((string) $name) !== 'objectguid') {
+                        continue;
+                    }
+                    $value = $p['value'] ?? (is_array($p['values'] ?? null) ? ($p['values'][0] ?? null) : null);
+                    if (is_scalar($value)) {
+                        $candidates[] = (string) $value;
                     }
                 }
             } else {

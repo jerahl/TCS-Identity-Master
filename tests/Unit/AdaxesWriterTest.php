@@ -96,6 +96,22 @@ final class AdaxesWriterTest extends TestCase
         self::assertSame('String', $body['properties'][0]['propertyType']);
     }
 
+    public function testCreateExtractsGuidFromPropertyNameValuesShape(): void
+    {
+        // Some builds echo the created object back in the same property-list
+        // shape the write endpoints take: [{propertyName, propertyType, values}].
+        $w = $this->writer([
+            'status' => 200,
+            'body'   => json_encode(['properties' => [
+                ['propertyName' => 'sAMAccountName', 'propertyType' => 'String', 'values' => ['jsmith']],
+                ['propertyName' => 'objectGUID', 'propertyType' => 'String', 'values' => ['{2b6160e2-ad91-419c-8960-cf672c75528f}']],
+            ]]),
+        ]);
+        $res = $w->create('OU=Staff,DC=x', ['sAMAccountName' => 'jsmith']);
+        self::assertTrue($res['ok']);
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $res['guid']);
+    }
+
     public function testCreateWithNoGuidInResponseIsCreatedButUnresolved(): void
     {
         // A bare 204-style success: created, but the GUID must be re-resolved by

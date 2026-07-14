@@ -651,6 +651,66 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertStringNotContainsString((string) $body['password'], $ev);
     }
 
+    public function testCreateResolvesGuidViaSearchFallbackAndStillSetsPassword(): void
+    {
+        // The regression behind blank {temp_password}: when the create response
+        // carries no parseable objectGUID, the reconciler re-resolves it by
+        // searching for the just-created account. That search envelope has no
+        // top-level guid — the GUID lives in the attributes — so it must be
+        // extracted from there, and the initial password still set + recorded.
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+            'first_name' => 'John', 'last_name' => 'Smith', 'primary_school_id' => 5,
+        ]);
+
+        // Read service: the first jsmith search (the mint's availability check)
+        // misses; the post-create search finds the new account, GUID in the
+        // attributes. Every other lookup misses.
+        $jsmithSearches = 0;
+        $readFetch = function (string $method, string $url, array $headers, ?string $body) use (&$jsmithSearches): ?array {
+            if (str_contains($url, '/search')) {
+                if (str_contains((string) $body, 'jsmith') && ++$jsmithSearches > 1) {
+                    return ['status' => 200, 'body' => json_encode(['objects' => [[
+                        'properties' => ['sAMAccountName' => 'jsmith', 'objectGUID' => self::NEWGUID],
+                    ]]])];
+                }
+                return ['status' => 200, 'body' => json_encode(['objects' => []])];
+            }
+            return ['status' => 404, 'body' => 'not found'];
+        };
+        $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+
+        // Writer whose create succeeds with a bare body (no GUID to extract).
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls, createGuid: null));
+        $res = $rec->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['applied']);
+        self::assertSame(0, $res['create']['errors']);
+
+        // The GUID from the search's attributes was linked into the crosswalk.
+        $guid = $db->query("SELECT source_key FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn();
+        self::assertSame(self::NEWGUID, $guid);
+
+        // resetPassword still ran, targeting the re-resolved GUID.
+        $reset = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST' && str_contains((string) $c['url'], 'resetPassword')) {
+                $reset = $c;
+            }
+        }
+        self::assertNotNull($reset, 'expected a resetPassword call after the GUID search fallback');
+        $body = json_decode((string) $reset['body'], true);
+        self::assertSame(self::NEWGUID, $body['directoryObject']);
+
+        // And the password was recorded (encrypted) on the golden record.
+        $row = $db->query('SELECT initial_password_enc, initial_password_set_at FROM person WHERE person_id = 1')->fetch();
+        self::assertNotNull($row['initial_password_set_at']);
+        self::assertSame($body['password'], Crypto::decrypt((string) $row['initial_password_enc']));
+    }
+
     public function testCreateWithPasswordSetDisabledSkipsResetPassword(): void
     {
         putenv('ADAXES_SET_PASSWORD_ON_CREATE=false');

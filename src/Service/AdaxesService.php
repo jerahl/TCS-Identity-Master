@@ -500,12 +500,17 @@ final class AdaxesService
     }
 
     /**
-     * The identity values from a verify() envelope that may be adopted as the
-     * golden record: sAMAccountName→username, userPrincipalName→upn, mail→email,
-     * plus the objectGUID for the crosswalk link. Shaped exactly for
-     * PersonWriter::linkAdAccount(). Returns empty strings (and null guid) when
-     * the lookup found no account or the attribute is absent — the caller decides
-     * whether there is anything worth writing.
+     * The identity values from a verify() or search() envelope that may be
+     * adopted as the golden record: sAMAccountName→username,
+     * userPrincipalName→upn, mail→email, plus the objectGUID for the crosswalk
+     * link. Shaped exactly for PersonWriter::linkAdAccount(). Returns empty
+     * strings (and null guid) when the lookup found no account or the attribute
+     * is absent — the caller decides whether there is anything worth writing.
+     *
+     * Only verify() envelopes carry a top-level `guid`; search()/searchByCriteria()
+     * return attributes only, so the GUID is extracted from those when the
+     * envelope has none — otherwise a search-based caller (e.g. the create
+     * phase's GUID fallback) would always get null.
      *
      * @param Envelope $envelope
      * @return array{guid:?string, username:string, upn:string, email:string}
@@ -514,7 +519,7 @@ final class AdaxesService
     {
         $attrs = is_array($envelope['attributes'] ?? null) ? $envelope['attributes'] : [];
         return [
-            'guid'     => $envelope['guid'] ?? null,
+            'guid'     => $envelope['guid'] ?? self::extractGuid($attrs),
             'username' => trim((string) ($attrs['samaccountname'] ?? '')),
             'upn'      => trim((string) ($attrs['userprincipalname'] ?? '')),
             'email'    => trim((string) ($attrs['mail'] ?? '')),
