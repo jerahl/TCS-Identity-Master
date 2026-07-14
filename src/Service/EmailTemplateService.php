@@ -29,7 +29,7 @@ final class EmailTemplateService
         'rename_notice' => [
             'label'        => 'Rename — upcoming-change notice',
             'description'  => 'Sent when a rename is approved. Goes to the employee (old address), their principal, and IT.',
-            'placeholders' => ['name', 'old_name', 'old_username', 'new_username', 'old_email', 'new_email', 'cutover_date', 'alias_days'],
+            'placeholders' => ['name', 'old_name', 'old_username', 'new_username', 'old_email', 'new_email', 'cutover_date', 'days_remaining', 'alias_days'],
         ],
         'rename_done' => [
             'label'        => 'Rename — change complete',
@@ -39,7 +39,7 @@ final class EmailTemplateService
         'alias_reminder' => [
             'label'        => 'Alias — removal reminder',
             'description'  => 'Sent before the old email alias is removed. Goes to the principal and IT.',
-            'placeholders' => ['name', 'old_email', 'new_email', 'remove_date'],
+            'placeholders' => ['name', 'old_email', 'new_email', 'remove_date', 'days_remaining'],
         ],
         'alias_removed' => [
             'label'        => 'Alias — removed',
@@ -68,7 +68,7 @@ final class EmailTemplateService
                 'subject' => 'Upcoming username & email change for {name}',
                 'body' =>
                     "The employee name has been changed from {old_name} to {name}.\n\n"
-                    . "On {cutover_date}, the username and email address will change:\n"
+                    . "In {days_remaining} days, on {cutover_date}, the username and email address will change:\n"
                     . "  username:  {old_username}  ->  {new_username}\n"
                     . "  email:     {old_email}  ->  {new_email}\n\n"
                     . "Mail sent to the old address ({old_email}) will continue to be delivered for "
@@ -87,8 +87,8 @@ final class EmailTemplateService
             'alias_reminder' => [
                 'subject' => 'Reminder: email alias {old_email} will be removed on {remove_date}',
                 'body' =>
-                    "The forwarding alias {old_email} is scheduled for removal on {remove_date}. "
-                    . "After that, mail to the old address will bounce.\n",
+                    "The forwarding alias {old_email} is scheduled for removal in {days_remaining} days, "
+                    . "on {remove_date}. After that, mail to the old address will bounce.\n",
             ],
             'alias_removed' => [
                 'subject' => 'Email alias removed: {old_email}',

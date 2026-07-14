@@ -33,8 +33,23 @@ use App\Config;
  */
 final class GroupPolicy
 {
-    /** Everyone-group building-token naming exceptions (OU token → group token). */
-    private const SCHOOL_TOKEN_REMAP = ['RQES' => 'RQS', 'UPE' => 'UP'];
+    /**
+     * Everyone-group building-token naming exceptions (OU token → group token):
+     * the per-school Everyone group is "<token><suffix>", but some buildings name
+     * their group differently from their OU. Both spellings of the University
+     * Place / Rock Quarry tokens are mapped so it's correct whether school.ad_ou
+     * uses UP/RQS or UPE/RQES. STC (the Sprayberry campus tenants) share the
+     * Central Office group.
+     */
+    private const SCHOOL_TOKEN_REMAP = [
+        'UP'  => 'UPES',
+        'UPE' => 'UPES',
+        'OKD' => 'OAKD',
+        'RQS' => 'RQES',
+        'OKH' => 'OAKH',
+        'CES' => 'CPS',
+        'STC' => 'CO',
+    ];
 
     /** Substring title keywords that put a person on the M365 A1 (vs A3) license. */
     private const A1_TITLE_KEYWORDS = ['CNP', 'custodian', 'bus driver', 'aide', 'sub', 'intern'];

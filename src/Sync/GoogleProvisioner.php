@@ -124,7 +124,10 @@ final class GoogleProvisioner
             return self::result(false, 'No golden email on file — set the primary email before creating in Google.', 'create');
         }
         if ($dryRun) {
-            return self::result(true, "Would create Google account {$person['email']}.", 'create');
+            // Show the address the account WOULD get — under GOOGLE_DOMAIN, not the
+            // on-prem golden email (matches what createUser actually creates).
+            $wouldEmail = GoogleWorkspaceService::googleEmailFor($person) ?: (string) $person['email'];
+            return self::result(true, "Would create Google account {$wouldEmail}.", 'create');
         }
 
         $res = $this->google->createUser($person, $ou);

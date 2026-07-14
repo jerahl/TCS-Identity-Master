@@ -52,6 +52,7 @@ final class AdaxesReconcilerTest extends TestCase
             id INTEGER PRIMARY KEY, person_id INTEGER, system TEXT, source_key TEXT,
             is_active INTEGER DEFAULT 1, first_seen TEXT, last_seen TEXT)');
         $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, ad_ou TEXT)');
+        $db->exec('CREATE TABLE school_code_alias (alias_id INTEGER PRIMARY KEY, school_id INTEGER, system TEXT, code TEXT)');
         $db->exec('CREATE TABLE assignment (
             id INTEGER PRIMARY KEY, person_id INTEGER, school_id INTEGER, title TEXT,
             is_primary INTEGER DEFAULT 1)');
@@ -113,6 +114,21 @@ final class AdaxesReconcilerTest extends TestCase
         return new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $fetch, 'write-token', true);
     }
 
+    /**
+     * Flatten an Adaxes REST property list ({propertyName, propertyType, values})
+     * from a request body to name => first value.
+     *
+     * @return array<string,string>
+     */
+    private static function props(array $body): array
+    {
+        $out = [];
+        foreach ($body['properties'] as $p) {
+            $out[$p['propertyName']] = $p['values'][0] ?? null;
+        }
+        return $out;
+    }
+
     private function seedPerson(PDO $db, array $cols): void
     {
         $keys = array_keys($cols);
@@ -132,14 +148,15 @@ final class AdaxesReconcilerTest extends TestCase
 
     // ---- disable ------------------------------------------------------------
 
-    public function testDisablesLinkedLeaverWhoseAdIsStillEnabled(): void
+    public function testExpiresLinkedLeaverBySettingAccountExpiresAndDescription(): void
     {
         $db = $this->db();
         $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Jo', 'last_name' => 'Leaver']);
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountDisabled' => 'false']]);
+        // AD account has no expiration yet (accountExpires 0 = never) → expire it.
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountExpires' => '0']]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
 
         $res = $rec->run(dryRun: false, phases: ['disable']);
@@ -147,12 +164,80 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(1, $res['disable']['applied']);
         self::assertSame(0, $res['disable']['errors']);
         self::assertFalse($res['disable']['blocked']);
-        // The writer was asked to disable (a PATCH toggling accountDisabled).
+
+        // The write is a modify (PATCH) that sets accountExpires + description,
+        // NOT an accountDisabled toggle.
         self::assertNotEmpty($calls);
         self::assertSame('PATCH', $calls[0]['method']);
-        // A disable lifecycle event was recorded.
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
+        $today = gmdate('Y-m-d');
+        // accountExpires = midnight UTC of today, as an ISO-8601 timestamp.
+        self::assertSame($today . 'T00:00:00Z', $props['accountExpires']);
+        self::assertSame('Account expired set by TCS-IDM on ' . $today, $props['description']);
+        self::assertArrayNotHasKey('accountDisabled', $props); // no longer a disable toggle
+
+        // A disable lifecycle event was still recorded (the leaver lock-out).
         $ev = $db->query("SELECT event_type FROM lifecycle_event WHERE person_id = 1")->fetchColumn();
         self::assertSame('disable', $ev);
+    }
+
+    public function testExpiresOnEndDateWhenOneIsPresent(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'disabled', 'first_name' => 'End', 'last_name' => 'Dated',
+            'end_date' => '2026-06-30',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'enddated', 'accountExpires' => '0']]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(1, $res['disable']['applied']);
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
+        // accountExpires = midnight UTC of the END DATE (ISO-8601), not today.
+        self::assertSame('2026-06-30T00:00:00Z', $props['accountExpires']);
+        // description still records the run date (when IDM acted).
+        self::assertSame('Account expired set by TCS-IDM on ' . gmdate('Y-m-d'), $props['description']);
+    }
+
+    public function testNoOpWhenAlreadyExpiredOnTheEndDate(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'disabled', 'first_name' => 'Al', 'last_name' => 'Ready',
+            'end_date' => '2026-06-30',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // AD already expires on exactly the end date → nothing to change.
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'already', 'accountExpirationDate' => '2026-06-30']]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(0, $res['disable']['applied']);
+        self::assertSame(1, $res['disable']['noop']);
+        self::assertSame([], $calls);
+    }
+
+    public function testAlreadyExpiredAdAccountIsANoOp(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Al', 'last_name' => 'Ready']);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // A past accountExpirationDate → already expired, nothing to change.
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'already', 'accountExpirationDate' => '2020-01-01']]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(0, $res['disable']['applied']);
+        self::assertSame(1, $res['disable']['noop']);
+        self::assertSame([], $calls); // never hit the writer
     }
 
     public function testUnlinkedLeaverIsRoutedToReviewNotWritten(): void
@@ -172,20 +257,27 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame([], $calls); // never hit the writer
     }
 
-    public function testAlreadyDisabledAdAccountIsANoOp(): void
+    public function testDryRunExpireReportShowsCurrentVsProposed(): void
     {
         $db = $this->db();
-        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Al', 'last_name' => 'Ready']);
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Jo', 'last_name' => 'Leaver']);
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'already', 'accountDisabled' => 'true']]);
+        // Never-expiring account with an existing description → the report shows
+        // both current values next to what would be written.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName' => 'joleaver', 'accountExpires' => '0', 'description' => 'Teacher',
+        ]]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
-        $res = $rec->run(dryRun: false, phases: ['disable']);
+        $res = $rec->run(dryRun: true, phases: ['disable']);
 
-        self::assertSame(0, $res['disable']['applied']);
-        self::assertSame(1, $res['disable']['noop']);
-        self::assertSame([], $calls);
+        self::assertSame('would-expire', $res['disable']['items'][0]['outcome']);
+        $today = gmdate('Y-m-d');
+        $detail = $res['disable']['items'][0]['detail'];
+        self::assertStringContainsString('accountExpires: Never → ' . $today, $detail);
+        self::assertStringContainsString('description: Teacher → Account expired set by TCS-IDM on ' . $today, $detail);
+        self::assertSame([], $calls); // read-only preview
     }
 
     public function testDisableRatioValveBlocksMassDisable(): void
@@ -244,7 +336,7 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(1, $res['edit']['applied']);
         self::assertNotEmpty($calls);
         $body = json_decode((string) $calls[0]['body'], true);
-        $names = array_column($body['properties'], 'name');
+        $names = array_column($body['properties'], 'propertyName');
         self::assertContains('userPrincipalName', $names);
         self::assertNotContains('sAMAccountName', $names); // immutable
     }
@@ -311,8 +403,8 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertNotNull($move, 'expected a move call to the writer');
         self::assertSame('POST', $move['method']);
         $body = json_decode((string) $move['body'], true);
-        self::assertSame('OU=CO,OU=Faculty,' . self::BASE_DN, $body['newParent']);
-        self::assertSame(self::GUID1, $body['object']);
+        self::assertSame('OU=CO,OU=Faculty,' . self::BASE_DN, $body['targetContainer']);
+        self::assertSame(self::GUID1, $body['directoryObject']);
     }
 
     public function testEditDoesNotMoveWhenAlreadyInComputedOu(): void
@@ -380,10 +472,7 @@ final class AdaxesReconcilerTest extends TestCase
                 }
             }
             self::assertNotNull($patch, 'expected a modify PATCH');
-            $props = [];
-            foreach (json_decode((string) $patch['body'], true)['properties'] as $pr) {
-                $props[$pr['name']] = $pr['value'];
-            }
+            $props = self::props(json_decode((string) $patch['body'], true));
             self::assertSame('Teacher', $props['title']);
             self::assertSame('Teacher', $props['description']);          // description ← title
             self::assertSame('Central Office', $props['department']);
@@ -393,6 +482,73 @@ final class AdaxesReconcilerTest extends TestCase
         } finally {
             putenv('GOOGLE_DOMAIN');
         }
+    }
+
+    public function testDryRunEditReportShowsCurrentVsProposed(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Ed', 'last_name' => 'It',
+            'username' => 'edit', 'email' => 'edit@tusc.k12.al.us', 'upn' => 'edit@tusc.k12.al.us',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // AD holds a stale UPN and NO mail — the report must show the live "before"
+        // value (and "(unset)" when the account has none) next to the proposed one.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'edit',
+            'userPrincipalName' => 'stale@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: true, phases: ['edit']);
+
+        self::assertSame('would-edit', $res['edit']['items'][0]['outcome']);
+        $detail = $res['edit']['items'][0]['detail'];
+        self::assertStringContainsString('userPrincipalName: stale@tusc.k12.al.us → edit@tusc.k12.al.us', $detail);
+        self::assertStringContainsString('mail: (unset) → edit@tusc.k12.al.us', $detail);
+        self::assertSame([], $calls); // read-only preview
+    }
+
+    public function testDryRunMoveReportShowsCurrentContainerVsTarget(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Jo', 'last_name' => 'Smith',
+            'username' => 'jsmith', 'email' => 'jsmith@tusc.k12.al.us', 'upn' => 'jsmith@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Identity + department match; only the container is wrong.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'jsmith',
+            'userPrincipalName' => 'jsmith@tusc.k12.al.us',
+            'mail'              => 'jsmith@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'distinguishedName' => 'CN=Jo Smith,OU=OldBuilding,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: true, phases: ['edit']);
+
+        $move = null;
+        foreach ($res['edit']['items'] as $it) {
+            if ($it['outcome'] === 'would-move') {
+                $move = $it;
+                break;
+            }
+        }
+        self::assertNotNull($move, 'expected a would-move report line');
+        self::assertSame(
+            'move OU=OldBuilding,' . self::BASE_DN . ' → OU=CO,OU=Faculty,' . self::BASE_DN,
+            $move['detail'],
+        );
+        self::assertSame([], $calls); // read-only preview
     }
 
     // ---- create -------------------------------------------------------------
@@ -435,16 +591,12 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['path']);
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn']);
+        $props = self::props($body);
         self::assertSame('jsmith', $props['sAMAccountName']);
         self::assertSame('E100', $props['employeeID']);
-        // accountExpires = midnight UTC of the end date, as a FILETIME.
-        $expectFt = (string) ((strtotime('2027-05-31 00:00:00 UTC') + 11644473600) * 10000000);
-        self::assertSame($expectFt, $props['accountExpires']);
+        // accountExpires = midnight UTC of the end date, as an ISO-8601 timestamp.
+        self::assertSame('2027-05-31T00:00:00Z', $props['accountExpires']);
     }
 
     /**
@@ -474,7 +626,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create, "no create POST for {$type}");
         $body = json_decode((string) $create['body'], true);
-        self::assertSame($expectedPath, $body['path']);
+        self::assertSame($expectedPath, $body['createIn']);
     }
 
     /** @return array<string,array{0:string,1:string}> */
@@ -512,13 +664,9 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        // CN rides top-level as the object name (the RDN), not as a property.
-        self::assertSame('John Smith', $body['name']);
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
-        self::assertArrayNotHasKey('cn', $props);
+        $props = self::props($body);
+        // CN (the RDN) rides in the property list like any other attribute.
+        self::assertSame('John Smith', $props['cn']);
         self::assertSame('Teacher - Math', $props['title']);
         self::assertSame('Central Office', $props['department']); // building name
     }
@@ -555,7 +703,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('John Smith (jsmith)', $body['name']); // unique via the username
+        self::assertSame('John Smith (jsmith)', self::props($body)['cn']); // unique via the username
     }
 
     public function testBusDriverPlacedInTransOuWithDepartmentOverride(): void
@@ -580,11 +728,8 @@ final class AdaxesReconcilerTest extends TestCase
             }
         }
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path']); // no school OU
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['createIn']); // no school OU
+        $props = self::props($body);
         self::assertSame('Transportation', $props['department']); // override, not a building
     }
 
@@ -615,11 +760,8 @@ final class AdaxesReconcilerTest extends TestCase
             }
         }
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path'], "{$title} OU");
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['createIn'], "{$title} OU");
+        $props = self::props($body);
         self::assertSame('Transportation', $props['department'], "{$title} department");
     }
 
@@ -631,6 +773,8 @@ final class AdaxesReconcilerTest extends TestCase
             'bus driver'  => ['Bus Driver'],
             'bus monitor' => ['Bus Monitor'],
             'school bus aide' => ['School Bus Aide'],
+            'transportation coordinator' => ['Transportation Coordinator'],
+            'director of transportation' => ['Director of Transportation'],
         ];
     }
 
@@ -656,11 +800,8 @@ final class AdaxesReconcilerTest extends TestCase
             }
         }
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['path']); // stays at the building
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn']); // stays at the building
+        $props = self::props($body);
         self::assertSame('Central Office', $props['department']);
     }
 
@@ -686,7 +827,201 @@ final class AdaxesReconcilerTest extends TestCase
         }
         $body = json_decode((string) $create['body'], true);
         // The SRO rule trumps the contractor type leaf (no OU=PTC).
-        self::assertSame('OU=SRO,OU=BHS,OU=Faculty,DC=example,DC=org', $body['path']);
+        self::assertSame('OU=SRO,OU=BHS,OU=Faculty,DC=example,DC=org', $body['createIn']);
+    }
+
+    /**
+     * Substitutes are placed in the Subs OU under their building based on TITLE,
+     * even when the feed stamped them staff/faculty (person_type != 'sub'). The
+     * reported bug: they were landing at the root building OU instead.
+     */
+    #[DataProvider('substituteTitles')]
+    public function testSubstituteTitleGetsSubsLeafRegardlessOfType(string $type, string $title): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => $type, 'status' => 'pending',
+            'first_name' => 'Sub', 'last_name' => 'Teacher', 'primary_school_id' => 5,
+        ]);
+        $db->prepare("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, ?, 1)")->execute([$title]);
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $rec->run(dryRun: false, phases: ['create']);
+
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        self::assertNotNull($create, "no create POST for {$title}");
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=Subs,OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn'], "{$title} ({$type})");
+    }
+
+    /** @return array<string,array{0:string,1:string}> */
+    public static function substituteTitles(): array
+    {
+        return [
+            'staff substitute'         => ['staff', 'Substitute'],
+            'faculty long-term sub'    => ['faculty', 'Long-term Substitute'],
+            'staff substitute teacher' => ['staff', 'Substitute Teacher'],
+        ];
+    }
+
+    public function testSubstituteInWrongOuIsMovedToSubsLeaf(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Sub', 'last_name' => 'Teacher',
+            'username' => 'steacher', 'email' => 'steacher@tusc.k12.al.us', 'upn' => 'steacher@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Long-term Substitute', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Identity + department match; the account sits at the root building OU
+        // (the bug) and must move down into OU=Subs.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'steacher',
+            'userPrincipalName' => 'steacher@tusc.k12.al.us',
+            'mail'              => 'steacher@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'distinguishedName' => 'CN=Sub Teacher,OU=CO,OU=Faculty,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertContains('moved', array_column($res['edit']['items'], 'outcome'));
+        $move = null;
+        foreach ($calls as $c) {
+            if (str_contains($c['url'], '/move')) {
+                $move = $c;
+                break;
+            }
+        }
+        self::assertNotNull($move, 'expected a move to the Subs OU');
+        $body = json_decode((string) $move['body'], true);
+        self::assertSame('OU=Subs,OU=CO,OU=Faculty,' . self::BASE_DN, $body['targetContainer']);
+    }
+
+    public function testTransportationLocationCodeGetsTransOuRegardlessOfTitle(): void
+    {
+        $db = $this->db();
+        // School 42 is the transportation depot: its NextGen code is 8410.
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (42, 'Transportation Dept', 'OU=CO')");
+        $db->exec("INSERT INTO school_code_alias (school_id, system, code) VALUES (42, 'nextgen', '8410')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'staff', 'status' => 'pending',
+            'first_name' => 'Dee', 'last_name' => 'Spatcher', 'primary_school_id' => 42,
+        ]);
+        // A title with no transportation keyword at all — the LOCATION is what
+        // classifies them as transportation.
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 42, 'Dispatcher', 1)");
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['applied']);
+        $create = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST') {
+                $create = $c;
+            }
+        }
+        $body = json_decode((string) $create['body'], true);
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['createIn']); // trans OU, no building
+        $props = self::props($body);
+        self::assertSame('Transportation', $props['department']); // override, not the building name
+    }
+
+    public function testSharedBuildingWithTransportationAliasIsNotTransportation(): void
+    {
+        $db = $this->db();
+        // Central Office carries BOTH the transportation code (8410) and its own
+        // ordinary code (8620). It is NOT a dedicated transportation building, so a
+        // Bookkeeper there must stay at OU=CO — never moved to OU=trans.
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $db->exec("INSERT INTO school_code_alias (school_id, system, code) VALUES (5, 'nextgen', '8410'), (5, 'nextgen', '8620')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Tearra', 'last_name' => 'Adams',
+            'username' => 'tadams', 'email' => 'tadams@tusc.k12.al.us', 'upn' => 'tadams@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Bookkeeper', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // AD account already correctly at OU=CO with matching identity/dept.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'tadams',
+            'userPrincipalName' => 'tadams@tusc.k12.al.us',
+            'mail'              => 'tadams@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'title'             => 'Bookkeeper',
+            'description'       => 'Bookkeeper',
+            'distinguishedName' => 'CN=Tearra Adams,OU=CO,OU=Faculty,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        // No move to OU=trans (and no department flip to Transportation).
+        self::assertNotContains('moved', array_column($res['edit']['items'], 'outcome'));
+        foreach ($calls as $c) {
+            self::assertStringNotContainsString('/move', (string) $c['url']);
+        }
+    }
+
+    public function testTransportationTitleIsMovedToTransOu(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Tara', 'last_name' => 'Transit',
+            'username' => 'ttransit', 'email' => 'ttransit@tusc.k12.al.us', 'upn' => 'ttransit@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        // "Transportation" in the title (no "bus") — must still land in OU=trans.
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Transportation Coordinator', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Department already the transportation override; only the OU is wrong
+        // (account sits under the building instead of the transportation OU).
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'ttransit',
+            'userPrincipalName' => 'ttransit@tusc.k12.al.us',
+            'mail'              => 'ttransit@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Transportation',
+            'physicalDeliveryOfficeName' => 'Transportation',
+            'title'             => 'Transportation Coordinator',
+            'description'       => 'Transportation Coordinator',
+            'distinguishedName' => 'CN=Tara Transit,OU=CO,OU=Faculty,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertContains('moved', array_column($res['edit']['items'], 'outcome'));
+        $move = null;
+        foreach ($calls as $c) {
+            if (str_contains($c['url'], '/move')) {
+                $move = $c;
+                break;
+            }
+        }
+        self::assertNotNull($move, 'expected a move to the transportation OU');
+        $body = json_decode((string) $move['body'], true);
+        self::assertSame('OU=trans,OU=Faculty,' . self::BASE_DN, $body['targetContainer']); // no building OU
     }
 
     public function testEditPushesTitleAndDepartmentDrift(): void
@@ -716,10 +1051,7 @@ final class AdaxesReconcilerTest extends TestCase
 
         self::assertSame(1, $res['edit']['applied']);
         $body = json_decode((string) $calls[0]['body'], true);
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        $props = self::props($body);
         self::assertSame('Central Office', $props['department']);
         self::assertSame('Coordinator', $props['title']);
     }
@@ -744,7 +1076,7 @@ final class AdaxesReconcilerTest extends TestCase
                 }
             }
             $body = json_decode((string) $create['body'], true);
-            self::assertSame('OU=Vendors,OU=CO,OU=Faculty,DC=example,DC=org', $body['path']);
+            self::assertSame('OU=Vendors,OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn']);
         } finally {
             putenv('AD_OU_CONTRACTOR');
         }
@@ -803,8 +1135,237 @@ final class AdaxesReconcilerTest extends TestCase
         $res = $rec->run(dryRun: false, phases: ['create']);
 
         self::assertSame(0, $res['create']['applied']);
-        self::assertSame(1, $res['create']['review']);
+        self::assertSame(1, $res['create']['review']); // locked but no AD account found
         self::assertSame([], $calls); // never minted/created
+    }
+
+    /** A read fake whose /search returns one account with the given properties. */
+    private function readSearchHit(array $props): AdaxesService
+    {
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use ($props): ?array {
+            if (str_contains($url, '/search')) {
+                return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => $props]]])];
+            }
+            return ['status' => 404, 'body' => 'not found']; // no GUID crosswalk to GET
+        };
+        return new AdaxesService('https://adx.example.org/restv2', '', '', 5, $fetch, null, null, null, null, 'read-token');
+    }
+
+    public function testLockedPersonWithMatchingAdAccountIsAutoCorrelated(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Julia', 'last_name' => 'Horn',
+            'username' => 'jhorn', 'username_locked' => 1, 'email' => 'jhorn@tusc.k12.al.us',
+            'upn' => 'jhorn@tusc.k12.al.us', 'employee_id' => '15246', 'primary_school_id' => 5,
+        ]);
+        // No 'ad' crosswalk row → she lands in the create population.
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'        => self::NEWGUID,
+            'sAMAccountName'    => 'jhorn',                 // == her locked golden username
+            'mail'              => 'jhorn@tusc.k12.al.us',  // == her golden email
+            'userPrincipalName' => 'jhorn@tusc.k12.al.us',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['correlated']);
+        self::assertSame(0, $res['create']['review']);
+        self::assertSame(0, $res['create']['applied']); // linked, NOT recreated
+        self::assertSame([], $calls);                    // no WRITE to AD
+        // The objectGUID is now linked in the crosswalk, so next run she leaves create.
+        $guid = $db->query("SELECT source_key FROM person_source_id WHERE person_id = 1 AND system = 'ad' AND is_active = 1")->fetchColumn();
+        self::assertSame(self::NEWGUID, $guid);
+    }
+
+    public function testLockedPersonWithMismatchedAdAccountStaysInReview(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Julia', 'last_name' => 'Horn',
+            'username' => 'jhorn', 'username_locked' => 1, 'email' => 'jhorn@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        // The account found bears a DIFFERENT sAMAccountName → not an unambiguous
+        // match → stays in review, never linked.
+        $read = $this->readSearchHit([
+            'objectGUID'     => self::NEWGUID,
+            'sAMAccountName' => 'someoneelse',
+            'mail'           => 'someoneelse@tusc.k12.al.us',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(0, $res['create']['correlated']);
+        self::assertSame(1, $res['create']['review']);
+        self::assertFalse($db->query("SELECT 1 FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
+    }
+
+    /**
+     * A returning employee: a fresh (not-yet-minted) golden record whose OLD AD
+     * account still exists but is DISABLED. The create phase must NOT mint a second
+     * account — it correlates to the existing one (matched by employee number +
+     * surname), re-enables it, and resets the expiry to the new future end date.
+     */
+    public function testReturningEmployeeWithDisabledAdAccountIsReEnabledAndLinked(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'Wel', 'last_name' => 'Back',
+            'employee_id' => '55501', 'primary_school_id' => 5, 'end_date' => '2027-05-31',
+        ]);
+        // No username, no 'ad' crosswalk → she lands in the create population.
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'      => self::NEWGUID,
+            'sAMAccountName'  => 'wback',
+            'mail'            => 'wback@tusc.k12.al.us',
+            'employeeID'      => '55501',   // == her golden employee number
+            'sn'              => 'Back',     // == her golden surname
+            'accountDisabled' => 'true',     // the returning-employee signal
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['rehired']);
+        self::assertSame(0, $res['create']['correlated']);
+        self::assertSame(0, $res['create']['applied']);   // linked, NOT recreated
+        self::assertSame(0, $res['create']['review']);
+        self::assertSame(0, $res['create']['errors']);
+
+        // The old account is now linked, and she's activated (username adopted).
+        $guid = $db->query("SELECT source_key FROM person_source_id WHERE person_id = 1 AND system = 'ad' AND is_active = 1")->fetchColumn();
+        self::assertSame(self::NEWGUID, $guid);
+        $p = $db->query('SELECT username, status FROM person WHERE person_id = 1')->fetch();
+        self::assertSame('wback', $p['username']);
+        self::assertSame('active', $p['status']);
+
+        // No create POST; the writes are the re-enable (accountDisabled=false) plus
+        // the expiry reset to the new end date with a description stamp.
+        $bodies = array_map(static fn($c) => self::props(json_decode((string) $c['body'], true)), $calls);
+        self::assertStringNotContainsString('createIn', implode(' ', array_map(static fn($c) => (string) $c['body'], $calls)));
+        $disabledFlag = null;
+        $expires = null;
+        $desc = null;
+        foreach ($bodies as $b) {
+            if (array_key_exists('accountDisabled', $b)) {
+                $disabledFlag = $b['accountDisabled'];
+            }
+            if (array_key_exists('accountExpires', $b)) {
+                $expires = $b['accountExpires'];
+            }
+            if (array_key_exists('description', $b)) {
+                $desc = $b['description'];
+            }
+        }
+        self::assertSame('false', $disabledFlag);                 // re-enabled
+        self::assertSame('2027-05-31T00:00:00Z', $expires);       // reset to new end date
+        self::assertStringContainsString('returning employee', (string) $desc);
+    }
+
+    /**
+     * A returning employee whose old account was EXPIRED (not disabled) by the
+     * expire-leaver phase and who now has NO end date: re-enabling clears the
+     * expiration back to "never" (an empty accountExpires value list).
+     */
+    public function testReturningEmployeeExpiredAccountIsClearedToNever(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'Ray', 'last_name' => 'Turn',
+            'employee_id' => '55502', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'            => self::NEWGUID,
+            'sAMAccountName'        => 'rturn',
+            'employeeID'            => '55502',
+            'sn'                    => 'Turn',
+            'accountExpirationDate' => '2020-01-01',   // a past expiry → locked out
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['rehired']);
+        self::assertSame(0, $res['create']['errors']);
+
+        // No accountDisabled write (it wasn't disabled); a description stamp and a
+        // clear of accountExpires (empty values array = never expires).
+        $joined = implode(' | ', array_map(static fn($c) => (string) $c['body'], $calls));
+        self::assertStringNotContainsString('accountDisabled', $joined);
+        $cleared = false;
+        foreach ($calls as $c) {
+            $body = json_decode((string) $c['body'], true);
+            foreach (($body['properties'] ?? []) as $prop) {
+                if (($prop['propertyName'] ?? '') === 'accountExpires' && ($prop['values'] ?? null) === []) {
+                    $cleared = true;
+                }
+            }
+        }
+        self::assertTrue($cleared, 'expected an accountExpires clear (empty values)');
+    }
+
+    /**
+     * A disabled account that does NOT confidently match (guid present but neither
+     * the username nor the employee-number+surname agree) is never auto-re-enabled
+     * — it goes to review flagged as a possible returning employee, with no writes.
+     */
+    public function testReturningEmployeeAmbiguousDisabledAccountGoesToReview(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'May', 'last_name' => 'Be',
+            'employee_id' => '999', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'      => self::NEWGUID,
+            'sAMAccountName'  => 'someoneelse',
+            'employeeID'      => 'different',   // ≠ 999
+            'sn'              => 'Other',        // ≠ Be
+            'accountDisabled' => 'true',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(0, $res['create']['rehired']);
+        self::assertSame(1, $res['create']['review']);
+        self::assertSame([], $calls);   // nothing written — never re-enabled blindly
+        self::assertStringContainsString('returning employee', $res['create']['items'][0]['detail']);
+        self::assertFalse($db->query("SELECT 1 FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
+    }
+
+    /** Dry-run reports the rehire as would-rehire and writes nothing. */
+    public function testReturningEmployeeDryRunReportsWouldRehire(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'pending', 'first_name' => 'Wel', 'last_name' => 'Back',
+            'employee_id' => '55501', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $read = $this->readSearchHit([
+            'objectGUID'      => self::NEWGUID,
+            'sAMAccountName'  => 'wback',
+            'employeeID'      => '55501',
+            'sn'              => 'Back',
+            'accountDisabled' => 'true',
+        ]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: true, phases: ['create']);
+
+        self::assertSame(0, $res['create']['rehired']);
+        self::assertSame('would-rehire', $res['create']['items'][0]['outcome']);
+        self::assertSame([], $calls);
+        self::assertFalse($db->query("SELECT 1 FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn());
     }
 
     public function testCreateCapDefersOverflow(): void
@@ -910,6 +1471,56 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertStringNotContainsString('CN=All-Faculty', $joined);           // already a member, no re-add
     }
 
+    public function testGroupMembershipComparedByRealCnNotConfiguredName(): void
+    {
+        // The reported bug: the M365 A3 License group's real cn is "M365-A3"
+        // (the configured name matches its sAMAccountName, not its cn). The user
+        // is ALREADY a member. Comparing the configured name against the memberOf
+        // cn would re-add it every run; comparing the resolved real cn is a no-op.
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
+            'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 30, 'Teacher - Math', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $readFetch = function (string $method, string $url, array $headers, ?string $body): ?array {
+            if (str_contains($url, '/search')) {
+                // findGroup echoes a DN; the A3 license group's cn is "M365-A3"
+                // even though it's configured/searched as "M365 A3 License".
+                preg_match('/"value":"([^"]+)"/', (string) $body, $m);
+                $name = $m[1] ?? 'Unknown';
+                $cn = $name === 'M365 A3 License' ? 'M365-A3' : $name;
+                return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => [
+                    'distinguishedName' => 'CN=' . $cn . ',OU=Groups,DC=example,DC=org',
+                ]]]])];
+            }
+            // The account is already a member of every desired group — A3 under
+            // its REAL cn "M365-A3".
+            return ['status' => 200, 'body' => json_encode(['properties' => [
+                ['name' => 'memberOf', 'values' => [
+                    'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                    'CN=CO-Everyone,OU=Groups,DC=example,DC=org',
+                    'CN=M365-A3,OU=Groups,DC=example,DC=org',
+                    'CN=Raptor_EmergencyManagementUser,OU=Groups,DC=example,DC=org',
+                ]],
+            ]])];
+        };
+        $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['groups']);
+
+        // Nothing to do — already a member of everything (A3 matched by real cn).
+        self::assertSame(1, $res['groups']['noop']);
+        self::assertSame(0, $res['groups']['added']);
+        self::assertSame(0, $res['groups']['applied']);
+        self::assertSame([], $calls); // no group writes at all
+    }
+
     public function testGroupsPhaseHonorsPerPersonRaptorOverride(): void
     {
         $db = $this->db();
@@ -982,12 +1593,12 @@ final class AdaxesReconcilerTest extends TestCase
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'dryrun', 'accountDisabled' => 'false']]);
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'dryrun', 'accountExpires' => '0']]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
         $res = $rec->run(dryRun: true, phases: ['disable']);
 
         self::assertTrue($res['dry_run']);
-        self::assertSame('would-disable', $res['disable']['items'][0]['outcome']);
+        self::assertSame('would-expire', $res['disable']['items'][0]['outcome']);
         self::assertSame([], $calls); // read-only preview
         self::assertSame(0, (int) $db->query('SELECT COUNT(*) FROM lifecycle_event')->fetchColumn());
     }
@@ -999,7 +1610,7 @@ final class AdaxesReconcilerTest extends TestCase
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountDisabled' => 'false']]);
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'joleaver', 'accountExpires' => '0']]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
 
         $events = [];
@@ -1016,7 +1627,7 @@ final class AdaxesReconcilerTest extends TestCase
 
         $items = array_values(array_filter($events, static fn($e) => $e[0] === 'item'));
         self::assertCount(1, $items);
-        self::assertSame('would-disable', $items[0][1]['outcome']);
+        self::assertSame('would-expire', $items[0][1]['outcome']);
         self::assertSame(1, $items[0][1]['person_id']);
     }
 
@@ -1027,7 +1638,7 @@ final class AdaxesReconcilerTest extends TestCase
         $this->link($db, 1, self::GUID1);
 
         $calls = [];
-        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'off', 'accountDisabled' => 'false']]);
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'off', 'accountExpires' => '0']]);
         // Writer NOT enabled → configured() false.
         $writerFetch = function (string $m, string $u, array $h, ?string $b) use (&$calls): ?array {
             $calls[] = $u;
@@ -1040,7 +1651,7 @@ final class AdaxesReconcilerTest extends TestCase
 
         self::assertFalse($res['write_enabled']);
         self::assertSame([], $calls);
-        // The candidate was still identified, just not written (would-disable).
-        self::assertSame('would-disable', $res['disable']['items'][0]['outcome']);
+        // The candidate was still identified, just not written (would-expire).
+        self::assertSame('would-expire', $res['disable']['items'][0]['outcome']);
     }
 }

@@ -51,6 +51,9 @@ final class AdaxesService
         'accountExpires', 'accountExpirationDate',
         'department', 'title', 'whenChanged',
         'physicalDeliveryOfficeName', 'description', 'info',
+        // sn + employeeID let the reconciler cross-check a returning-employee match
+        // (employee number + surname) before re-enabling an existing account.
+        'sn', 'employeeID',
     ];
 
     /**
@@ -480,6 +483,20 @@ final class AdaxesService
     {
         $attrs = is_array($envelope['attributes'] ?? null) ? $envelope['attributes'] : [];
         return self::accountEnabled($attrs);
+    }
+
+    /**
+     * The live AD account expiration from a verify() envelope: 'Never', a 'Y-m-d'
+     * date, or null when AD returned no expiration attribute at all. Mirrors
+     * accountEnabledFromEnvelope so the reconciler can read the current expiry
+     * without reaching into the raw attribute shape.
+     *
+     * @param Envelope $envelope
+     */
+    public static function accountExpiryFromEnvelope(array $envelope): ?string
+    {
+        $attrs = is_array($envelope['attributes'] ?? null) ? $envelope['attributes'] : [];
+        return self::accountExpiry($attrs);
     }
 
     /**

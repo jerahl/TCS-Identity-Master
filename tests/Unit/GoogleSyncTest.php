@@ -249,6 +249,57 @@ final class GoogleSyncTest extends TestCase
         self::assertSame(0, $result['counts']['unlicensed']);
     }
 
+    public function testApplyPlanIsOrderedCreatesThenDisablesThenEdits(): void
+    {
+        // Three people whose natural (person_id) order is the OPPOSITE of the apply
+        // order, to prove the phase sort: id1 → push (edit), id2 → suspend
+        // (disable), id3 → create.
+        $db = new PDO('sqlite::memory:', null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        $db->exec('CREATE TABLE person (
+            person_id INTEGER PRIMARY KEY, person_uuid TEXT, username TEXT, first_name TEXT, last_name TEXT,
+            email TEXT, upn TEXT, employee_id TEXT, status TEXT, person_type TEXT, primary_school_id INTEGER)');
+        $db->exec('CREATE TABLE person_source_id (person_id INTEGER, system TEXT, source_key TEXT, is_active INTEGER)');
+        $db->exec("INSERT INTO person (person_id, person_uuid, username, first_name, last_name, email, status, person_type) VALUES
+                   (1, 'u1', 'jsmith', 'John', 'Smith', 'jsmith@x.org', 'active',   'faculty'),
+                   (2, 'u2', 'jdoe',   'Jane', 'Doe',   'jdoe@x.org',   'disabled', 'faculty'),
+                   (3, 'u3', 'acreate','Al',   'Create', 'acreate@x.org','active',  'faculty')");
+        // id1 + id2 have live Google accounts; id3 has none → create.
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES
+                   (1,'google','G-1',1), (2,'google','G-2',1)");
+
+        $runner = static function (array $argv): ?array {
+            $joined = implode(' ', $argv);
+            if (in_array('print', $argv, true)) { // searches + license listings → empty
+                return ['status' => 0, 'stdout' => "primaryEmail,JSON\n", 'stderr' => ''];
+            }
+            if (in_array('info', $argv, true) && in_array('user', $argv, true)) {
+                if (str_contains($joined, 'G-1')) { // active account, NAME drift → push
+                    return ['status' => 0, 'stderr' => '', 'stdout' => (string) json_encode(
+                        ['id' => 'G-1', 'primaryEmail' => 'jsmith@x.org', 'suspended' => false,
+                         'orgUnitPath' => '/', 'name' => ['givenName' => 'Jon', 'familyName' => 'Smith']])];
+                }
+                if (str_contains($joined, 'G-2')) { // active account, golden disabled → suspend
+                    return ['status' => 0, 'stderr' => '', 'stdout' => (string) json_encode(
+                        ['id' => 'G-2', 'primaryEmail' => 'jdoe@x.org', 'suspended' => false,
+                         'orgUnitPath' => '/', 'name' => ['givenName' => 'Jane', 'familyName' => 'Doe']])];
+                }
+                return ['status' => 60, 'stdout' => '', 'stderr' => 'ERROR: Does not exist']; // id3 → not found
+            }
+            return ['status' => 0, 'stdout' => '{}', 'stderr' => '']; // writes succeed
+        };
+        $gam = new GamClient(gamPath: 'gam', configDir: '', timeout: 5, runner: $runner);
+        $google = new GoogleWorkspaceService(enabled: true, fetch: fn() => self::fail('gam mode must not use HTTP'), gam: $gam);
+        $sync = new GoogleSync($db, new GoogleProvisioner($db, $google));
+
+        $result = $sync->run(dryRun: true, actor: 'tester');
+
+        $actions = array_column($result['actions'], 'action');
+        self::assertSame(['create', 'suspend', 'push'], $actions, 'apply plan must be ordered creates → disables → edits');
+    }
+
     public function testVerboseLogStreamsStartAndPerPersonScan(): void
     {
         $events = [];

@@ -7,6 +7,17 @@ declare(strict_types=1);
  * accounts from the golden record through the Adaxes REST API, bypassing OneSync
  * (see docs/adaxes-provisioning-design.md). IDM is the writer.
  *
+ * --dry-run doubles as the change report: it reads live AD and prints, per
+ * person, what is currently set vs. what the sync would change — edits, moves,
+ * and leaver expirations render as "current → proposed" (e.g.
+ * `userPrincipalName: stale@x → new@x`, `move OU=OldBuilding,… → OU=CO,…`,
+ * `accountExpires: Never → 2026-07-13`), and groups show the +add/-remove delta.
+ * Nothing is written.
+ *
+ * The "disable" phase expires leavers rather than flipping accountDisabled: it
+ * sets accountExpires to the person's end date when one is set (otherwise today)
+ * and stamps `description` with "Account expired set by TCS-IDM on {run date}".
+ *
  *   php bin/adaxes_sync.php --dry-run                 # preview everything, write nothing
  *   php bin/adaxes_sync.php --dry-run --phases=disable # preview one phase
  *   php bin/adaxes_sync.php --phases=disable,edit      # apply (requires ADAXES_WRITE_ENABLED=true)
@@ -146,7 +157,7 @@ foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
         }
     }
     $summary = [];
-    foreach (['candidates', 'applied', 'added', 'removed', 'edited', 'created', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
+    foreach (['candidates', 'applied', 'added', 'removed', 'edited', 'created', 'correlated', 'rehired', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
         if (isset($r[$k])) {
             $summary[] = "{$k} {$r[$k]}";
         }
@@ -158,10 +169,20 @@ echo "\nTotal errors: {$result['errors']}\n";
 
 // Close the run row with a compact per-phase counts summary.
 if ($runLog !== null) {
-    $counts = ['errors' => (int) $result['errors'], 'write_enabled' => !empty($result['write_enabled'])];
+    $counts = ['errors' => (int) $result['errors'], 'write_enabled' => !empty($result['write_enabled']), 'phases' => []];
     foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
         if (isset($result[$phase])) {
-            foreach (['applied', 'added', 'removed', 'created', 'errors'] as $k) {
+            // Structured per-phase counts (drop the per-person 'items' list) so the
+            // Services page can render a full summary; plus a few flat keys for
+            // quick reads / backward compatibility.
+            $phaseCounts = [];
+            foreach ($result[$phase] as $k => $v) {
+                if (is_int($v) || is_bool($v)) {
+                    $phaseCounts[$k] = is_bool($v) ? (int) $v : $v;
+                }
+            }
+            $counts['phases'][$phase] = $phaseCounts;
+            foreach (['applied', 'added', 'removed', 'created', 'correlated', 'rehired', 'errors'] as $k) {
                 if (isset($result[$phase][$k]) && $result[$phase][$k] > 0) {
                     $counts["{$phase}_{$k}"] = (int) $result[$phase][$k];
                 }

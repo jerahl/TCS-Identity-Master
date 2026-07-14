@@ -29,10 +29,13 @@ use PDO;
  *  1. Link before write — edit/disable only ever act on a person with a linked,
  *     well-formed objectGUID; a search hit without a stored GUID is a correlation
  *     task, routed to review, never a write.
- *  2. Create only when truly new — no linked GUID AND no AD search hit.
+ *  2. Create only when truly new — no linked GUID AND no live AD hit. A hit is
+ *     correlated (linked), never recreated; if that existing account is disabled or
+ *     expired (a returning employee) it is re-enabled as part of the correlate.
  *  3. Username immutability — a username_locked person is never re-minted; in the
- *     create phase a locked-but-unlinked person is routed to review (correlate
- *     their existing account) rather than minted a second identity.
+ *     create phase an unlinked person is auto-correlated to the existing AD account
+ *     when the match is unambiguous (locked username, or employee number + surname)
+ *     — else routed to review — never minted a second identity.
  *  4. Threshold valves — a ratio cap on disables and an absolute cap on creates,
  *     so a truncated feed can't trigger a mass change.
  *  5. Audit everything (audit_log + lifecycle_event), actor system:adaxes_sync.
@@ -63,8 +66,11 @@ final class AdaxesReconciler
     /** When non-empty, every phase is restricted to these person_ids (test cohort). */
     private array $restrictPersonIds = [];
 
-    /** Per-run cache: group cn (lowercased) → resolved DN/GUID, or '' if not found. */
-    private array $groupIdCache = [];
+    /** Per-run cache: configured group name (lowercased) → ['cn'=>real cn, 'id'=>DN/GUID|null]. */
+    private array $groupResolveCache = [];
+
+    /** Per-run cache: school_ids that are transportation locations (null = unresolved). */
+    private ?array $transportationSchoolIds = null;
 
     public function __construct(
         private readonly PDO $db,
@@ -147,12 +153,20 @@ final class AdaxesReconciler
         return $result;
     }
 
-    // ---- Phase 1: disable ---------------------------------------------------
+    // ---- Phase 1: disable (expire leavers) ----------------------------------
 
     /**
-     * Disable leavers: people whose golden status is 'disabled', who have a linked
-     * objectGUID, and whose live AD account is still enabled. A ratio valve blocks
-     * a mass-disable from a truncated feed.
+     * Expire leavers: people whose golden status is 'disabled', who have a linked
+     * objectGUID, and whose live AD account is not already expired as intended.
+     * Rather than flipping accountDisabled, IDM sets the account's expiration date
+     * to the person's end date when one is set (otherwise today) and stamps
+     * `description` with "Account expired set by TCS-IDM on {date}" (the run date,
+     * recording when IDM acted) so the reason is visible in AD. A ratio valve
+     * blocks a mass change from a truncated feed.
+     *
+     * No-op (no description churn) when the account is already expired on exactly
+     * the desired date, or — when there is no end date to honor — already expired
+     * on any past-or-today date.
      *
      * @return array{blocked:bool,candidates:int,applied:int,noop:int,skipped:int,errors:int,items:list<Item>}
      */
@@ -162,7 +176,8 @@ final class AdaxesReconciler
 
         $people = $this->fetchPeople("status = 'disabled'", $limit);
         $this->emit('phase', ['phase' => 'disable', 'total' => count($people)]);
-        $candidates = [];   // [personId => [person, guid, name]]
+        $today = gmdate('Y-m-d');
+        $candidates = [];   // [personId => [person, guid, name, expiry, description]]
 
         foreach ($people as $p) {
             $pid = (int) $p['person_id'];
@@ -188,18 +203,36 @@ final class AdaxesReconciler
                 continue;
             }
 
-            $enabled = AdaxesService::accountEnabledFromEnvelope($env);
-            if ($enabled === null) {
-                $out['skipped']++;
-                $this->item($out, $pid, $name, 'disable', 'skip', 'AD did not report account state — not acting');
-                continue;
+            // Desired expiry date: the person's position end date when set,
+            // otherwise today (normalized to Y-m-d so it compares against the
+            // account's decoded accountExpires).
+            $desiredDate = $today;
+            $endDate = trim((string) ($p['end_date'] ?? ''));
+            if ($endDate !== '') {
+                $ts = strtotime($endDate . ' 00:00:00 UTC');
+                if ($ts !== false) {
+                    $desiredDate = gmdate('Y-m-d', $ts);
+                }
             }
-            if ($enabled === false) {
+
+            // Already handled → no-op (no description churn): expired on exactly
+            // the desired date, or — with no end date to honor — already expired
+            // on any past-or-today date.
+            $expiry = AdaxesService::accountExpiryFromEnvelope($env);
+            $realExpiry = $expiry !== null && $expiry !== 'Never';
+            if ($realExpiry && ($expiry === $desiredDate || ($endDate === '' && $expiry <= $today))) {
                 $out['noop']++;
-                $this->item($out, $pid, $name, 'disable', 'noop', 'already disabled in AD');
+                $this->item($out, $pid, $name, 'disable', 'noop', 'AD account already expired (' . $expiry . ')');
                 continue;
             }
-            $candidates[$pid] = ['person' => $p, 'guid' => $guid, 'name' => $name];
+            $adAttrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
+            $candidates[$pid] = [
+                'guid'        => $guid,
+                'name'        => $name,
+                'expiry'      => $expiry,
+                'desiredDate' => $desiredDate,
+                'description' => trim((string) ($adAttrs['description'] ?? '')),
+            ];
         }
 
         $out['candidates'] = count($candidates);
@@ -207,32 +240,49 @@ final class AdaxesReconciler
             return $out;
         }
 
-        // Ratio valve: block a mass-disable relative to the linked population.
+        // Ratio valve: block a mass-expire relative to the linked population.
         $linkedTotal = $this->countLinkedAdAccounts();
         if ($linkedTotal >= $this->disableGuardMin && ($out['candidates'] / $linkedTotal) > $this->maxDisableRatio) {
             $out['blocked'] = true;
             foreach ($candidates as $pid => $c) {
                 $this->item($out, $pid, $c['name'], 'disable', 'blocked',
-                    sprintf('would disable %d of %d linked (> %.0f%%) — blocked; investigate the feed', $out['candidates'], $linkedTotal, $this->maxDisableRatio * 100));
+                    sprintf('would expire %d of %d linked (> %.0f%%) — blocked; investigate the feed', $out['candidates'], $linkedTotal, $this->maxDisableRatio * 100));
             }
             return $out;
         }
 
+        // The description records WHEN IDM acted (the run date), independent of the
+        // expiry date it sets (which may be a past/future end date).
+        $desc = 'Account expired set by TCS-IDM on ' . $today;
+
         foreach ($candidates as $pid => $c) {
+            $desiredDate = $c['desiredDate'];
+            $attrs = [
+                'accountExpires' => (string) self::accountExpiresIso($desiredDate),
+                'description'    => $desc,
+            ];
+            // Dry-run report: show what AD holds now vs. what would be written.
+            $currentForReport = [
+                'accountexpires' => ($c['expiry'] === null || $c['expiry'] === '') ? '' : (string) $c['expiry'],
+                'description'    => $c['description'],
+            ];
             if (!$apply) {
-                $this->item($out, $pid, $c['name'], 'disable', 'would-disable', 'AD account enabled; would disable');
+                $this->item($out, $pid, $c['name'], 'disable', 'would-expire',
+                    self::changeSummary(['accountExpires' => $desiredDate, 'description' => $desc], $currentForReport));
                 continue;
             }
-            $res = $this->writer->disable($c['guid']);
+            $res = $this->writer->modify($c['guid'], $attrs);
             if (!$res['ok']) {
                 $out['errors']++;
                 $this->item($out, $pid, $c['name'], 'disable', 'error', (string) $res['error']);
                 continue;
             }
-            $this->audit->log('person', $pid, 'update', ['ad_account' => 'enabled'], ['ad_account' => 'disabled'], self::ACTOR);
-            $this->audit->lifecycle($pid, 'disable', ['summary' => 'AD account disabled via Adaxes (objectGUID ' . $c['guid'] . ').'], self::ACTOR);
+            $this->audit->log('person', $pid, 'update',
+                ['accountExpires' => $c['expiry'] ?? 'unset'],
+                ['accountExpires' => $desiredDate, 'description' => $desc], self::ACTOR);
+            $this->audit->lifecycle($pid, 'disable', ['summary' => 'AD account expired via Adaxes as of ' . $desiredDate . ' (objectGUID ' . $c['guid'] . ').'], self::ACTOR);
             $out['applied']++;
-            $this->item($out, $pid, $c['name'], 'disable', 'disabled', 'AD account disabled');
+            $this->item($out, $pid, $c['name'], 'disable', 'expired', 'accountExpires set to ' . $desiredDate . '; description updated');
         }
 
         return $out;
@@ -289,7 +339,7 @@ final class AdaxesReconciler
             if ($attrs !== []) {
                 $acted = true;
                 if (!$apply) {
-                    $this->item($out, $pid, $name, 'edit', 'would-edit', 'push ' . self::attrsSummary($attrs));
+                    $this->item($out, $pid, $name, 'edit', 'would-edit', self::changeSummary($attrs, $adAttrs));
                 } else {
                     $res = $this->writer->modify($guid, $attrs);
                     if (!$res['ok']) {
@@ -307,7 +357,9 @@ final class AdaxesReconciler
             if ($moveTo !== null) {
                 $acted = true;
                 if (!$apply) {
-                    $this->item($out, $pid, $name, 'edit', 'would-move', 'move to ' . $moveTo);
+                    $currentContainer = self::parentDn(trim((string) ($adAttrs['distinguishedname'] ?? '')));
+                    $this->item($out, $pid, $name, 'edit', 'would-move',
+                        'move ' . ($currentContainer !== '' ? $currentContainer : '(unknown)') . ' → ' . $moveTo);
                 } else {
                     $res = $this->writer->move($guid, $moveTo);
                     if (!$res['ok']) {
@@ -343,7 +395,7 @@ final class AdaxesReconciler
      */
     private function runCreate(bool $apply, ?int $limit): array
     {
-        $out = ['applied' => 0, 'skipped' => 0, 'review' => 0, 'errors' => 0, 'capped' => 0, 'items' => []];
+        $out = ['applied' => 0, 'correlated' => 0, 'rehired' => 0, 'skipped' => 0, 'review' => 0, 'errors' => 0, 'capped' => 0, 'items' => []];
 
         // Only people with NO active 'ad' crosswalk row at all.
         $people = $this->fetchPeople(
@@ -356,14 +408,32 @@ final class AdaxesReconciler
         foreach ($people as $p) {
             $pid = (int) $p['person_id'];
             $name = self::displayName($p);
+            $sourceIds = $this->sourceIdsFor($pid);
 
-            // Immutability: a person who already carries a locked username but has
-            // no AD link is anomalous (an existing identity with no linked account).
-            // Never mint/create a second account for them — that is a correlation
-            // task. Route to review.
+            // Look the person up in live AD once. A hit means the account already
+            // exists — a returning employee whose old account was disabled/expired,
+            // a locked-but-unlinked identity, or a prior OneSync mint — so we
+            // CORRELATE (link, and re-enable when it was locked out), never create a
+            // duplicate. Only a clean miss is a true net-new hire. This is also the
+            // net-new confirmation (an unambiguous "nothing there") the create
+            // guardrail requires.
+            $env = $this->read->verify($p, $sourceIds);
+            if (!$env['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', (string) $env['error']);
+                continue;
+            }
+            if ($env['found']) {
+                $this->correlate($out, $pid, $name, $p, $apply, $env);
+                continue;
+            }
+
+            // No live account. Immutability: a person who already carries a locked
+            // username but has no AD link is an existing identity we could not find
+            // — never mint a second account; leave it for a human to correlate.
             if (!empty($p['username_locked'])) {
                 $out['review']++;
-                $this->item($out, $pid, $name, 'create', 'review', 'locked username but no AD link — correlate the existing account, do not create');
+                $this->item($out, $pid, $name, 'create', 'review', 'locked username but no matching AD account found — investigate/correlate manually');
                 continue;
             }
 
@@ -379,20 +449,6 @@ final class AdaxesReconciler
                 continue;
             }
             $ou = $placement;
-
-            // Confirm net-new: an AD search must return nothing. A hit means the
-            // account exists but isn't linked → correlation task, not a create.
-            $search = $this->read->search($p);
-            if (!$search['ok']) {
-                $out['errors']++;
-                $this->item($out, $pid, $name, 'create', 'error', (string) $search['error']);
-                continue;
-            }
-            if ($search['found']) {
-                $out['review']++;
-                $this->item($out, $pid, $name, 'create', 'review', 'AD account already exists but is unlinked — correlate, do not create');
-                continue;
-            }
 
             // Mint (or reuse a pre-assigned, locked username).
             try {
@@ -450,6 +506,176 @@ final class AdaxesReconciler
         return $out;
     }
 
+    /**
+     * Correlate a person to the existing AD account the create-phase lookup found:
+     * when the match is UNAMBIGUOUS, link the objectGUID into the crosswalk
+     * (adopting username/email/upn, activating a pending person) instead of routing
+     * to review every run — and, when that account is currently locked out
+     * (disabled, or expired in the past), RE-ENABLE it. That locked-out case is the
+     * returning employee: a fresh golden record whose old AD account still exists
+     * but was expired/disabled when they left. We reactivate the original account
+     * rather than minting a second one.
+     *
+     * "Unambiguous" = an objectGUID is present AND a strong identity agreement:
+     * either the person's locked golden username equals the account's
+     * sAMAccountName (with mail agreeing when both are set), OR — for a person not
+     * yet minted (the typical returning employee) — the employee number matches the
+     * account's employeeID and the surname agrees. Anything short of that still
+     * goes to review for a human; we never link the wrong account, and never create.
+     *
+     * @param array<string,mixed> $out phase accumulator (by ref)
+     * @param array<string,mixed> $p   person row
+     * @param array<string,mixed> $env the verify() envelope for this person (found)
+     */
+    private function correlate(array &$out, int $pid, string $name, array $p, bool $apply, array $env): void
+    {
+        $username    = trim((string) ($p['username'] ?? ''));
+        $goldenEmail = trim((string) ($p['email'] ?? ''));
+        $employeeId  = trim((string) ($p['employee_id'] ?? ''));
+        $lastName    = trim((string) ($p['last_name'] ?? ''));
+
+        $cand  = AdaxesService::goldenCandidate($env);
+        $attrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
+        $adEmployeeId = trim((string) ($attrs['employeeid'] ?? ''));
+        $adSurname    = trim((string) ($attrs['sn'] ?? ''));
+
+        // Two ways to be confident: the locked username matches (email agreeing), or
+        // — for a not-yet-minted returning employee — the employee number + surname.
+        $byUsername = $username !== '' && self::eqCi($cand['username'], $username)
+            && ($goldenEmail === '' || $cand['email'] === '' || self::eqCi($cand['email'], $goldenEmail));
+        $byEmployee = $employeeId !== '' && $adEmployeeId !== '' && self::eqCi($adEmployeeId, $employeeId)
+            && $lastName !== '' && $adSurname !== '' && self::eqCi($adSurname, $lastName);
+        $unambiguous = $cand['guid'] !== null && ($byUsername || $byEmployee);
+
+        // Is the existing account locked out — the returning-employee signal? Either
+        // accountDisabled is set, or accountExpires is a real past date. "Unknown"
+        // (neither attribute returned) is treated as not-locked-out (never assume).
+        $enabled = AdaxesService::accountEnabledFromEnvelope($env);
+        $expiry  = AdaxesService::accountExpiryFromEnvelope($env);
+        $today   = gmdate('Y-m-d');
+        $isDisabled = $enabled === false;
+        $isExpired  = $expiry !== null && $expiry !== 'Never' && $expiry < $today;
+        $lockedOut  = $isDisabled || $isExpired;
+
+        if (!$unambiguous) {
+            $out['review']++;
+            if ($cand['guid'] === null) {
+                $detail = 'AD account found but no objectGUID returned — correlate manually';
+            } elseif ($lockedOut) {
+                $detail = sprintf(
+                    'returning employee? existing AD account (%s) is %s but does not confidently match golden (username %s / employee id %s) — correlate & re-enable manually',
+                    $cand['username'] ?: '—', $isDisabled ? 'disabled' : 'expired', $username ?: '—', $employeeId ?: '—'
+                );
+            } else {
+                $detail = sprintf('AD account (%s / %s) does not confidently match golden (%s / %s) — correlate, do not create',
+                    $cand['username'] ?: '—', $cand['email'] ?: '—', $username ?: '—', $goldenEmail ?: '—');
+            }
+            $this->item($out, $pid, $name, 'create', 'review', $detail);
+            return;
+        }
+
+        if (!$apply) {
+            if ($lockedOut) {
+                $this->item($out, $pid, $name, 'create', 'would-rehire',
+                    'returning employee — re-enable (' . ($isDisabled ? 'disabled' : 'expired') . ') and link existing AD account ' . $cand['guid']);
+            } else {
+                $this->item($out, $pid, $name, 'create', 'would-correlate', 'link existing AD account ' . $cand['guid']);
+            }
+            return;
+        }
+
+        // Adopt the identity + link the GUID (activates a pending person).
+        $this->people->linkAdAccount($pid, [
+            'guid'     => $cand['guid'],
+            'username' => $cand['username'],
+            'email'    => $goldenEmail !== '' ? $goldenEmail : $cand['email'],
+            'upn'      => trim((string) ($p['upn'] ?? '')) !== '' ? (string) $p['upn'] : $cand['upn'],
+        ], self::ACTOR);
+
+        if (!$lockedOut) {
+            $this->audit->lifecycle($pid, 'update',
+                ['summary' => 'Correlated to existing AD account (objectGUID ' . $cand['guid'] . ') — linked, not recreated.'], self::ACTOR);
+            $out['correlated']++;
+            $this->item($out, $pid, $name, 'create', 'correlated', 'linked existing AD account ' . $cand['guid']);
+            return;
+        }
+
+        // Returning employee: re-enable so the reactivated account isn't locked out.
+        $this->rehire($out, $pid, $name, $p, $cand['guid'], $isDisabled, $isExpired, $expiry, $today);
+    }
+
+    /**
+     * Reactivate a returning employee's existing (linked) AD account: clear the
+     * disabled flag, reset the expiration (to a future end date when one is set,
+     * else clear it back to "never"), and stamp the description. Called only after
+     * a confident correlate has already linked the objectGUID.
+     *
+     * Clearing accountDisabled and setting a future accountExpires are strict — a
+     * failure surfaces as a per-person error. Clearing the expiration to "never" is
+     * best-effort (the Timestamp-clear shape is Adaxes-version-specific) so it can
+     * never turn a successful reactivation into a reported failure.
+     *
+     * @param array<string,mixed> $out phase accumulator (by ref)
+     * @param array<string,mixed> $p   person row
+     */
+    private function rehire(array &$out, int $pid, string $name, array $p, string $guid, bool $isDisabled, bool $isExpired, ?string $expiry, string $today): void
+    {
+        $stamp = 'Account re-enabled by TCS-IDM on ' . $today . ' (returning employee)';
+        $notes = [];
+
+        if ($isDisabled) {
+            $res = $this->writer->enable($guid);
+            if (!$res['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', 'linked ' . $guid . ' but re-enable failed — enable: ' . (string) $res['error']);
+                return;
+            }
+            $notes[] = 'cleared accountDisabled';
+        }
+
+        // Reset the expiry so a prior expire-leaver date doesn't immediately re-lock
+        // the reactivated account: to the future end date when one is set, otherwise
+        // clear it to "never".
+        $endDate   = trim((string) ($p['end_date'] ?? ''));
+        $futureIso = ($endDate !== '' && $endDate >= $today) ? self::accountExpiresIso($endDate) : null;
+
+        if ($futureIso !== null) {
+            $res = $this->writer->modify($guid, ['accountExpires' => $futureIso, 'description' => $stamp]);
+            if (!$res['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', 'linked ' . $guid . ' but re-enable failed — modify: ' . (string) $res['error']);
+                return;
+            }
+            $notes[] = 'accountExpires set to ' . $endDate;
+        } else {
+            $res = $this->writer->modify($guid, ['description' => $stamp]);
+            if (!$res['ok']) {
+                $out['errors']++;
+                $this->item($out, $pid, $name, 'create', 'error', 'linked ' . $guid . ' but re-enable failed — modify: ' . (string) $res['error']);
+                return;
+            }
+            if ($isExpired) {
+                // Best-effort clear-to-never (never fails the reactivation).
+                $clr = $this->writer->clearExpiration($guid);
+                $notes[] = $clr['ok'] ? 'accountExpires cleared (never)' : 'accountExpires clear skipped (' . (string) $clr['error'] . ')';
+            }
+        }
+
+        $this->audit->log('person', $pid, 'update',
+            ['accountDisabled' => $isDisabled ? 'true' : 'false', 'accountExpires' => $expiry ?? 'unset'],
+            ['reenabled' => true], self::ACTOR);
+        $this->audit->lifecycle($pid, 'create',
+            ['summary' => "Re-enabled returning employee's existing AD account (objectGUID " . $guid . ') — ' . implode('; ', $notes) . '; linked, not recreated.'], self::ACTOR);
+        $out['rehired']++;
+        $this->item($out, $pid, $name, 'create', 'rehired', 're-enabled & linked existing AD account ' . $guid . ' — ' . implode('; ', $notes));
+    }
+
+    /** Case-insensitive equality of two trimmed strings. */
+    private static function eqCi(string $a, string $b): bool
+    {
+        return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+    }
+
     // ---- Phase 4: groups ----------------------------------------------------
 
     /**
@@ -487,7 +713,7 @@ final class AdaxesReconciler
                 (string) ($p['title'] ?? ''),
                 (string) ($p['person_type'] ?? ''),
                 $this->schoolToken($p),
-                self::isTransportation($p),
+                $this->isTransportation($p),
                 (string) ($p['raptor_group_override'] ?? ''),
             );
 
@@ -511,16 +737,24 @@ final class AdaxesReconciler
                     $liveByCn[strtolower($cn)] = ['cn' => $cn, 'dn' => $dn];
                 }
             }
-            $desiredByCn = [];
-            foreach ($desired as $cn) {
-                $desiredByCn[strtolower($cn)] = $cn;
+            // Resolve each desired group to its REAL cn (as AD stores it) so the
+            // comparison matches what memberOf reports even when the configured
+            // name is the group's sAMAccountName/display. Keep the resolved id for
+            // the add so we don't look it up twice.
+            $desiredByCn = [];   // lc real cn → configured name
+            $desiredId   = [];   // lc real cn → resolved DN/GUID (or null)
+            foreach ($desired as $name) {
+                $g = $this->resolveGroup($name);
+                $lc = strtolower($g['cn']);
+                $desiredByCn[$lc] = $name;
+                $desiredId[$lc]   = $g['id'];
             }
 
             // Add: desired groups the account isn't in yet.
-            $toAdd = [];
-            foreach ($desiredByCn as $lc => $cn) {
+            $toAdd = [];   // lc real cn → configured name
+            foreach ($desiredByCn as $lc => $name) {
                 if (!isset($liveByCn[$lc])) {
-                    $toAdd[] = $cn;
+                    $toAdd[$lc] = $name;
                 }
             }
             // Remove: managed groups the account is in but no longer qualifies for.
@@ -536,7 +770,7 @@ final class AdaxesReconciler
                 continue;
             }
 
-            $summary = trim(($toAdd !== [] ? '+' . implode(',+', $toAdd) : '') . ' ' . ($toRemove !== [] ? '-' . implode(',-', array_column($toRemove, 'cn')) : ''));
+            $summary = trim(($toAdd !== [] ? '+' . implode(',+', array_values($toAdd)) : '') . ' ' . ($toRemove !== [] ? '-' . implode(',-', array_column($toRemove, 'cn')) : ''));
 
             if (!$apply) {
                 $this->item($out, $pid, $name, 'groups', 'would-sync', $summary);
@@ -545,11 +779,11 @@ final class AdaxesReconciler
 
             $changed = 0;
             $errs = [];
-            foreach ($toAdd as $cn) {
-                // The API needs the group's DN/GUID, not its name — resolve it.
-                $groupId = $this->resolveGroupId($cn);
+            foreach ($toAdd as $lc => $name) {
+                // The group's DN/GUID was resolved during the comparison above.
+                $groupId = $desiredId[$lc] ?? null;
                 if ($groupId === null) {
-                    $errs[] = "add {$cn}: group not found in AD (cannot resolve to a DN)";
+                    $errs[] = "add {$name}: group not found in AD (cannot resolve to a DN)";
                     continue;
                 }
                 $r = $this->writer->addToGroup($groupId, $guid);
@@ -557,7 +791,7 @@ final class AdaxesReconciler
                     $out['added']++;
                     $changed++;
                 } else {
-                    $errs[] = "add {$cn}: " . $r['error'];
+                    $errs[] = "add {$name}: " . $r['error'];
                 }
             }
             foreach ($toRemove as $g) {
@@ -575,7 +809,7 @@ final class AdaxesReconciler
                 $this->item($out, $pid, $name, 'groups', 'error', implode('; ', $errs));
                 continue;
             }
-            $this->audit->log('person', $pid, 'update', ['ad_groups' => 'drift'], ['added' => $toAdd, 'removed' => array_column($toRemove, 'cn')], self::ACTOR);
+            $this->audit->log('person', $pid, 'update', ['ad_groups' => 'drift'], ['added' => array_values($toAdd), 'removed' => array_column($toRemove, 'cn')], self::ACTOR);
             $this->audit->lifecycle($pid, 'update', ['summary' => 'AD group membership synced via Adaxes: ' . $summary . '.'], self::ACTOR);
             $out['applied']++;
             $this->item($out, $pid, $name, 'groups', 'synced', $summary);
@@ -585,21 +819,36 @@ final class AdaxesReconciler
     }
 
     /**
-     * Resolve a group name to the directory identifier the group-member API needs
-     * (its DN, else objectGUID), cached for the run. Null when the group can't be
-     * found in AD (so the add is reported as an error rather than a 400).
+     * Resolve a configured group name to its LIVE AD identity: the real cn (as AD
+     * stores it, taken from the object's DN) and the identifier the group-member
+     * API needs (DN, else objectGUID). Cached per run.
+     *
+     * Comparing membership by this real cn — not the configured name — is what
+     * makes the groups phase idempotent: a group whose configured name is its
+     * sAMAccountName or display name rather than its cn would otherwise be added
+     * successfully yet never match on the next `memberOf` read (whose DNs carry
+     * the cn), so IDM would re-add it to every user on every run. Falls back to
+     * the given name with a null id when the group can't be found (the add then
+     * reports a clear "not found" instead of looping).
+     *
+     * @return array{cn:string, id:?string}
      */
-    private function resolveGroupId(string $cn): ?string
+    private function resolveGroup(string $name): array
     {
-        $key = strtolower(trim($cn));
-        if (array_key_exists($key, $this->groupIdCache)) {
-            $id = $this->groupIdCache[$key];
-            return $id === '' ? null : $id;
+        $key = strtolower(trim($name));
+        if (array_key_exists($key, $this->groupResolveCache)) {
+            return $this->groupResolveCache[$key];
         }
-        $res = $this->read->findGroup($cn);
-        $id = ($res['ok'] && $res['found']) ? (string) $res['id'] : '';
-        $this->groupIdCache[$key] = $id;
-        return $id === '' ? null : $id;
+        $res = $this->read->findGroup($name);
+        if (($res['ok'] ?? false) && ($res['found'] ?? false)) {
+            $dn  = trim((string) ($res['dn'] ?? ''));
+            $cn  = $dn !== '' ? self::cnOf($dn) : '';
+            $id  = trim((string) ($res['id'] ?? ''));
+            $out = ['cn' => $cn !== '' ? $cn : $name, 'id' => $id !== '' ? $id : null];
+        } else {
+            $out = ['cn' => $name, 'id' => null];
+        }
+        return $this->groupResolveCache[$key] = $out;
     }
 
     // ---- helpers ------------------------------------------------------------
@@ -729,7 +978,7 @@ final class AdaxesReconciler
         // Account expiration = the position end date, when one is set. AD's
         // accountExpires is a Windows FILETIME; midnight UTC of the end date reads
         // back as that date in the verify panel (compareToGolden), so the two agree.
-        $expires = self::accountExpiresFileTime((string) ($p['end_date'] ?? ''));
+        $expires = self::accountExpiresIso((string) ($p['end_date'] ?? ''));
         if ($expires !== null) {
             $attrs['accountExpires'] = $expires;
         }
@@ -751,7 +1000,7 @@ final class AdaxesReconciler
      */
     private function desiredDepartment(array $p): string
     {
-        if (self::isTransportation($p)) {
+        if ($this->isTransportation($p)) {
             return trim((string) (Config::get('AD_DEPT_TRANSPORTATION', '') ?: Config::get('AD_DEPT_BUS_DRIVER', 'Transportation')));
         }
         return $this->schoolRow($p)['name'];
@@ -875,12 +1124,14 @@ final class AdaxesReconciler
      *
      * All provisioned accounts nest under a shared parent OU (AD_PARENT_OU,
      * "OU=Faculty" at TCS). Contractors/subs/interns get a type-specific leaf OU
-     * as the innermost segment (faculty/staff none); two title-driven rules trump
+     * as the innermost segment (faculty/staff none); three title-driven rules trump
      * the type leaf: transportation staff (bus drivers, bus aides, …) live in a
-     * transportation OU with NO building segment, and SROs get an SRO leaf above
-     * their building. e.g. a contractor at Central Office → OU=PTC,OU=CO,OU=Faculty,
-     * <base>; a bus aide → OU=trans,OU=Faculty,<base>; an SRO at BHS →
-     * OU=SRO,OU=BHS,OU=Faculty,<base>.
+     * transportation OU with NO building segment, SROs get an SRO leaf above their
+     * building, and substitutes (by title, whatever their person_type) get the Subs
+     * leaf above their building. e.g. a contractor at Central Office →
+     * OU=PTC,OU=CO,OU=Faculty,<base>; a bus aide → OU=trans,OU=Faculty,<base>; an
+     * SRO at BHS → OU=SRO,OU=BHS,OU=Faculty,<base>; a substitute at CO →
+     * OU=Subs,OU=CO,OU=Faculty,<base>.
      *
      * @param array<string,mixed> $p
      */
@@ -888,7 +1139,7 @@ final class AdaxesReconciler
     {
         $tail = array_values(array_filter([$this->parentOu, $this->baseDn], static fn($s) => $s !== ''));
 
-        if (self::isTransportation($p)) {
+        if ($this->isTransportation($p)) {
             $transOu = trim((string) (Config::get('AD_OU_TRANSPORTATION', '') ?: Config::get('AD_OU_BUS_DRIVER', 'OU=trans')), ' ,');
             return implode(',', array_merge([$transOu], $tail));
         }
@@ -904,7 +1155,13 @@ final class AdaxesReconciler
         }
 
         $parts = [];
-        $leaf = $this->typeLeafOu((string) ($p['person_type'] ?? ''));
+        // Substitutes are identified by TITLE ("Substitute", "Long-term
+        // Substitute"), not just person_type: many arrive through the NextGen /
+        // PowerSchool feed as staff/faculty and would otherwise land at the root
+        // building OU. Title trumps the type leaf so they get the Subs OU.
+        $leaf = self::isSubstitute($p)
+            ? $this->typeLeafOu('sub')
+            : $this->typeLeafOu((string) ($p['person_type'] ?? ''));
         if ($leaf !== '') {
             $parts[] = $leaf;
         }
@@ -968,16 +1225,22 @@ final class AdaxesReconciler
     }
 
     /**
-     * Transportation title rule (see placement/desiredDepartment): everyone whose
-     * job is transportation — Bus Driver, Bus Aide, Bus Monitor, Bus Assistant, …
-     * "bus" is matched as a WHOLE WORD so it covers all of those without false-
-     * matching "Business". Extra, non-"bus" transportation titles (e.g. a mechanic
-     * or dispatcher) can be added via AD_TRANSPORTATION_TITLES.
+     * Transportation rule (see placement/desiredDepartment). True when either:
+     *  - the TITLE is transportation — Bus Driver/Aide/Monitor/Assistant, … or any
+     *    title that names "Transportation" (Transportation Coordinator, Director of
+     *    Transportation, …). "bus" is matched as a WHOLE WORD so it covers all of
+     *    those without false-matching "Business"; "transportation" is a plain
+     *    substring (distinctive enough not to false-match). Extra titles (e.g. a
+     *    mechanic or dispatcher) can be added via AD_TRANSPORTATION_TITLES; or
+     *  - the person's primary BUILDING is a transportation location, i.e. its
+     *    NextGen code is in AD_TRANSPORTATION_SCHOOL_CODES (default 8410) — so
+     *    everyone housed at the transportation depot lands in the trans OU no
+     *    matter what their individual title says.
      */
-    private static function isTransportation(array $p): bool
+    private function isTransportation(array $p): bool
     {
         $title = (string) ($p['title'] ?? '');
-        if (preg_match('/\bbus\b/i', $title)) {
+        if (preg_match('/\bbus\b/i', $title) || stripos($title, 'transportation') !== false) {
             return true;
         }
         foreach (self::extraTransportationKeywords() as $kw) {
@@ -985,7 +1248,58 @@ final class AdaxesReconciler
                 return true;
             }
         }
+        $schoolId = $p['primary_school_id'] ?? null;
+        if ($schoolId !== null && $schoolId !== '' && isset($this->transportationSchoolIds()[(int) $schoolId])) {
+            return true;
+        }
         return false;
+    }
+
+    /**
+     * The set of school_ids that are DEDICATED transportation buildings — a school
+     * whose NextGen code is in AD_TRANSPORTATION_SCHOOL_CODES (default "8410", the
+     * TCS transportation depot) AND which carries no OTHER NextGen code.
+     *
+     * The "no other code" guard is essential: at TCS the 8410 code is often just an
+     * alias on the Central Office row (which also owns 8620 and more), so every
+     * building resolves 8410 → Central Office's school_id. Matching on the code
+     * alone would then flag every Central Office employee (a Bookkeeper, etc.) as
+     * transportation. Requiring the building to be transportation-ONLY means a
+     * shared building like Central Office is never treated as transportation;
+     * only a building split off with 8410 as its sole NextGen code qualifies (see
+     * bin/split_transportation_building.php). Resolved once per run and cached.
+     *
+     * @return array<int,true>
+     */
+    private function transportationSchoolIds(): array
+    {
+        if ($this->transportationSchoolIds !== null) {
+            return $this->transportationSchoolIds;
+        }
+        $codes = array_values(array_filter(
+            array_map('trim', explode(',', (string) Config::get('AD_TRANSPORTATION_SCHOOL_CODES', '8410'))),
+            static fn($s) => $s !== '',
+        ));
+        if ($codes === []) {
+            return $this->transportationSchoolIds = [];
+        }
+        $ph = implode(',', array_fill(0, count($codes), '?'));
+        // Schools that HAVE a transportation code but do NOT also have a NextGen
+        // code outside the transportation set (i.e. not a shared building).
+        $stmt = $this->db->prepare(
+            "SELECT DISTINCT school_id FROM school_code_alias
+              WHERE system = 'nextgen' AND code IN ({$ph})
+                AND school_id NOT IN (
+                    SELECT school_id FROM school_code_alias
+                     WHERE system = 'nextgen' AND code NOT IN ({$ph})
+                )"
+        );
+        $stmt->execute(array_merge($codes, $codes));
+        $ids = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $ids[(int) $r['school_id']] = true;
+        }
+        return $this->transportationSchoolIds = $ids;
     }
 
     /** Extra transportation title keywords (substring, case-insensitive). @return list<string> */
@@ -1001,6 +1315,18 @@ final class AdaxesReconciler
     private static function isSro(array $p): bool
     {
         return (bool) preg_match('/\bSRO\b|school\s+resource\s+officer/i', (string) ($p['title'] ?? ''));
+    }
+
+    /**
+     * Substitute title rule (see placement): "Substitute", "Long-term
+     * Substitute", "Substitute Teacher", … — anyone whose job title says
+     * substitute belongs in the Subs OU under their building, regardless of the
+     * person_type the feed stamped them with. Matched as a whole word so it never
+     * false-matches an unrelated title.
+     */
+    private static function isSubstitute(array $p): bool
+    {
+        return (bool) preg_match('/\bsubstitutes?\b/i', (string) ($p['title'] ?? ''));
     }
 
     /**
@@ -1056,11 +1382,13 @@ final class AdaxesReconciler
     ];
 
     /**
-     * The Windows FILETIME (100-ns ticks since 1601-01-01 UTC) for midnight UTC of
-     * a Y-m-d date, as a string — the inverse of AdaxesService's accountExpires
-     * decode. Returns null for an empty/unparseable date (leave AD's expiry alone).
+     * The accountExpires value to WRITE for a Y-m-d date: midnight UTC of that
+     * date as an ISO-8601 timestamp (e.g. "2027-05-31T00:00:00Z"), which is the
+     * format the Adaxes REST API expects for a Timestamp property. Returns null
+     * for an empty/unparseable date (leave AD's expiry alone). (The read side
+     * decodes AD's native FILETIME back to a date — see AdaxesService.)
      */
-    private static function accountExpiresFileTime(string $endDate): ?string
+    private static function accountExpiresIso(string $endDate): ?string
     {
         $endDate = trim($endDate);
         if ($endDate === '') {
@@ -1070,7 +1398,7 @@ final class AdaxesReconciler
         if ($ts === false) {
             return null;
         }
-        return (string) (($ts + 11644473600) * 10000000);
+        return gmdate('Y-m-d\T00:00:00\Z', $ts);
     }
 
     /**
@@ -1176,6 +1504,28 @@ final class AdaxesReconciler
         $parts = [];
         foreach ($attrs as $k => $v) {
             $parts[] = $k . '=' . $v;
+        }
+        return implode(', ', $parts);
+    }
+
+    /**
+     * A "current → proposed" change summary for the dry-run report: for each
+     * attribute the edit would push, show what live AD holds now (or "(unset)"
+     * when the account has no value) alongside the value IDM would write. This is
+     * what makes --dry-run a genuine what's-set-now vs. what-would-change report
+     * rather than a list of intended new values. $adAttrs is the normalized
+     * (lowercase-keyed) live-AD attribute map, so the "before" side is the
+     * account's real current value.
+     *
+     * @param array<string,string> $attrs   proposed attr => new value
+     * @param array<string,string> $adAttrs normalized live-AD attributes
+     */
+    private static function changeSummary(array $attrs, array $adAttrs): string
+    {
+        $parts = [];
+        foreach ($attrs as $attr => $new) {
+            $current = trim((string) ($adAttrs[strtolower($attr)] ?? ''));
+            $parts[] = $attr . ': ' . ($current === '' ? '(unset)' : $current) . ' → ' . $new;
         }
         return implode(', ', $parts);
     }

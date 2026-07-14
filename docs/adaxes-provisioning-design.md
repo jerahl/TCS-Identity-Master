@@ -136,23 +136,32 @@ mailbox — handled by the same AD-search check.
 Each phase is independently shippable and leaves the system in a consistent state.
 Writes are **off by default** behind `ADAXES_WRITE_ENABLED=false`.
 
-### Phase 1 — Disable (lowest risk, highest immediate value)
+### Phase 1 — Expire leavers (lowest risk, highest immediate value)
 
-Leavers get disabled in AD promptly instead of waiting on OneSync's next read.
+Leavers get locked out in AD promptly instead of waiting on OneSync's next read.
+Rather than flipping `accountDisabled`, the reconciler **expires** the account:
+it sets `accountExpires` to the person's **end date** when one is set (otherwise
+today) and stamps `description` with `Account expired set by TCS-IDM on {run
+date}` (the date IDM acted, independent of the expiry date) so the reason is
+visible directly in AD. Expiring (vs. disabling) leaves the account in a state
+Adaxes/AD already understand for a departed user and keeps a dated audit trail on
+the object itself.
 
-- New `AdaxesWriter::disable(objectGuid)` — sets `accountDisabled=true`
-  (or the `userAccountControl` `0x2` bit; endpoint configurable). `enable()` is the
-  inverse for reactivations.
+- The write is a plain `AdaxesWriter::modify()` (PATCH of `accountExpires` +
+  `description`) — no dedicated disable endpoint needed. `AdaxesWriter::disable()`
+  / `enable()` remain available for reactivations and other callers.
 - New reconciler `bin/adaxes_sync.php` (dry-run capable). For Phase 1 it acts only
   on people with `person.status='disabled'` **and** a linked `objectGUID`, whose
-  live AD account is still enabled (confirmed via `verify()`).
-- Source of "who to disable" is the **existing** logic — the "Not in NextGen —
+  live AD account is **not already expired as intended** (already on the desired
+  date is a no-op; with no end date, any past-or-today expiry is a no-op),
+  confirmed via `verify()`.
+- Source of "who to expire" is the **existing** logic — the "Not in NextGen —
   review to disable" queue + `flag_disable_candidates.php`. IDM already decides
   *who*; this makes IDM *do* it.
-- **Guardrail:** never disable a person with no linked GUID (a search hit alone is
+- **Guardrail:** never touch a person with no linked GUID (a search hit alone is
   not enough — could be the wrong account). Threshold valve
   (`ADAXES_WRITE_MAX_DISABLES_RATIO`, mirrors `NEXTGEN_DROPOUT_MAX_RATIO`) blocks a
-  mass-disable from a truncated feed.
+  mass-expire from a truncated feed.
 
 ### Phase 2 — Edit / attribute drift
 
@@ -242,6 +251,27 @@ The final phase. IDM mints identity and creates the account.
     `OU=SRO,OU=BHS,OU=Faculty,<base>`.
 - After create: set `username`/`email`/`upn` on the golden record, `username_locked=1`,
   activate a `pending` person, write `create` + `username_assigned` lifecycle events.
+- **Correlate before create — and re-enable returning employees.** Every create
+  candidate is first looked up live (`verify()`). A hit means the account already
+  exists, so the reconciler **correlates** (links the `objectGUID`, adopts
+  `username`/`email`/`upn`, activates the person) instead of minting a duplicate.
+  The match must be **unambiguous** — an `objectGUID` plus either the locked golden
+  username equal to the account's `sAMAccountName` (mail agreeing when both are set)
+  **or**, for a not-yet-minted person, the golden `employee_id` equal to the
+  account's `employeeID` with the surname (`sn`) agreeing. Anything short of that
+  goes to **review**, never linked blindly.
+  - **Returning employee (existing account is disabled/expired).** When the matched
+    account is currently locked out — `accountDisabled` set, or `accountExpires` a
+    past date — the reconciler **re-enables** it as part of the correlate: it clears
+    `accountDisabled` (`enable()`), resets the expiry (to the person's new
+    `end_date` when one is set, otherwise clears it back to *never* via
+    `clearExpiration()`), and stamps `description` with `Account re-enabled by
+    TCS-IDM on {run date} (returning employee)`. Counted as **rehired** (a distinct
+    action on the Services summary); audited with a `create` lifecycle event. If the
+    disabled account does **not** confidently match, it is routed to review flagged
+    as a possible returning employee for a human to correlate + re-enable. Clearing
+    `accountExpires` to *never* (an empty Timestamp value list) is best-effort so a
+    version-specific clear can never turn a successful reactivation into an error.
 - **OneSync cutover:** disable OneSync's AD destination (its `destinations/{id}/status`).
   OneSync keeps running for Google Workspace (separate branch). The
   `import_writeback` / `/api/onesync/username` inbound paths become no-ops for AD
@@ -466,8 +496,11 @@ Beyond create/edit/disable/groups, IDM owns the human side of identity changes.
    the minter skips them entirely.
 4. **Threshold valves** on both disable (ratio) and create (absolute count).
 5. **Audit everything** to `audit_log` + `lifecycle_event`, actor `system:adaxes_sync`.
-6. **Dry-run** (`--dry-run`) on the reconciler prints intended writes and changes
-   nothing — required before every real run during rollout.
+6. **Dry-run** (`--dry-run`) on the reconciler is also the change report: it
+   reads live AD and prints, per person, what is currently set vs. what would
+   change — edits/moves as `current → proposed`, disables showing the account is
+   still enabled, groups as the +add/-remove delta — and changes nothing.
+   Required before every real run during rollout.
 7. **Off by default** — `ADAXES_WRITE_ENABLED=false` until deliberately enabled.
 8. **TLS verification stays on** (existing `ADAXES_CA_FILE` / `ADAXES_VERIFY_TLS`).
 
@@ -525,9 +558,16 @@ destination. IDM state is unchanged; no data migration to reverse.
 
 ## Open items
 
-- Confirm exact Adaxes REST create/modify/disable endpoints + payload shapes for
-  the deployed version — including the field name the create takes for the
-  object's **name/CN** (IDM sends top-level `name`).
+- ~~Confirm exact Adaxes REST create/modify/disable payload shapes.~~ **Done.**
+  Per the REST API docs ([Modify](https://www.adaxes.com/sdk/REST_ModifyDirectoryObject/),
+  [Create](https://www.adaxes.com/sdk/REST_CreateDirectoryObject/),
+  [Setting property values](https://www.adaxes.com/sdk/REST_SetPropertyValues/)):
+  the target is named in the **body** (`directoryObject` for modify, `createIn`
+  for create), properties are `{propertyName, propertyType, values:[…]}` (NOT
+  `{name, value}`), `cn` is a normal property (not a top-level `name`), and
+  `accountExpires` is a `Timestamp` in ISO-8601 (`2027-05-31T00:00:00Z`), not a
+  Windows FILETIME. `AdaxesWriter` now sends these; error responses surface the
+  Adaxes message so a bad property/value is obvious.
 - Confirm the staff OU layout so `school.ad_ou` values are complete/correct for
   every building before enabling create. The 22 per-school Everyone groups give
   the authoritative building list to validate against.

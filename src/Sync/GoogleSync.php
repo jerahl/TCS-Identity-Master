@@ -22,6 +22,12 @@ use PDO;
  * suspended account (restore is always an explicit human action) — so a
  * per-person manual suspend is not silently undone on the next run.
  *
+ * Writes are applied in phases — creates, then disables (suspend / move to the
+ * disabled OU / release seats), then edits (push drift, assign licenses) — so a
+ * run always provisions new accounts before it locks leavers out and pushes
+ * changes. Planning is per person; only the apply order is grouped (stable within
+ * a phase, preserving person order).
+ *
  * Safety: supports --dry-run (plan only, no writes) and a threshold guardrail —
  * if the share of suspends across the linked population exceeds
  * GOOGLE_SYNC_MAX_RATIO on a sizable population, the whole run is BLOCKED
@@ -184,6 +190,13 @@ final class GoogleSync
             }
         }
 
+        // Apply in phases — creates, then disables, then edits — so a run always
+        // provisions new accounts before it suspends leavers and pushes drift
+        // (a create licenses itself; unlicense belongs with the disables it frees;
+        // license is an edit to an existing account). Stable within a phase, so the
+        // original person order is preserved. usort is stable on PHP 8.0+.
+        usort($plan, static fn(array $a, array $b): int => self::actionPhase($a['action']) <=> self::actionPhase($b['action']));
+
         // ---- Guardrail: block a mass-suspend from a bad feed ----
         $blocked = $linked >= $this->guardMinLinked && $suspendPlanned > 0
             && ($suspendPlanned / $linked) > $this->maxRatio;
@@ -215,6 +228,23 @@ final class GoogleSync
     }
 
     /**
+     * The apply phase an action belongs to, so the run executes them grouped:
+     *   1 = create   — provision new accounts first
+     *   2 = disable  — suspend/move-to-disabled leavers (and release their seats)
+     *   3 = edit     — push golden drift + license active accounts
+     * Unknown actions sort last. Used only to order Pass 2.
+     */
+    private static function actionPhase(string $action): int
+    {
+        return match ($action) {
+            'create'                            => 1,
+            'suspend', 'move_disabled', 'unlicense' => 2,
+            'push', 'license'                   => 3,
+            default                             => 4,
+        };
+    }
+
+    /**
      * Decide the reconciliation action for one person given their correlation.
      * `detail` describes exactly what a write would change (name and/or OU deltas,
      * the destination OU) so --verbose can show what's being pushed, not just that
@@ -240,7 +270,10 @@ final class GoogleSync
                 }
                 $ou = $this->provisioner->activeOrgUnitFor($person);
                 $detail = 'new account' . ($ou !== null ? ' in ' . GoogleWorkspaceService::normalizeOu($ou) : '');
-                return ['action' => 'create', 'bucket' => 'created', 'email' => (string) $person['email'], 'detail' => $detail];
+                // The account is created under GOOGLE_DOMAIN, not the on-prem golden
+                // email — report that address in the plan/log.
+                $newEmail = GoogleWorkspaceService::googleEmailFor($person) ?: (string) $person['email'];
+                return ['action' => 'create', 'bucket' => 'created', 'email' => $newEmail, 'detail' => $detail];
             }
             // Linked. A golden-active account that Google shows suspended is a
             // manual/out-of-band override — the batch never auto-restores.

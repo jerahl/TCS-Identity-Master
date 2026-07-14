@@ -198,6 +198,24 @@ final class PersonService
         return $stmt->fetchAll();
     }
 
+    /**
+     * Fields pinned as manually overridden for a person (golden column names, plus
+     * 'title'). Imports skip these; the reconcile panel flags them. Tolerates the
+     * table being absent (pre-migration) by returning none.
+     *
+     * @return list<string>
+     */
+    public function fieldOverrides(int $personId): array
+    {
+        try {
+            $stmt = $this->db()->prepare('SELECT field FROM person_field_override WHERE person_id = :id');
+            $stmt->execute([':id' => $personId]);
+            return array_map(static fn($r) => (string) $r['field'], $stmt->fetchAll());
+        } catch (\PDOException) {
+            return [];
+        }
+    }
+
     /** Assignments (multi-location), primary first. */
     public function assignments(int $personId): array
     {

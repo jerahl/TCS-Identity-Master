@@ -143,6 +143,7 @@ try {
     $router->post('/people/{id}/unlink', $guard('admin', static fn(array $p) => $person->unlink($p)));
     $router->post('/people/{id}/rename', $guard('admin', static fn(array $p) => $person->rename($p)));
     $router->post('/people/{id}/raptor-override', $guard('admin', static fn(array $p) => $person->raptorOverride($p)));
+    $router->post('/people/{id}/field-override/clear', $guard('edit', static fn(array $p) => $person->clearFieldOverride($p)));
     // Direct-to-Google provisioning (bypasses OneSync): link/create/push/suspend/restore.
     $router->post('/people/{id}/google/{action}', $guard('edit', static fn(array $p) => $google->act($p)));
     $router->post('/people/{id}/reconcile', $guard('edit', static fn(array $p) => $person->reconcile($p)));
@@ -164,6 +165,7 @@ try {
     $router->post('/admin/run/feeds', $guard('admin', static fn() => $admin->runFeeds()));
     $router->post('/admin/run/students', $guard('admin', static fn() => $admin->runStudents()));
     $router->post('/admin/run/onesync-db', $guard('admin', static fn() => $admin->runOnesyncDb()));
+    $router->post('/admin/run/adaxes', $guard('admin', static fn() => $admin->runAdaxes()));
     $router->post('/admin/onesync-sync', $guard('admin', static fn() => $admin->toggleOnesync()));
     $router->get('/security', $guard('admin', static fn() => $security->index()));
 

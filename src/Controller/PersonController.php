@@ -126,7 +126,7 @@ final class PersonController extends Controller
             'assignments' => $assignments,
             'syncStatus' => $this->annotateFreshness(Destinations::merge($this->people->syncStatus($id))),
             'timeline'   => $this->people->timeline($id),
-            'fieldMap'       => FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly),
+            'fieldMap'       => FieldMap::reconcileRows($person, $assignments[0] ?? null, $src['nextgen'], $src['powerschool'], $idmOnly, $this->people->fieldOverrides($id)),
             'fieldGroups'    => FieldMap::GROUPS,
             'hasNextGen'     => $hasNextGen,
             'hasPowerSchool' => $hasPowerSchool,
@@ -510,6 +510,44 @@ final class PersonController extends Controller
         return $this->redirect($back);
     }
 
+    /**
+     * Clear a field's manual-override pin so imports resume syncing it (the inverse
+     * of the automatic pin a hand-edit sets). Admin-only, CSRF-guarded.
+     */
+    public function clearFieldOverride(array $params): string
+    {
+        $id = (int) ($params['id'] ?? 0);
+        $back = url('/people/' . $id) . '#reconcile';
+
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect($back);
+        }
+        if ($id <= 0 || $this->people->find($id) === null) {
+            $this->flash('That person no longer exists.');
+            return $this->redirect(url('/people'));
+        }
+
+        $field = trim((string) ($_POST['field'] ?? ''));
+        if ($field === '') {
+            $this->flash('No field specified.');
+            return $this->redirect($back);
+        }
+
+        try {
+            $db = Db::connect(Db::ROLE_APP);
+            $cleared = (new PersonWriter($db, new AuditService($db)))
+                ->clearFieldOverride($id, $field, $this->currentUser()['name']);
+            $this->flash($cleared
+                ? "Manual override cleared — imports will sync {$field} again on the next run."
+                : "{$field} wasn’t pinned — nothing changed.");
+        } catch (\Throwable $e) {
+            error_log('[idm] clear field override: ' . $e->getMessage());
+            $this->flash('Could not clear the override: ' . $e->getMessage());
+        }
+        return $this->redirect($back);
+    }
+
     public function disable(array $params): string
     {
         $id = (int) ($params['id'] ?? 0);
@@ -684,8 +722,13 @@ final class PersonController extends Controller
         if ($dob !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob)) {
             return $this->addForm($_POST, 'Date of birth must be YYYY-MM-DD.');
         }
+        $boardApproval = trim((string) ($_POST['board_approval_date'] ?? ''));
+        if ($boardApproval !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $boardApproval)) {
+            return $this->addForm($_POST, 'Board approval date must be YYYY-MM-DD.');
+        }
         $schoolId = ($_POST['school_id'] ?? '') !== '' ? (int) $_POST['school_id'] : null;
 
+        $ethSource = trim((string) ($_POST['ethnicity_source'] ?? ''));
         $row = new NormalizedRow(
             system: 'manual',
             sourceKey: '',
@@ -695,12 +738,26 @@ final class PersonController extends Controller
             preferredName: trim((string) ($_POST['preferred_name'] ?? '')) ?: null,
             dob: $dob ?: null,
             gender: trim((string) ($_POST['gender'] ?? '')) ?: null,
+            employeeId: trim((string) ($_POST['employee_id'] ?? '')) ?: null,
             schoolId: $schoolId,
+            ethnicitySource: $ethSource ?: null,
+            ethnicityCode: $ethSource === '' ? null : ($this->people->ethnicityCodeFor($ethSource) ?: null),
+            alsdeId: trim((string) ($_POST['alsde_id'] ?? '')) ?: null,
             personType: $type,
             title: trim((string) ($_POST['title'] ?? '')) ?: null,
             fte: trim((string) ($_POST['fte'] ?? '')) ?: null,
             isPrimary: true,
         );
+
+        // Fields createPerson() doesn't persist off the feed row (they have no
+        // NextGen/PowerSchool source) — written straight after create in the same
+        // transaction so a manual record can carry them from the start.
+        $profile = [
+            'board_approval_date' => $boardApproval,
+            'board_approval_note' => trim((string) ($_POST['board_approval_note'] ?? '')),
+            'notes'               => trim((string) ($_POST['notes'] ?? '')),
+        ];
+        $profile = array_filter($profile, static fn(string $val): bool => $val !== '');
 
         try {
             $db = Db::connect(Db::ROLE_APP);
@@ -711,6 +768,9 @@ final class PersonController extends Controller
             $pid = $writer->createPerson($row, $actor);
             $writer->attachSourceId($pid, 'manual', (string) $pid, $actor);
             $writer->upsertAssignment($pid, $row, $actor);
+            if ($profile !== []) {
+                $writer->updateProfile($pid, $profile, $actor);
+            }
             $db->commit();
 
             $this->flash("{$first} {$last} created — pending activation. OneSync will mint the username.");

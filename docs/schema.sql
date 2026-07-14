@@ -156,6 +156,19 @@ CREATE TABLE assignment (
   CONSTRAINT fk_assign_school FOREIGN KEY (school_id) REFERENCES school(school_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Per-field "manually overridden" flags: a hand-edited golden field is pinned
+-- here so feed imports leave it alone instead of reverting it. `field` is the
+-- golden-record column name, or 'title' for the primary assignment title.
+CREATE TABLE person_field_override (
+  person_id  BIGINT       NOT NULL,
+  field      VARCHAR(64)  NOT NULL,
+  actor      VARCHAR(60)  NULL,
+  note       VARCHAR(255) NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (person_id, field),
+  CONSTRAINT fk_pfo_person FOREIGN KEY (person_id) REFERENCES person(person_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ----------------------------------------------------------------------------
 -- Lifecycle + audit  (identity store is critical-path: log everything)
 -- ----------------------------------------------------------------------------

@@ -94,8 +94,11 @@ final class AdaxesWriter
         // the destination rides the body; otherwise both ride the body under the
         // configurable ADAXES_MOVE_OBJECT_FIELD / ADAXES_MOVE_DESTINATION_FIELD.
         $this->movePath        = trim((string) Config::get('ADAXES_MOVE_PATH', 'api/directoryObjects/move'), '/');
-        $this->moveObjectField = trim((string) Config::get('ADAXES_MOVE_OBJECT_FIELD', 'object')) ?: 'object';
-        $this->moveDestField   = trim((string) Config::get('ADAXES_MOVE_DESTINATION_FIELD', 'newParent')) ?: 'newParent';
+        // Adaxes' move endpoint requires DirectoryObject + TargetContainer in the
+        // body (case-insensitive model binding, so camelCase matches the rest of
+        // the API). Overridable in case a build names them differently.
+        $this->moveObjectField = trim((string) Config::get('ADAXES_MOVE_OBJECT_FIELD', 'directoryObject')) ?: 'directoryObject';
+        $this->moveDestField   = trim((string) Config::get('ADAXES_MOVE_DESTINATION_FIELD', 'targetContainer')) ?: 'targetContainer';
         $this->createObjectType = trim((string) Config::get('ADAXES_CREATE_OBJECT_TYPE', 'user')) ?: 'user';
 
         $this->sessionPath = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
@@ -135,21 +138,14 @@ final class AdaxesWriter
             return ['ok' => false, 'error' => 'No target OU (containerDn) for create.', 'guid' => null, 'created' => false];
         }
 
-        // The object's name (its CN / RDN) rides top-level, not as a property —
-        // lift a 'cn' attribute out of the map. AD derives cn from the name, and
-        // the CALLER owns making it unique within the container (CN is the RDN,
-        // so a duplicate in the same OU fails the create).
-        $name = trim((string) ($attrs['cn'] ?? $attrs['name'] ?? ''));
-        unset($attrs['cn'], $attrs['name']);
-
+        // cn (the RDN) rides in the property list like every other attribute; AD
+        // derives the object name from it. The CALLER owns making it unique within
+        // the container (CN is the RDN, so a duplicate in the same OU fails).
         $body = [
+            'createIn'   => $containerDn,
             'objectType' => $this->createObjectType,
-            'path'       => $containerDn,
             'properties' => self::propertyList($attrs),
         ];
-        if ($name !== '') {
-            $body['name'] = $name;
-        }
 
         $url = $this->baseUrl . '/' . $this->createPath;
         $res = $this->request('POST', $url, (string) json_encode($body));
@@ -186,9 +182,9 @@ final class AdaxesWriter
             return ['ok' => true, 'error' => null, 'changed' => []]; // nothing to do
         }
 
-        $body = ['properties' => self::propertyList($attrs)];
-        $url  = $this->baseUrl . '/' . $this->modifyPath
-              . '?' . $this->objectParam . '=' . rawurlencode($objectGuid);
+        // Adaxes identifies the target in the BODY (directoryObject), not the URL.
+        $body = ['directoryObject' => $objectGuid, 'properties' => self::propertyList($attrs)];
+        $url  = $this->baseUrl . '/' . $this->modifyPath;
 
         $res = $this->request('PATCH', $url, (string) json_encode($body));
         if (!$res['ok']) {
@@ -218,8 +214,8 @@ final class AdaxesWriter
             return ['ok' => false, 'error' => 'objectGUID and new sAMAccountName are both required.', 'changed' => []];
         }
         $attrs = ['sAMAccountName' => $newSam] + $extra;
-        $body = ['properties' => self::propertyList($attrs)];
-        $url  = $this->baseUrl . '/' . $this->modifyPath . '?' . $this->objectParam . '=' . rawurlencode($objectGuid);
+        $body = ['directoryObject' => $objectGuid, 'properties' => self::propertyList($attrs)];
+        $url  = $this->baseUrl . '/' . $this->modifyPath;
 
         $res = $this->request('PATCH', $url, (string) json_encode($body));
         return $res['ok']
@@ -246,8 +242,8 @@ final class AdaxesWriter
             return ['ok' => false, 'error' => 'No objectGUID.', 'changed' => false];
         }
         $values = array_values(array_filter(array_map('trim', $addresses), static fn($v) => $v !== ''));
-        $body = ['properties' => [['name' => 'proxyAddresses', 'value' => $values]]];
-        $url  = $this->baseUrl . '/' . $this->modifyPath . '?' . $this->objectParam . '=' . rawurlencode($objectGuid);
+        $body = ['directoryObject' => $objectGuid, 'properties' => self::propertyList(['proxyAddresses' => $values])];
+        $url  = $this->baseUrl . '/' . $this->modifyPath;
 
         $res = $this->request('PATCH', $url, (string) json_encode($body));
         return $res['ok']
@@ -307,6 +303,35 @@ final class AdaxesWriter
     public function enable(string $objectGuid): array
     {
         return $this->setDisabled($objectGuid, false, $this->enablePath);
+    }
+
+    /**
+     * Clear accountExpires so the account never expires — the inverse of the
+     * expire-leaver write. Sending an empty value list for the property removes it
+     * (Adaxes "clear a property"). Used when reactivating a returning employee whose
+     * old account carried a past expiration and who has no new end date to honor.
+     *
+     * @return ToggleResult
+     */
+    public function clearExpiration(string $objectGuid): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        }
+        $objectGuid = trim($objectGuid);
+        if ($objectGuid === '') {
+            return ['ok' => false, 'error' => 'No objectGUID.', 'changed' => false];
+        }
+        // An empty values array clears the property (never expires). propertyList()
+        // can't emit an empty list from a scalar, so the property is built directly.
+        $body = [
+            'directoryObject' => $objectGuid,
+            'properties'      => [['propertyName' => 'accountExpires', 'propertyType' => 'Timestamp', 'values' => []]],
+        ];
+        $res = $this->request('PATCH', $this->baseUrl . '/' . $this->modifyPath, (string) json_encode($body));
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => true]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => false];
     }
 
     /**
@@ -423,18 +448,48 @@ final class AdaxesWriter
     }
 
     /**
-     * Render an attribute map as the Adaxes {name, value} property list.
+     * Render an attribute map as the Adaxes REST property list. Each entry is
+     * {propertyName, propertyType, values:[…]} — the shape the create/modify
+     * endpoints require (NOT {name, value}). Type is inferred from the attribute
+     * (see propertyType); values is always an array so multi-valued attributes
+     * (proxyAddresses) work unchanged. A null value is dropped from the list.
      *
-     * @param array<string,string> $attrs
-     * @return list<array{name:string,value:string}>
+     * @param array<string,string|int|list<string>> $attrs
+     * @return list<array{propertyName:string,propertyType:string,values:list<string|int>}>
      */
     private static function propertyList(array $attrs): array
     {
         $list = [];
         foreach ($attrs as $name => $value) {
-            $list[] = ['name' => (string) $name, 'value' => (string) $value];
+            if ($value === null) {
+                continue;
+            }
+            $type = self::propertyType((string) $name);
+            $raw = is_array($value) ? array_values($value) : [$value];
+            $values = [];
+            foreach ($raw as $v) {
+                if ($v === null) {
+                    continue;
+                }
+                $values[] = $type === 'Integer' ? (int) $v : (string) $v;
+            }
+            $list[] = ['propertyName' => (string) $name, 'propertyType' => $type, 'values' => $values];
         }
         return $list;
+    }
+
+    /**
+     * The Adaxes REST propertyType for an LDAP attribute. Almost everything IDM
+     * writes is a String; accountExpires is a Timestamp (ISO-8601 value) and
+     * userAccountControl an Integer. See the "Setting property values" REST docs.
+     */
+    private static function propertyType(string $name): string
+    {
+        return match (strtolower(trim($name))) {
+            'accountexpires', 'accountexpirationdate' => 'Timestamp',
+            'useraccountcontrol'                       => 'Integer',
+            default                                    => 'String',
+        };
     }
 
     /**

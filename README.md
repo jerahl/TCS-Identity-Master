@@ -264,6 +264,16 @@ Interns and contractors live **only in IDM** (manual records, no NextGen/PowerSc
 feed); their panel shows the current IDM values and notes there is nothing to
 reconcile.
 
+**Manual overrides pin a field against imports.** When an operator hand-edits a
+golden field — through the person **Edit** form or by picking a value in the
+reconciliation panel — that field is flagged in `person_field_override` and shown
+with a **📌 manual** badge. Subsequent feed imports **skip pinned fields** (the
+dry-run preview reflects this too), so a hand-edit is never silently reverted to
+the source value. Only feed-owned fields are pinnable (demographics, employee id,
+primary school, `person_type`, and the assignment title); `status`, notes, and
+other IDM-owned fields aren't affected because imports never touch them. Click
+**unpin** on the field to hand it back to the feeds. Migration `0022`.
+
 > The PowerSchool side of the comparison comes from a field snapshot captured on
 > each PowerSchool import. **Records imported before this feature (or by a failed
 > pull) have no snapshot** — the panel says so and prompts a re-import rather than
@@ -659,6 +669,76 @@ php bin/fix_name_case.php              # apply
 Only rows whose casing actually changes are written; common exceptions are cased
 correctly (`McDonald`, `O'Brien`, `Smith-Jones`, generational suffix `III`). Each
 change is audited and added to the person timeline. Idempotent — safe to re-run.
+
+**Reclassify person_type by title (one-time).** Feeds sometimes deliver a
+substitute, intern, SRO, or transportation employee typed generically as
+`staff`/`faculty`. This backfill reads each person's primary job title and sets
+`person_type` to match, so classification (and the Adaxes OU placement / group
+policy that keys off it) is correct:
+
+```sh
+php bin/fix_person_types_by_title.php --dry-run   # preview what would change
+php bin/fix_person_types_by_title.php             # apply
+```
+
+Title → type, first match wins (mirrors `AdaxesReconciler`'s title rules):
+transportation (`bus …`, `AD_TRANSPORTATION_TITLES`) → `staff`; SRO / "School
+Resource Officer" → `contractor`; "Substitute" / "Long-term Substitute" → `sub`;
+"Intern" → `intern`. Whole-word matching avoids false hits (`Business`,
+`Internal`, `Internship Coordinator`). Only people whose title matches a category
+**and** whose current type differs are written; each change is audited and added
+to the person timeline. Idempotent — safe to re-run.
+
+**Reconcile .env against .env.example.** After pulling changes that add new
+settings, backfill any keys your `.env` is missing — without touching what's
+already there:
+
+```sh
+php bin/reconcile_env.php --dry-run   # list what would be added
+php bin/reconcile_env.php             # append missing keys (writes .env.bak first)
+```
+
+Appends missing settings (copied verbatim from `.env.example`, with their help
+comments) in one marked block at the end of `.env`. Keys already present — active
+**or** commented — are left untouched, so your values and deliberate opt-outs are
+preserved. Idempotent. Review the appended block: some example values are
+placeholders (`change-me-*`).
+
+**Give Transportation its own building (one-time).** NextGen flags transportation
+staff with a distinct location code (8410 at TCS). If that code is only an *alias*
+on the Central Office school row, every Central Office employee resolves to the
+same `school_id` and the Adaxes sync mis-classifies the whole building as
+transportation. This ensures a dedicated Transportation school (`ad_ou=OU=trans`,
+no PowerSchool id) and repoints the transportation NextGen code(s) onto it:
+
+```sh
+php bin/split_transportation_building.php --dry-run   # preview
+php bin/split_transportation_building.php             # apply
+```
+
+Reads the code(s) from `AD_TRANSPORTATION_SCHOOL_CODES` and the OU from
+`AD_OU_TRANSPORTATION`. Idempotent and audited. Existing transportation employees
+move onto the new building at the next NextGen import; Central Office staff stop
+being mis-flagged immediately.
+
+**Reclassify OU=Subs members from an Adaxes report (one-time).** When existing AD
+substitutes sit in `OU=Subs` but IDM has them typed as something else, an Adaxes
+reconciler `--dry-run` shows them as `[WOULD-MOVE] … move OU=Subs,… → …` (IDM
+would relocate them out of the Subs OU). Feed that report to this import to fix
+the golden record instead: it sets `person_type = sub` and sets each person's
+primary assignment title to the account's live AD description (read straight from
+the report — the reconciler surfaces the current AD description as the left side
+of a `description: X → Y` drift; no drift means the title already matches AD, so
+it's left alone).
+
+```sh
+php bin/adaxes_sync.php --dry-run > /tmp/adaxes.txt          # generate the report
+php bin/reclass_subs_from_report.php --file=/tmp/adaxes.txt --dry-run   # preview
+php bin/reclass_subs_from_report.php --file=/tmp/adaxes.txt             # apply
+```
+
+Empty/`(unset)` AD descriptions never blank out a title. Audited and idempotent;
+after applying, the next sync keeps these accounts in `OU=Subs`.
 
 **Direct DB write-back.** OneSync can also pull from `v_onesync_source` and write
 usernames back **straight to the DB** (no files): insert into the
