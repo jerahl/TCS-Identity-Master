@@ -11,7 +11,7 @@ use PHPUnit\Framework\TestCase;
 /**
  * GroupPolicy — the Phase 4 AD group membership rules from the OneSync Faculty
  * destination: All-Faculty for everyone, a per-school Everyone group (with the
- * RQES→RQS / UPE→UP naming exceptions), Transportation for bus drivers, one M365
+ * UP/UPE→UPES, RQS→RQES, STC→CO, … naming exceptions), Transportation for bus drivers, one M365
  * license group (A1 for a keyword/type set, else A3), and one Raptor role group.
  * Pure logic — group names are injected so assertions don't depend on env.
  */
@@ -41,11 +41,21 @@ final class GroupPolicyTest extends TestCase
 
     public function testEveryoneGroupNamingExceptions(): void
     {
-        // RQES→RQS and UPE→UP.
-        self::assertSame('RQS-Everyone', $this->policy()->everyoneGroup('RQES'));
-        self::assertSame('UP-Everyone', $this->policy()->everyoneGroup('UPE'));
-        self::assertContains('RQS-Everyone', $this->desired('Teacher', 'faculty', 'RQES', false));
-        self::assertContains('UP-Everyone', $this->desired('Teacher', 'faculty', 'UPE', false));
+        $p = $this->policy();
+        // OU token → Everyone group prefix. Both spellings of University Place /
+        // Rock Quarry map to the same group, so it's correct either way.
+        self::assertSame('UPES-Everyone', $p->everyoneGroup('UP'));
+        self::assertSame('UPES-Everyone', $p->everyoneGroup('UPE'));
+        self::assertSame('RQES-Everyone', $p->everyoneGroup('RQS'));
+        self::assertSame('RQES-Everyone', $p->everyoneGroup('RQES'));
+        self::assertSame('OAKD-Everyone', $p->everyoneGroup('OKD'));
+        self::assertSame('OAKH-Everyone', $p->everyoneGroup('OKH'));
+        self::assertSame('CPS-Everyone', $p->everyoneGroup('CES'));
+        self::assertSame('CO-Everyone', $p->everyoneGroup('STC'));
+        // A building with no exception keeps its own token.
+        self::assertSame('BHS-Everyone', $p->everyoneGroup('BHS'));
+        self::assertContains('UPES-Everyone', $this->desired('Teacher', 'faculty', 'UP', false));
+        self::assertContains('CO-Everyone', $this->desired('Teacher', 'faculty', 'STC', false));
     }
 
     public function testNoSchoolTokenMeansNoEveryoneGroup(): void
@@ -198,7 +208,7 @@ final class GroupPolicyTest extends TestCase
             self::assertArrayHasKey($g, $managed);
         }
         self::assertArrayHasKey('co-everyone', $managed);
-        self::assertArrayHasKey('rqs-everyone', $managed);  // remapped token
+        self::assertArrayHasKey('rqes-everyone', $managed);  // RQES → RQES-Everyone
         self::assertArrayHasKey('bhs-everyone', $managed);
 
         // Not a known building, and not a fixed group → NOT managed (left alone).
