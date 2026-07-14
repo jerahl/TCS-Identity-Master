@@ -942,6 +942,45 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame('Transportation', $props['department']); // override, not the building name
     }
 
+    public function testSharedBuildingWithTransportationAliasIsNotTransportation(): void
+    {
+        $db = $this->db();
+        // Central Office carries BOTH the transportation code (8410) and its own
+        // ordinary code (8620). It is NOT a dedicated transportation building, so a
+        // Bookkeeper there must stay at OU=CO — never moved to OU=trans.
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $db->exec("INSERT INTO school_code_alias (school_id, system, code) VALUES (5, 'nextgen', '8410'), (5, 'nextgen', '8620')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Tearra', 'last_name' => 'Adams',
+            'username' => 'tadams', 'email' => 'tadams@tusc.k12.al.us', 'upn' => 'tadams@tusc.k12.al.us',
+            'primary_school_id' => 5,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 5, 'Bookkeeper', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // AD account already correctly at OU=CO with matching identity/dept.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'tadams',
+            'userPrincipalName' => 'tadams@tusc.k12.al.us',
+            'mail'              => 'tadams@tusc.k12.al.us',
+            'accountDisabled'   => 'false',
+            'department'        => 'Central Office',
+            'physicalDeliveryOfficeName' => 'Central Office',
+            'title'             => 'Bookkeeper',
+            'description'       => 'Bookkeeper',
+            'distinguishedName' => 'CN=Tearra Adams,OU=CO,OU=Faculty,' . self::BASE_DN,
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        // No move to OU=trans (and no department flip to Transportation).
+        self::assertNotContains('moved', array_column($res['edit']['items'], 'outcome'));
+        foreach ($calls as $c) {
+            self::assertStringNotContainsString('/move', (string) $c['url']);
+        }
+    }
+
     public function testTransportationTitleIsMovedToTransOu(): void
     {
         $db = $this->db();

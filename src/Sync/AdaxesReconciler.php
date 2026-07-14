@@ -1056,10 +1056,18 @@ final class AdaxesReconciler
     }
 
     /**
-     * The set of school_ids that are transportation locations — buildings whose
-     * NextGen code is listed in AD_TRANSPORTATION_SCHOOL_CODES (default "8410", the
-     * TCS transportation depot). Resolved once per run via school_code_alias and
-     * cached. Keyed by school_id for O(1) membership tests.
+     * The set of school_ids that are DEDICATED transportation buildings — a school
+     * whose NextGen code is in AD_TRANSPORTATION_SCHOOL_CODES (default "8410", the
+     * TCS transportation depot) AND which carries no OTHER NextGen code.
+     *
+     * The "no other code" guard is essential: at TCS the 8410 code is often just an
+     * alias on the Central Office row (which also owns 8620 and more), so every
+     * building resolves 8410 → Central Office's school_id. Matching on the code
+     * alone would then flag every Central Office employee (a Bookkeeper, etc.) as
+     * transportation. Requiring the building to be transportation-ONLY means a
+     * shared building like Central Office is never treated as transportation;
+     * only a building split off with 8410 as its sole NextGen code qualifies (see
+     * bin/split_transportation_building.php). Resolved once per run and cached.
      *
      * @return array<int,true>
      */
@@ -1076,10 +1084,17 @@ final class AdaxesReconciler
             return $this->transportationSchoolIds = [];
         }
         $ph = implode(',', array_fill(0, count($codes), '?'));
+        // Schools that HAVE a transportation code but do NOT also have a NextGen
+        // code outside the transportation set (i.e. not a shared building).
         $stmt = $this->db->prepare(
-            "SELECT DISTINCT school_id FROM school_code_alias WHERE system = 'nextgen' AND code IN ({$ph})"
+            "SELECT DISTINCT school_id FROM school_code_alias
+              WHERE system = 'nextgen' AND code IN ({$ph})
+                AND school_id NOT IN (
+                    SELECT school_id FROM school_code_alias
+                     WHERE system = 'nextgen' AND code NOT IN ({$ph})
+                )"
         );
-        $stmt->execute($codes);
+        $stmt->execute(array_merge($codes, $codes));
         $ids = [];
         foreach ($stmt->fetchAll() as $r) {
             $ids[(int) $r['school_id']] = true;
