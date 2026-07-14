@@ -1,0 +1,22 @@
+# Allow the web user (php-fpm) to START ONLY the Google Workspace sync unit —
+# nothing else.
+#
+# Enables the "Run Google sync now" button on the /import (Import & feeds) page
+# (GOOGLE_RUN_ENABLED=true). The app runs, with no shell:
+#   sudo -n systemctl start --no-block idm-google-sync.service
+# --no-block returns immediately; the oneshot then runs in the background under
+# systemd (see deploy/idm-google-sync.service) and records its own service_run row.
+# Running it in-request instead ties up a PHP-FPM worker for the whole sync and
+# exhausts pm.max_children (nginx 504) — hence the background unit.
+#
+# Install (validate with visudo, then drop in place):
+#   sudo visudo -cf deploy/idm-google-run.sudoers   # syntax check
+#   sudo install -m 0440 -o root -g root deploy/idm-google-run.sudoers \
+#        /etc/sudoers.d/idm-google-run
+#
+# Adjust the user (www-data on Debian/Ubuntu; nginx/apache elsewhere) and the unit
+# name to match GOOGLE_SERVICE_UNIT. Keep the command EXACT — a trailing wildcard
+# would let the web user start any unit. Confirm the absolute path once with:
+#   command -v systemctl   (usually /usr/bin)
+
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block idm-google-sync.service

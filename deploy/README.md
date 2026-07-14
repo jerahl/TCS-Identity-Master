@@ -82,6 +82,22 @@ schedules it; you only `start` the service to run it on demand. Schedule it to
 run **after** the nightly feed imports so it reconciles the freshest golden
 record.
 
+**"Run Google sync now" button (optional).** A full sync does a live Google
+lookup per person, so it can't run in the web request — doing so ties up a
+PHP-FPM worker for minutes and exhausts `pm.max_children` (nginx 504). The button
+on the *Import & feeds* page instead asks systemd to start the oneshot unit in the
+background, exactly like the AD sync. Turn it on with `GOOGLE_RUN_ENABLED=true` in
+the app `.env` and grant the web user a NOPASSWD rule for that one command:
+
+```sh
+sudo visudo -cf deploy/idm-google-run.sudoers   # syntax check
+sudo install -m 0440 -o root -g root deploy/idm-google-run.sudoers \
+     /etc/sudoers.d/idm-google-run
+```
+
+The result appears on the Services page; a dry-run preview stays a CLI operation
+(`sudo -u www-data php /var/www/idm/bin/sync_google.php --dry-run`).
+
 ## Adaxes AD reconciler
 
 Reconciles the golden record directly to Active Directory through the Adaxes REST

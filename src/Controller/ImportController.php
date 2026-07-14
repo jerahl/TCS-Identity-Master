@@ -8,6 +8,7 @@ use App\Config;
 use App\Import\Importer;
 use App\Import\ImportSource;
 use App\Http\Upload;
+use App\Service\GoogleRunService;
 use App\Service\GoogleWorkspaceService;
 use App\Service\ImportService;
 use App\Service\ServiceRunLog;
@@ -22,11 +23,15 @@ use App\Sync\GoogleSync;
 final class ImportController extends Controller
 {
     private ImportService $imports;
+    private GoogleRunService $googleRun;
+    private ServiceRunLog $runs;
 
-    public function __construct(?ImportService $imports = null)
+    public function __construct(?ImportService $imports = null, ?GoogleRunService $googleRun = null, ?ServiceRunLog $runs = null)
     {
         parent::__construct();
         $this->imports = $imports ?? new ImportService();
+        $this->googleRun = $googleRun ?? new GoogleRunService();
+        $this->runs = $runs ?? new ServiceRunLog();
     }
 
     public function index(): string
@@ -43,6 +48,8 @@ final class ImportController extends Controller
             'sftpSources' => FeedSync::configuredSources(),
             'psOdbc'  => FeedSync::powerSchoolOdbcEnabled(),
             'googleReady' => (new GoogleWorkspaceService())->configured(),
+            'googleRunEnabled' => $this->googleRun->enabled(),
+            'googleRunning'    => ($this->runs->last('google')['status'] ?? '') === 'running',
             'csrf'    => Csrf::token(),
         ], 'import', 'Configuration  /  Import & feeds', 'Import / feeds — TCS Identity Master');
     }
@@ -151,9 +158,13 @@ final class ImportController extends Controller
     }
 
     /**
-     * Reconcile the golden record to Google Workspace directly, bypassing
-     * OneSync (editor+). Supports a dry-run (plan only). Config-gated on
-     * GOOGLE_DIRECT_ENABLED + GOOGLE_SA_*; honors the threshold guardrail.
+     * Reconcile the golden record to Google Workspace directly, bypassing OneSync
+     * (editor+). Fires the background systemd oneshot (idm-google-sync.service) and
+     * returns at once — a live Google lookup per person can take minutes, so running
+     * it in-request ties up a PHP-FPM worker and exhausts pm.max_children (nginx 504).
+     * The CLI records its own service_run row, shown on the Services page; a dry-run
+     * preview is a CLI operation (php bin/sync_google.php --dry-run). Config-gated on
+     * GOOGLE_RUN_ENABLED (+ the sudoers rule in deploy/idm-google-run.sudoers).
      */
     public function googleSync(): string
     {
@@ -161,35 +172,25 @@ final class ImportController extends Controller
             $this->flash('Invalid session token — please retry.');
             return $this->redirect(url('/import'));
         }
-        $sync = new GoogleSync();
-        if (!$sync->configured()) {
+        if (!(new GoogleSync())->configured()) {
             $this->flash('Direct Google provisioning is off (set GOOGLE_DIRECT_ENABLED=true plus the GOOGLE_SA_* service-account credentials and GOOGLE_ADMIN_SUBJECT).');
             return $this->redirect(url('/import'));
         }
-        $dryRun = !empty($_POST['dry_run']);
-        $actor = $this->currentUser()['name'];
-        // Record real runs in service_run so the Services page shows the last run.
-        $runLog = $dryRun ? null : new ServiceRunLog();
-        $runId  = $runLog?->start('google', 'manual', $actor);
-        try {
-            $r = $sync->run($dryRun, $actor);
-            $c = $r['counts'];
-            if ($r['blocked']) {
-                $runLog?->finish($runId, 'failed', $c, (string) ($r['note'] ?? 'blocked by guardrail'));
-                $this->flash($r['note'] ?? 'Google sync blocked by the threshold guardrail — nothing written.');
-            } else {
-                $runLog?->finish($runId, $c['errors'] > 0 ? 'failed' : 'complete', $c, sprintf(
-                    'created %d · pushed %d · suspended %d · moved %d · licensed %d · unlicensed %d · errors %d',
-                    $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['licensed'], $c['unlicensed'], $c['errors']));
-                $this->flash(sprintf('%s: %d eligible · created %d · pushed %d · suspended %d · moved %d · licensed %d · unlicensed %d%s · errors %d',
-                    $dryRun ? 'Google sync (dry run)' : 'Google sync',
-                    $c['eligible'], $c['created'], $c['pushed'], $c['suspended'], $c['moved'], $c['licensed'], $c['unlicensed'],
-                    $c['license_blocked'] > 0 ? " · {$c['license_blocked']} blocked (no seats)" : '', $c['errors']));
-            }
-        } catch (\Throwable $e) {
-            $runLog?->finish($runId, 'failed', [], $e->getMessage());
-            error_log('[idm] google sync: ' . $e->getMessage());
-            $this->flash('Google sync failed: ' . $e->getMessage());
+        if (!$this->googleRun->enabled()) {
+            $this->flash('On-demand Google sync is disabled — set GOOGLE_RUN_ENABLED=true (and grant the sudoers rule in deploy/idm-google-run.sudoers). A dry-run preview is available from the CLI: php bin/sync_google.php --dry-run.');
+            return $this->redirect(url('/import'));
+        }
+        if (($this->runs->last('google')['status'] ?? '') === 'running') {
+            $this->flash('A Google sync is already running — wait for it to finish before starting another.');
+            return $this->redirect(url('/import'));
+        }
+
+        $res = $this->googleRun->start();
+        if ($res['ok']) {
+            $this->flash('Google sync started in the background. Refresh in a minute or two for the summary on the Services page.');
+        } else {
+            error_log('[idm] google run: ' . (string) $res['error']);
+            $this->flash('Could not start the Google sync: ' . $res['error']);
         }
         return $this->redirect(url('/import'));
     }
