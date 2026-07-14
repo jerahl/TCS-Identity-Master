@@ -8,30 +8,23 @@ use App\Config;
 use App\Import\Importer;
 use App\Import\ImportSource;
 use App\Http\Upload;
-use App\Service\GoogleRunService;
-use App\Service\GoogleWorkspaceService;
 use App\Service\ImportService;
-use App\Service\ServiceRunLog;
 use App\Support\Csrf;
 use App\Sync\FeedSync;
-use App\Sync\GoogleSync;
 
 /**
  * Import / feed status: batch history with a drill-in to a batch's staged rows
- * and how each matched, plus manual upload-and-import (editor+).
+ * and how each matched, plus manual upload-and-import (editor+). The direct
+ * "Sync to Google" action lives on the Outputs page, not here.
  */
 final class ImportController extends Controller
 {
     private ImportService $imports;
-    private GoogleRunService $googleRun;
-    private ServiceRunLog $runs;
 
-    public function __construct(?ImportService $imports = null, ?GoogleRunService $googleRun = null, ?ServiceRunLog $runs = null)
+    public function __construct(?ImportService $imports = null)
     {
         parent::__construct();
         $this->imports = $imports ?? new ImportService();
-        $this->googleRun = $googleRun ?? new GoogleRunService();
-        $this->runs = $runs ?? new ServiceRunLog();
     }
 
     public function index(): string
@@ -47,9 +40,6 @@ final class ImportController extends Controller
             'sources' => ImportSource::webUploadable(),
             'sftpSources' => FeedSync::configuredSources(),
             'psOdbc'  => FeedSync::powerSchoolOdbcEnabled(),
-            'googleReady' => (new GoogleWorkspaceService())->configured(),
-            'googleRunEnabled' => $this->googleRun->enabled(),
-            'googleRunning'    => ($this->runs->last('google')['status'] ?? '') === 'running',
             'csrf'    => Csrf::token(),
         ], 'import', 'Configuration  /  Import & feeds', 'Import / feeds — TCS Identity Master');
     }
@@ -153,44 +143,6 @@ final class ImportController extends Controller
         } catch (\Throwable $e) {
             error_log('[idm] feed fetch: ' . $e->getMessage());
             $this->flash('Feed pull failed: ' . $e->getMessage());
-        }
-        return $this->redirect(url('/import'));
-    }
-
-    /**
-     * Reconcile the golden record to Google Workspace directly, bypassing OneSync
-     * (editor+). Fires the background systemd oneshot (idm-google-sync.service) and
-     * returns at once — a live Google lookup per person can take minutes, so running
-     * it in-request ties up a PHP-FPM worker and exhausts pm.max_children (nginx 504).
-     * The CLI records its own service_run row, shown on the Services page; a dry-run
-     * preview is a CLI operation (php bin/sync_google.php --dry-run). Config-gated on
-     * GOOGLE_RUN_ENABLED (+ the sudoers rule in deploy/idm-google-run.sudoers).
-     */
-    public function googleSync(): string
-    {
-        if (!Csrf::check($_POST['_csrf'] ?? null)) {
-            $this->flash('Invalid session token — please retry.');
-            return $this->redirect(url('/import'));
-        }
-        if (!(new GoogleSync())->configured()) {
-            $this->flash('Direct Google provisioning is off (set GOOGLE_DIRECT_ENABLED=true plus the GOOGLE_SA_* service-account credentials and GOOGLE_ADMIN_SUBJECT).');
-            return $this->redirect(url('/import'));
-        }
-        if (!$this->googleRun->enabled()) {
-            $this->flash('On-demand Google sync is disabled — set GOOGLE_RUN_ENABLED=true (and grant the sudoers rule in deploy/idm-google-run.sudoers). A dry-run preview is available from the CLI: php bin/sync_google.php --dry-run.');
-            return $this->redirect(url('/import'));
-        }
-        if (($this->runs->last('google')['status'] ?? '') === 'running') {
-            $this->flash('A Google sync is already running — wait for it to finish before starting another.');
-            return $this->redirect(url('/import'));
-        }
-
-        $res = $this->googleRun->start();
-        if ($res['ok']) {
-            $this->flash('Google sync started in the background. Refresh in a minute or two for the summary on the Services page.');
-        } else {
-            error_log('[idm] google run: ' . (string) $res['error']);
-            $this->flash('Could not start the Google sync: ' . $res['error']);
         }
         return $this->redirect(url('/import'));
     }

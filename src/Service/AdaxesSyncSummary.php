@@ -6,7 +6,7 @@ namespace App\Service;
 
 /**
  * Turns the last Adaxes reconciler run (a service_run row, job='adaxes') into a
- * view model for the Services-page summary: an overall highlight line plus a
+ * view model for the Outputs-page summary: an overall highlight line plus a
  * per-phase breakdown of what the sync did (created / correlated / edited /
  * expired / group adds+removes) and what needs attention (errors + review).
  *

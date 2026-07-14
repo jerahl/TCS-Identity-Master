@@ -12,6 +12,8 @@ use App\Service\AuditService;
 use App\Service\GoogleWorkspaceService;
 use App\Service\GroupPolicy;
 use App\Service\UsernameMinter;
+use App\Support\Crypto;
+use App\Support\PasswordGenerator;
 use PDO;
 
 /**
@@ -59,6 +61,7 @@ final class AdaxesReconciler
     private string $upnSuffix;
     private string $baseDn;
     private string $parentOu;
+    private bool $setPasswordOnCreate;
 
     /** Optional live-progress callback: fn(string $event, array $data): void. */
     private $log = null;
@@ -93,6 +96,10 @@ final class AdaxesReconciler
         // container DN, and the shared parent OU every account nests under.
         $this->baseDn          = trim((string) Config::get('AD_BASE_DN', ''), " ,");
         $this->parentOu        = trim((string) Config::get('AD_PARENT_OU', 'OU=Faculty'), " ,");
+        // IDM sets the initial password itself on create because Adaxes Business
+        // Rules don't fire on REST events. On by default; turn off only if a create
+        // Business Rule is (re-)authored to own the password.
+        $this->setPasswordOnCreate = Config::bool('ADAXES_SET_PASSWORD_ON_CREATE', true);
     }
 
     /**
@@ -501,9 +508,62 @@ final class AdaxesReconciler
                 $out['errors']++;
             }
             $this->item($out, $pid, $name, 'create', $guid !== null ? 'created' : 'created-unlinked', $detail);
+
+            // Business Rules don't fire on REST events, so set the initial password
+            // (+ must-change-at-logon) ourselves and record it on the golden record.
+            // Only when the GUID resolved — an unlinked account can't be targeted.
+            if ($guid !== null) {
+                $this->setInitialPassword($out, $pid, $name, $guid);
+            }
         }
 
         return $out;
+    }
+
+    /**
+     * Set a fresh initial password on a just-created account and record it
+     * (encrypted) on the golden record. Adaxes Business Rules do NOT fire on REST
+     * API events, so the generated-password + "must change at next logon" that
+     * OneSync's create rule applied is done here instead. Failures don't roll back
+     * the create — they count as errors and surface for a human, since a created
+     * account with no usable/recorded password needs attention. Never logs the
+     * secret. No-op when disabled via ADAXES_SET_PASSWORD_ON_CREATE=false.
+     *
+     * @param array<string,mixed> $out phase accumulator (by ref)
+     */
+    private function setInitialPassword(array &$out, int $pid, string $name, string $guid): void
+    {
+        if (!$this->setPasswordOnCreate) {
+            return;
+        }
+        // Fail loud rather than set a password we can't store: without the
+        // encryption key the value couldn't be recorded for the new hire.
+        if (!Crypto::configured()) {
+            $out['errors']++;
+            $this->item($out, $pid, $name, 'create', 'error',
+                'account created but initial password NOT set — CREDENTIAL_ENC_KEY is unset, so it could not be stored securely');
+            return;
+        }
+
+        $password = PasswordGenerator::generate();
+        $res = $this->writer->resetPassword($guid, $password, true);
+        if (!$res['ok']) {
+            $out['errors']++;
+            $this->item($out, $pid, $name, 'create', 'error',
+                'account created but initial password NOT set: ' . (string) $res['error']);
+            return;
+        }
+
+        try {
+            $this->people->recordInitialPassword($pid, $password, self::ACTOR);
+        } catch (\Throwable $e) {
+            $out['errors']++;
+            $this->item($out, $pid, $name, 'create', 'error',
+                'initial password set in AD but NOT recorded on the golden record: ' . $e->getMessage());
+            return;
+        }
+
+        $this->item($out, $pid, $name, 'create', 'password-set', 'initial password set (must change at next logon)');
     }
 
     /**
@@ -940,8 +1000,10 @@ final class AdaxesReconciler
 
     /**
      * The identity attributes IDM sends on create — the identity core only.
-     * Everything operational (home dir, groups, licensing, password) is left to
-     * Adaxes Business Rules that fire on the create.
+     * Everything operational (home dir, groups, licensing) is left to Adaxes
+     * Business Rules that fire on the create. The initial password is the
+     * exception — Business Rules don't fire on REST events, so it's set right
+     * after the create by setInitialPassword(), not here.
      *
      * @param array<string,mixed> $p
      * @return array<string,string>

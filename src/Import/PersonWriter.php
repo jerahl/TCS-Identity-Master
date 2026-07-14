@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Import;
 
 use App\Service\AuditService;
+use App\Support\Crypto;
 use App\Support\Uuid;
 use PDO;
 
@@ -274,6 +275,48 @@ final class PersonWriter
         }
 
         return $notes;
+    }
+
+    /**
+     * Store a newly-set initial password (encrypted) on the golden record, the same
+     * shape the OneSync write-back importer uses: only the libsodium ciphertext
+     * reaches the DB, and neither the audit row nor any log carries the plaintext.
+     * Used when IDM sets the AD password itself on create (Business Rules don't
+     * fire on REST events). Re-sending replaces the stored value.
+     *
+     * @return bool true when a value was stored; false when the person is missing
+     *              or the password is blank
+     */
+    public function recordInitialPassword(int $personId, string $password, string $actor): bool
+    {
+        if (trim($password) === '') {
+            return false;
+        }
+        $stmt = $this->db->prepare('SELECT initial_password_set_at FROM person WHERE person_id = :id');
+        $stmt->execute([':id' => $personId]);
+        $row = $stmt->fetch();
+        if ($row === false) {
+            return false;
+        }
+        $replaced = ($row['initial_password_set_at'] ?? null) !== null;
+
+        $upd = $this->db->prepare(
+            'UPDATE person SET initial_password_enc = :enc, initial_password_set_at = CURRENT_TIMESTAMP
+             WHERE person_id = :id'
+        );
+        $upd->bindValue(':enc', Crypto::encrypt($password), PDO::PARAM_LOB);
+        $upd->bindValue(':id', $personId, PDO::PARAM_INT);
+        $upd->execute();
+
+        // Audit the fact, never the value.
+        $this->audit->log('person', $personId, 'update',
+            ['initial_password' => $replaced ? '[set]' : null],
+            ['initial_password' => '[set]'], $actor);
+        $this->audit->lifecycle($personId, 'password_received',
+            ['summary' => $replaced
+                ? 'Initial password reset by TCS-IDM (Adaxes).'
+                : 'Initial password set by TCS-IDM (Adaxes).'], $actor);
+        return true;
     }
 
     /**

@@ -15,7 +15,7 @@ use RuntimeException;
  * asks systemd to start the oneshot unit (deploy/idm-google-sync.service) with
  * `--no-block`, so it returns immediately and the job runs in the background under
  * systemd; the CLI (bin/sync_google.php) records its own service_run row, which the
- * Services page reads for the summary.
+ * Outputs page reads for the summary.
  *
  * Mirrors AdaxesRunService / VpnControlService: `sudo -n systemctl start --no-block
  * <unit>` with no shell (argv array, so an operator-set unit name can't smuggle

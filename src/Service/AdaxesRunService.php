@@ -14,7 +14,7 @@ use RuntimeException;
  * feeds/students jobs. Instead this asks systemd to start the oneshot unit
  * (deploy/idm-adaxes-sync.service) with `--no-block`, so it returns immediately
  * and the job runs in the background under systemd; the CLI records its own
- * service_run row, which the Services page reads for the summary.
+ * service_run row, which the Outputs page reads for the summary.
  *
  * Mirrors VpnControlService: `sudo -n systemctl start --no-block <unit>` with no
  * shell (argv array, so an operator-set unit name can't smuggle arguments), off

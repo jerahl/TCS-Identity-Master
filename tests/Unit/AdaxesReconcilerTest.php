@@ -6,6 +6,7 @@ namespace App\Tests\Unit;
 
 use App\Service\AdaxesService;
 use App\Service\AdaxesWriter;
+use App\Support\Crypto;
 use App\Sync\AdaxesReconciler;
 use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -29,11 +30,15 @@ final class AdaxesReconcilerTest extends TestCase
     {
         // The reconciler forms container DNs as {ad_ou}[,OU=faculty],{AD_BASE_DN}.
         putenv('AD_BASE_DN=' . self::BASE_DN);
+        // The create phase sets + records an initial password; give it a test key.
+        putenv(Crypto::KEY_ENV . '=' . str_repeat('ab', 32));
     }
 
     protected function tearDown(): void
     {
         putenv('AD_BASE_DN');
+        putenv(Crypto::KEY_ENV);
+        putenv('ADAXES_SET_PASSWORD_ON_CREATE');
     }
 
     private function db(): PDO
@@ -46,6 +51,7 @@ final class AdaxesReconcilerTest extends TestCase
             first_name TEXT, last_name TEXT,
             preferred_name TEXT, username TEXT UNIQUE, email TEXT UNIQUE, upn TEXT,
             username_locked INTEGER DEFAULT 0, username_assigned_at TEXT,
+            initial_password_enc BLOB, initial_password_set_at TEXT,
             employee_id TEXT, primary_school_id INTEGER, end_date TEXT,
             raptor_group_override TEXT)');
         $db->exec('CREATE TABLE person_source_id (
@@ -585,7 +591,9 @@ final class AdaxesReconcilerTest extends TestCase
         // The create POST carried the identity core + faculty container + expiry.
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -597,6 +605,117 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame('E100', $props['employeeID']);
         // accountExpires = midnight UTC of the end date, as an ISO-8601 timestamp.
         self::assertSame('2027-05-31T00:00:00Z', $props['accountExpires']);
+    }
+
+    public function testCreateSetsAndRecordsInitialPassword(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+            'first_name' => 'John', 'last_name' => 'Smith', 'primary_school_id' => 5,
+        ]);
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['create']);
+
+        self::assertSame(1, $res['create']['applied']);
+        self::assertSame(0, $res['create']['errors']);
+
+        // A resetPassword POST followed the create, targeting the linked GUID and
+        // forcing a change at next logon.
+        $reset = null;
+        foreach ($calls as $c) {
+            if ($c['method'] === 'POST' && str_contains((string) $c['url'], 'resetPassword')) {
+                $reset = $c;
+            }
+        }
+        self::assertNotNull($reset, 'expected a resetPassword call after create');
+        $body = json_decode((string) $reset['body'], true);
+        self::assertSame(self::NEWGUID, $body['directoryObject']);
+        self::assertTrue($body['options']['mustChangePassword']);
+        self::assertNotSame('', (string) ($body['password'] ?? ''));
+
+        // The password was recorded (encrypted) on the golden record — ciphertext
+        // only, decrypting back to the exact value that was sent to AD.
+        $row = $db->query('SELECT initial_password_enc, initial_password_set_at FROM person WHERE person_id = 1')->fetch();
+        self::assertNotNull($row['initial_password_set_at']);
+        self::assertNotSame('', (string) $row['initial_password_enc']);
+        self::assertStringNotContainsString((string) $body['password'], (string) $row['initial_password_enc']);
+        self::assertSame($body['password'], Crypto::decrypt((string) $row['initial_password_enc']));
+
+        // A lifecycle event records the fact (never the value).
+        $ev = $db->query("SELECT detail FROM lifecycle_event WHERE person_id = 1 AND event_type = 'password_received'")->fetchColumn();
+        self::assertIsString($ev);
+        self::assertStringNotContainsString((string) $body['password'], $ev);
+    }
+
+    public function testCreateWithPasswordSetDisabledSkipsResetPassword(): void
+    {
+        putenv('ADAXES_SET_PASSWORD_ON_CREATE=false');
+        try {
+            $db = $this->db();
+            $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+            $this->seedPerson($db, [
+                'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+                'first_name' => 'John', 'last_name' => 'Smith', 'primary_school_id' => 5,
+            ]);
+
+            $calls = [];
+            $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $this->writer($calls));
+            $res = $rec->run(dryRun: false, phases: ['create']);
+
+            self::assertSame(1, $res['create']['applied']);
+            $hasReset = false;
+            foreach ($calls as $c) {
+                if (str_contains((string) $c['url'], 'resetPassword')) {
+                    $hasReset = true;
+                }
+            }
+            self::assertFalse($hasReset, 'reset password must not run when the flag is off');
+            $set = $db->query('SELECT initial_password_set_at FROM person WHERE person_id = 1')->fetchColumn();
+            self::assertNull($set);
+        } finally {
+            putenv('ADAXES_SET_PASSWORD_ON_CREATE');
+        }
+    }
+
+    public function testCreateFlagsErrorWhenPasswordResetFails(): void
+    {
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (5, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'pending',
+            'first_name' => 'John', 'last_name' => 'Smith', 'primary_school_id' => 5,
+        ]);
+
+        // Writer whose create succeeds but resetPassword returns HTTP 400.
+        $calls = [];
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$calls): ?array {
+            $calls[] = ['method' => $method, 'url' => $url, 'body' => $body];
+            if (str_contains($url, 'resetPassword')) {
+                return ['status' => 400, 'body' => json_encode(['message' => 'password does not meet policy'])];
+            }
+            if ($method === 'POST' && !str_contains($url, '/search')) {
+                return ['status' => 200, 'body' => json_encode(['objectGUID' => self::NEWGUID])];
+            }
+            return ['status' => 200, 'body' => '{}'];
+        };
+        $writer = new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $fetch, 'write-token', true);
+
+        $rec = new AdaxesReconciler($db, $this->read([], searchHit: false), $writer);
+        $res = $rec->run(dryRun: false, phases: ['create']);
+
+        // The account was still created (not rolled back), but the failed password
+        // set counts as an error that needs attention.
+        self::assertSame(1, $res['create']['applied']);
+        self::assertSame(1, $res['create']['errors']);
+        $guid = $db->query("SELECT source_key FROM person_source_id WHERE person_id = 1 AND system = 'ad'")->fetchColumn();
+        self::assertSame(self::NEWGUID, $guid);
+        // Nothing recorded, since the reset failed.
+        $set = $db->query('SELECT initial_password_set_at FROM person WHERE person_id = 1')->fetchColumn();
+        self::assertNull($set);
     }
 
     /**
@@ -620,7 +739,9 @@ final class AdaxesReconcilerTest extends TestCase
 
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -658,7 +779,9 @@ final class AdaxesReconcilerTest extends TestCase
 
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -697,7 +820,9 @@ final class AdaxesReconcilerTest extends TestCase
 
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -723,7 +848,9 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(1, $res['create']['applied']);
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -755,7 +882,9 @@ final class AdaxesReconcilerTest extends TestCase
 
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -795,7 +924,9 @@ final class AdaxesReconcilerTest extends TestCase
 
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -821,7 +952,9 @@ final class AdaxesReconcilerTest extends TestCase
 
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -852,7 +985,9 @@ final class AdaxesReconcilerTest extends TestCase
 
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -932,7 +1067,9 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(1, $res['create']['applied']);
         $create = null;
         foreach ($calls as $c) {
-            if ($c['method'] === 'POST') {
+            // The create POST (body carries createIn) — not the resetPassword POST
+            // that now follows it.
+            if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                 $create = $c;
             }
         }
@@ -1071,7 +1208,7 @@ final class AdaxesReconcilerTest extends TestCase
             $rec->run(dryRun: false, phases: ['create']);
             $create = null;
             foreach ($calls as $c) {
-                if ($c['method'] === 'POST') {
+                if ($c['method'] === 'POST' && str_contains((string) $c['body'], 'createIn')) {
                     $create = $c;
                 }
             }
