@@ -157,3 +157,42 @@ Schedule it to finish **before** OneSync's run so it pulls the freshest students
 The same service/timer pattern applies to the SFTP feed pull
 (`bin/fetch_feeds.php`) — see [`../docs/cron-feed-pull.md`](../docs/cron-feed-pull.md)
 for those unit definitions and crontab alternatives.
+
+## PHP-FPM pool tuning (`idm-php-fpm.conf`)
+
+Debian's stock pool ships `pm.max_children = 5`. Because a PHP worker is held for
+the entire duration of its request, five slow requests wedge the whole site and
+nginx returns 504:
+
+```
+WARNING: [pool www] server reached pm.max_children setting (5), consider raising it
+```
+
+The two long jobs that caused this — the Google and Adaxes syncs (a live remote
+lookup **per person**, minutes long) — now run in the **background** via systemd
+(the "Run … now" buttons only *start* the oneshot and return), so they no longer
+occupy a web worker. `deploy/idm-php-fpm.conf` then gives the remaining in-request
+work real headroom and makes a wedged request self-terminate (`request_terminate_timeout`)
+instead of piling up. It's a **dedicated pool** (own socket) so it never clobbers
+the stock `www` pool.
+
+```sh
+# Install the pool and point nginx at its socket
+sudo install -m 0644 deploy/idm-php-fpm.conf /etc/php/${PHP_VERSION}/fpm/pool.d/idm.conf
+sudo mkdir -p /var/log/php-fpm && sudo chown www-data:www-data /var/log/php-fpm
+#   in the nginx site:  fastcgi_pass unix:/run/php/idm.sock;
+sudo php-fpm${PHP_VERSION} -t                       # validate config
+sudo systemctl reload php${PHP_VERSION}-fpm && sudo systemctl reload nginx
+```
+
+Size `pm.max_children` to your RAM (`≈ RAM-for-PHP ÷ ~60 MB per worker`; the file
+has the math) and keep `request_terminate_timeout` above the app's remote timeouts
+(`ADAXES_TIMEOUT`, `GAM_TIMEOUT`, DB) but below nginx's `fastcgi_read_timeout`, so
+PHP logs the slow request before nginx cuts it off.
+
+> **Note on the "Run … now" buttons and hardening.** The Google / Adaxes / VPN
+> buttons shell out (`sudo -n systemctl start …`) via `proc_open`. `scripts/harden-debian12.sh`
+> **disables `proc_open` in php-fpm**, so on a fully hardened host those buttons
+> won't work — the nightly timers still run the syncs, and you start one on demand
+> with `sudo systemctl start idm-google-sync.service`. Leave `proc_open` enabled
+> (don't apply that part of the hardening) only if you want the in-app buttons.
