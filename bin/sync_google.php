@@ -102,7 +102,7 @@ $log = $verbose ? static function (string $event, array $d) use ($dryRun): void 
     fflush(STDOUT);
 } : null;
 
-// Record the run so the admin "Services" page shows when Google last synced.
+// Record the run so the Outputs page shows when Google last synced.
 // Dry runs change nothing, so they aren't recorded.
 $runLog = $dryRun ? null : new ServiceRunLog();
 $runId  = $runLog?->start('google', 'cron', 'system:google_sync');

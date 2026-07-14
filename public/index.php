@@ -69,6 +69,7 @@ try {
     $security = new \App\Controller\SecurityController();
     $authCtl = new AuthController();
     $google = new GoogleController();
+    $output = new \App\Controller\OutputController();
 
     $router = new Router();
 
@@ -102,6 +103,7 @@ try {
     $router->get('/reference', $guard('view', static fn() => $reference->index()));
     $router->get('/reference/data-flow', $guard('view', static fn() => $reference->dataflow()));
     $router->get('/import', $guard('view', static fn() => $import->index()));
+    $router->get('/outputs', $guard('view', static fn() => $output->index()));
     $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
 
     $logins = new \App\Controller\LoginsController();
@@ -150,7 +152,9 @@ try {
     $router->post('/people/{id}/adaxes/accept', $guard('edit', static fn(array $p) => $person->acceptAdaxes($p)));
     $router->post('/import/upload', $guard('edit', static fn() => $import->upload()));
     $router->post('/import/fetch', $guard('edit', static fn() => $import->fetch()));
-    $router->post('/import/google-sync', $guard('edit', static fn() => $import->googleSync()));
+    // Output syncs (destinations the golden record is pushed to). Google is
+    // editor-gated; the AD run is admin-gated (registered in the admin block).
+    $router->post('/outputs/run/google', $guard('edit', static fn() => $output->runGoogle()));
     $router->post('/vpn/restart', $guard('edit', static fn() => (new \App\Controller\VpnController())->restart()));
 
     // ---- Admin only ----
@@ -165,7 +169,7 @@ try {
     $router->post('/admin/run/feeds', $guard('admin', static fn() => $admin->runFeeds()));
     $router->post('/admin/run/students', $guard('admin', static fn() => $admin->runStudents()));
     $router->post('/admin/run/onesync-db', $guard('admin', static fn() => $admin->runOnesyncDb()));
-    $router->post('/admin/run/adaxes', $guard('admin', static fn() => $admin->runAdaxes()));
+    $router->post('/outputs/run/adaxes', $guard('admin', static fn() => $output->runAdaxes()));
     $router->post('/admin/onesync-sync', $guard('admin', static fn() => $admin->toggleOnesync()));
     $router->get('/security', $guard('admin', static fn() => $security->index()));
 

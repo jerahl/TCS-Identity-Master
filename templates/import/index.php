@@ -32,27 +32,6 @@ $badge = static fn(string $mod): string => match ($mod) {
   </div>
   <?php endif; ?>
 
-  <?php if (!empty($canEdit) && !empty($googleReady)): ?>
-  <div class="card card--pad" style="margin-bottom:18px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-    <div style="flex:1; min-width:240px;">
-      <div style="font-weight:600; font-size:13.5px;">Sync to Google Workspace <span class="muted" style="font-weight:500;">(direct · bypasses OneSync)</span></div>
-      <div class="muted" style="font-size:12px;">Reconcile Google to the golden record: create missing accounts (active people with an email), push name drift, and suspend disabled/terminated people. Never auto-restores. Guarded against mass-suspend.</div>
-      <div class="muted" style="font-size:11.5px; margin-top:4px;">Runs in the background (a live Google lookup per person is slow) — the result appears on the Services page. For a dry-run preview, use the CLI: <code>php bin/sync_google.php --dry-run</code>.</div>
-    </div>
-    <form method="post" action="<?= e(url('/import/google-sync')) ?>" style="display:flex; align-items:center; gap:12px;">
-      <input type="hidden" name="_csrf" value="<?= e($csrf ?? '') ?>">
-      <?php if (!empty($googleRunning)): ?>
-        <button class="btn btn--ghost" type="submit" style="height:38px;" disabled>Sync running…</button>
-      <?php else: ?>
-        <button class="btn btn--ghost" type="submit" style="height:38px;">Run Google sync now</button>
-      <?php endif; ?>
-    </form>
-  </div>
-  <?php if (empty($googleRunEnabled)): ?>
-    <p class="muted" style="font-size:11.5px; margin:-8px 0 18px;">On-demand runs are off — set <code>GOOGLE_RUN_ENABLED=true</code> and install <code>deploy/idm-google-run.sudoers</code> to enable the button.</p>
-  <?php endif; ?>
-  <?php endif; ?>
-
   <?php if (!empty($canEdit)): ?>
   <div class="card card--pad" style="margin-bottom:18px;">
     <div class="form-section" style="margin-top:0;">Upload &amp; import a feed</div>

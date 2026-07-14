@@ -14,10 +14,11 @@ use PDO;
 // GoogleWorkspaceService + ServiceRunLog are in this same namespace (App\Service).
 
 /**
- * Read-only health snapshot of the moving parts behind Identity Master, for the
- * admin "Services" page: the app database, OneSync's source DB (read), the
- * OneSync DB sync freshness, the username/password write-back API, the SFTP
- * feed config, the PowerSchool ODBC connection, and the VPN monitor.
+ * Read-only health snapshot of the moving parts behind Identity Master. services()
+ * feeds the admin "Services" page: the app database, OneSync's source DB (read),
+ * the OneSync DB sync freshness, the username/password write-back API, the SFTP
+ * feed config, the PowerSchool ODBC connection, and the VPN monitor. outputs()
+ * feeds the "Outputs" page: the two destination syncs (AD via Adaxes, Google).
  *
  * Each entry is a small envelope — key, label, state, one-line detail, and a few
  * key/value facts — so the template renders them uniformly. The app-DB card
@@ -48,14 +49,27 @@ final class ServiceStatusService
     {
         return [
             $this->appDb(),
-            $this->adaxesSync(),
-            $this->googleSync(),
             $this->onesyncSource(),
             $this->onesyncDbSync(),
             $this->onesyncApi(),
             $this->sftpFeeds(),
             $this->powerSchoolOdbc(),
             $this->vpnMonitor(),
+        ];
+    }
+
+    /**
+     * Status of the output syncs — the destinations the golden record is pushed
+     * TO (AD via Adaxes, Google Workspace directly). Surfaced on the Outputs page,
+     * separate from the infrastructure/import health above.
+     *
+     * @return list<array{key:string,label:string,state:string,detail:string,facts:list<array{0:string,1:string}>}>
+     */
+    public function outputs(): array
+    {
+        return [
+            $this->adaxesSync(),
+            $this->googleSync(),
         ];
     }
 
