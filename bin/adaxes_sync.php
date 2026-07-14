@@ -169,9 +169,19 @@ echo "\nTotal errors: {$result['errors']}\n";
 
 // Close the run row with a compact per-phase counts summary.
 if ($runLog !== null) {
-    $counts = ['errors' => (int) $result['errors'], 'write_enabled' => !empty($result['write_enabled'])];
+    $counts = ['errors' => (int) $result['errors'], 'write_enabled' => !empty($result['write_enabled']), 'phases' => []];
     foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
         if (isset($result[$phase])) {
+            // Structured per-phase counts (drop the per-person 'items' list) so the
+            // Services page can render a full summary; plus a few flat keys for
+            // quick reads / backward compatibility.
+            $phaseCounts = [];
+            foreach ($result[$phase] as $k => $v) {
+                if (is_int($v) || is_bool($v)) {
+                    $phaseCounts[$k] = is_bool($v) ? (int) $v : $v;
+                }
+            }
+            $counts['phases'][$phase] = $phaseCounts;
             foreach (['applied', 'added', 'removed', 'created', 'correlated', 'errors'] as $k) {
                 if (isset($result[$phase][$k]) && $result[$phase][$k] > 0) {
                     $counts["{$phase}_{$k}"] = (int) $result[$phase][$k];

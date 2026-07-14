@@ -7,6 +7,8 @@ namespace App\Controller;
 use App\Config;
 use App\Import\OneSyncResultImporter;
 use App\Import\StudentImporter;
+use App\Service\AdaxesRunService;
+use App\Service\AdaxesSyncSummary;
 use App\Service\AuditService;
 use App\Service\DashboardService;
 use App\Service\ServiceRunLog;
@@ -32,18 +34,21 @@ final class AdminController extends Controller
     private DashboardService $dash;
     private ServiceRunLog $runs;
     private AuditService $audit;
+    private AdaxesRunService $adaxesRun;
 
     public function __construct(
         ?ServiceStatusService $status = null,
         ?DashboardService $dash = null,
         ?ServiceRunLog $runs = null,
-        ?AuditService $audit = null
+        ?AuditService $audit = null,
+        ?AdaxesRunService $adaxesRun = null
     ) {
         parent::__construct();
         $this->status = $status ?? new ServiceStatusService();
         $this->dash = $dash ?? new DashboardService();
         $this->runs = $runs ?? new ServiceRunLog();
         $this->audit = $audit ?? new AuditService();
+        $this->adaxesRun = $adaxesRun ?? new AdaxesRunService();
     }
 
     public function index(): string
@@ -60,6 +65,9 @@ final class AdminController extends Controller
                 && trim((string) Config::get('ONESYNC_DB_HOST', '')) !== '',
             'onesyncEnabled' => OneSyncResultImporter::syncEnabled(),
             'onesyncEnvLocked' => Config::isEnvLocked('ONESYNC_DB_SYNC_ENABLED'),
+            'adaxesSummary'  => AdaxesSyncSummary::fromRun($this->runs->last('adaxes')),
+            'canRunAdaxes'   => $this->adaxesRun->enabled(),
+            'adaxesRunning'  => ($this->runs->last('adaxes')['status'] ?? '') === 'running',
             'csrf'         => Csrf::token(),
         ], 'admin', 'Configuration  /  Services', 'Services — TCS Identity Master');
     }
@@ -198,6 +206,39 @@ final class AdminController extends Controller
         } catch (\Throwable $e) {
             error_log('[idm] onesync toggle: ' . $e->getMessage());
             $this->flash('Could not change the OneSync DB sync switch: ' . $e->getMessage());
+        }
+        return $this->redirect(url('/admin'));
+    }
+
+    /**
+     * Fire the Adaxes AD reconciler in the background (admin). Unlike the other
+     * jobs it isn't run in-request — a live AD lookup per person can take minutes —
+     * so this asks systemd to start the oneshot unit and returns at once; the CLI
+     * records its own service_run row, shown in the summary above.
+     */
+    public function runAdaxes(): string
+    {
+        if (!Csrf::check($_POST['_csrf'] ?? null)) {
+            $this->flash('Invalid session token — please retry.');
+            return $this->redirect(url('/admin'));
+        }
+        if (!$this->adaxesRun->enabled()) {
+            $this->flash('On-demand AD sync is disabled — set ADAXES_RUN_ENABLED=true (and grant the sudoers rule in deploy/idm-adaxes-run.sudoers).');
+            return $this->redirect(url('/admin'));
+        }
+        if (($this->runs->last('adaxes')['status'] ?? '') === 'running') {
+            $this->flash('An AD sync is already running — wait for it to finish before starting another.');
+            return $this->redirect(url('/admin'));
+        }
+
+        $actor = $this->currentUser()['name'];
+        $res = $this->adaxesRun->start();
+        if ($res['ok']) {
+            $this->auditRun('adaxes', 'started', 'manual start via ' . $this->adaxesRun->unit(), $actor);
+            $this->flash('AD sync started in the background. Refresh in a minute or two for the summary.');
+        } else {
+            $this->auditRun('adaxes', 'failed', (string) $res['error'], $actor);
+            $this->flash('Could not start the AD sync: ' . $res['error']);
         }
         return $this->redirect(url('/admin'));
     }
