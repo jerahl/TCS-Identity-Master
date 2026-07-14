@@ -23,6 +23,7 @@ Verner Elementary School,185,OU=VES,/tcs/faculty/VES,active
 Woodland Forrest Elementary School,195,OU=WFS,/tcs/faculty/WFS,active
 Westlawn Middle School,200,OU=WMS,/tcs/faculty/WMS,active
 Central Office,4999,OU=CO,/tcs/faculty/CO,active
+Transportation,4998,OU=trans,/tcs/faculty/trans,active
 Tuscaloosa Career and Technology Academy,6000,OU=TCT,/tcs/faculty/TCT,active
 Summer Learning,7001,OU=Summer Learning,/tcs/faculty/Summer Learning,active
 BPCC,8000,"OU=STC,OU=CO",/tcs/faculty/STC,active

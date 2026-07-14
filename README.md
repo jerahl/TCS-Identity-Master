@@ -689,6 +689,23 @@ Resource Officer" → `contractor`; "Substitute" / "Long-term Substitute" → `s
 **and** whose current type differs are written; each change is audited and added
 to the person timeline. Idempotent — safe to re-run.
 
+**Give Transportation its own building (one-time).** NextGen flags transportation
+staff with a distinct location code (8410 at TCS). If that code is only an *alias*
+on the Central Office school row, every Central Office employee resolves to the
+same `school_id` and the Adaxes sync mis-classifies the whole building as
+transportation. This ensures a dedicated Transportation school (`ad_ou=OU=trans`,
+no PowerSchool id) and repoints the transportation NextGen code(s) onto it:
+
+```sh
+php bin/split_transportation_building.php --dry-run   # preview
+php bin/split_transportation_building.php             # apply
+```
+
+Reads the code(s) from `AD_TRANSPORTATION_SCHOOL_CODES` and the OU from
+`AD_OU_TRANSPORTATION`. Idempotent and audited. Existing transportation employees
+move onto the new building at the next NextGen import; Central Office staff stop
+being mis-flagged immediately.
+
 **Reclassify OU=Subs members from an Adaxes report (one-time).** When existing AD
 substitutes sit in `OU=Subs` but IDM has them typed as something else, an Adaxes
 reconciler `--dry-run` shows them as `[WOULD-MOVE] … move OU=Subs,… → …` (IDM
