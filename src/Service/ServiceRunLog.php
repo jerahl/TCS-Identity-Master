@@ -29,6 +29,7 @@ final class ServiceRunLog
         'students'   => 'Students sync',
         'adaxes'     => 'Active Directory sync (Adaxes)',
         'google'     => 'Google Workspace sync',
+        'ps_staff_export' => 'PowerSchool staff export (AutoComm/DIM)',
     ];
 
     private ?PDO $pdo;
