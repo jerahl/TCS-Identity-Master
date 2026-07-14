@@ -1308,6 +1308,56 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertStringNotContainsString('CN=All-Faculty', $joined);           // already a member, no re-add
     }
 
+    public function testGroupMembershipComparedByRealCnNotConfiguredName(): void
+    {
+        // The reported bug: the M365 A3 License group's real cn is "M365-A3"
+        // (the configured name matches its sAMAccountName, not its cn). The user
+        // is ALREADY a member. Comparing the configured name against the memberOf
+        // cn would re-add it every run; comparing the resolved real cn is a no-op.
+        $db = $this->db();
+        $db->exec("INSERT INTO school (school_id, name, ad_ou) VALUES (30, 'Central Office', 'OU=CO')");
+        $this->seedPerson($db, [
+            'person_id' => 1, 'person_type' => 'faculty', 'status' => 'active',
+            'first_name' => 'Tea', 'last_name' => 'Cher', 'primary_school_id' => 30,
+        ]);
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 30, 'Teacher - Math', 1)");
+        $this->link($db, 1, self::GUID1);
+
+        $readFetch = function (string $method, string $url, array $headers, ?string $body): ?array {
+            if (str_contains($url, '/search')) {
+                // findGroup echoes a DN; the A3 license group's cn is "M365-A3"
+                // even though it's configured/searched as "M365 A3 License".
+                preg_match('/"value":"([^"]+)"/', (string) $body, $m);
+                $name = $m[1] ?? 'Unknown';
+                $cn = $name === 'M365 A3 License' ? 'M365-A3' : $name;
+                return ['status' => 200, 'body' => json_encode(['objects' => [['properties' => [
+                    'distinguishedName' => 'CN=' . $cn . ',OU=Groups,DC=example,DC=org',
+                ]]]])];
+            }
+            // The account is already a member of every desired group — A3 under
+            // its REAL cn "M365-A3".
+            return ['status' => 200, 'body' => json_encode(['properties' => [
+                ['name' => 'memberOf', 'values' => [
+                    'CN=All-Faculty,OU=Groups,DC=example,DC=org',
+                    'CN=CO-Everyone,OU=Groups,DC=example,DC=org',
+                    'CN=M365-A3,OU=Groups,DC=example,DC=org',
+                    'CN=Raptor_EmergencyManagementUser,OU=Groups,DC=example,DC=org',
+                ]],
+            ]])];
+        };
+        $read = new AdaxesService('https://adx.example.org/restv2', '', '', 5, $readFetch, null, null, null, null, 'read-token');
+
+        $calls = [];
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['groups']);
+
+        // Nothing to do — already a member of everything (A3 matched by real cn).
+        self::assertSame(1, $res['groups']['noop']);
+        self::assertSame(0, $res['groups']['added']);
+        self::assertSame(0, $res['groups']['applied']);
+        self::assertSame([], $calls); // no group writes at all
+    }
+
     public function testGroupsPhaseHonorsPerPersonRaptorOverride(): void
     {
         $db = $this->db();

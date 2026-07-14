@@ -64,8 +64,8 @@ final class AdaxesReconciler
     /** When non-empty, every phase is restricted to these person_ids (test cohort). */
     private array $restrictPersonIds = [];
 
-    /** Per-run cache: group cn (lowercased) → resolved DN/GUID, or '' if not found. */
-    private array $groupIdCache = [];
+    /** Per-run cache: configured group name (lowercased) → ['cn'=>real cn, 'id'=>DN/GUID|null]. */
+    private array $groupResolveCache = [];
 
     /** Per-run cache: school_ids that are transportation locations (null = unresolved). */
     private ?array $transportationSchoolIds = null;
@@ -629,16 +629,24 @@ final class AdaxesReconciler
                     $liveByCn[strtolower($cn)] = ['cn' => $cn, 'dn' => $dn];
                 }
             }
-            $desiredByCn = [];
-            foreach ($desired as $cn) {
-                $desiredByCn[strtolower($cn)] = $cn;
+            // Resolve each desired group to its REAL cn (as AD stores it) so the
+            // comparison matches what memberOf reports even when the configured
+            // name is the group's sAMAccountName/display. Keep the resolved id for
+            // the add so we don't look it up twice.
+            $desiredByCn = [];   // lc real cn → configured name
+            $desiredId   = [];   // lc real cn → resolved DN/GUID (or null)
+            foreach ($desired as $name) {
+                $g = $this->resolveGroup($name);
+                $lc = strtolower($g['cn']);
+                $desiredByCn[$lc] = $name;
+                $desiredId[$lc]   = $g['id'];
             }
 
             // Add: desired groups the account isn't in yet.
-            $toAdd = [];
-            foreach ($desiredByCn as $lc => $cn) {
+            $toAdd = [];   // lc real cn → configured name
+            foreach ($desiredByCn as $lc => $name) {
                 if (!isset($liveByCn[$lc])) {
-                    $toAdd[] = $cn;
+                    $toAdd[$lc] = $name;
                 }
             }
             // Remove: managed groups the account is in but no longer qualifies for.
@@ -654,7 +662,7 @@ final class AdaxesReconciler
                 continue;
             }
 
-            $summary = trim(($toAdd !== [] ? '+' . implode(',+', $toAdd) : '') . ' ' . ($toRemove !== [] ? '-' . implode(',-', array_column($toRemove, 'cn')) : ''));
+            $summary = trim(($toAdd !== [] ? '+' . implode(',+', array_values($toAdd)) : '') . ' ' . ($toRemove !== [] ? '-' . implode(',-', array_column($toRemove, 'cn')) : ''));
 
             if (!$apply) {
                 $this->item($out, $pid, $name, 'groups', 'would-sync', $summary);
@@ -663,11 +671,11 @@ final class AdaxesReconciler
 
             $changed = 0;
             $errs = [];
-            foreach ($toAdd as $cn) {
-                // The API needs the group's DN/GUID, not its name — resolve it.
-                $groupId = $this->resolveGroupId($cn);
+            foreach ($toAdd as $lc => $name) {
+                // The group's DN/GUID was resolved during the comparison above.
+                $groupId = $desiredId[$lc] ?? null;
                 if ($groupId === null) {
-                    $errs[] = "add {$cn}: group not found in AD (cannot resolve to a DN)";
+                    $errs[] = "add {$name}: group not found in AD (cannot resolve to a DN)";
                     continue;
                 }
                 $r = $this->writer->addToGroup($groupId, $guid);
@@ -675,7 +683,7 @@ final class AdaxesReconciler
                     $out['added']++;
                     $changed++;
                 } else {
-                    $errs[] = "add {$cn}: " . $r['error'];
+                    $errs[] = "add {$name}: " . $r['error'];
                 }
             }
             foreach ($toRemove as $g) {
@@ -693,7 +701,7 @@ final class AdaxesReconciler
                 $this->item($out, $pid, $name, 'groups', 'error', implode('; ', $errs));
                 continue;
             }
-            $this->audit->log('person', $pid, 'update', ['ad_groups' => 'drift'], ['added' => $toAdd, 'removed' => array_column($toRemove, 'cn')], self::ACTOR);
+            $this->audit->log('person', $pid, 'update', ['ad_groups' => 'drift'], ['added' => array_values($toAdd), 'removed' => array_column($toRemove, 'cn')], self::ACTOR);
             $this->audit->lifecycle($pid, 'update', ['summary' => 'AD group membership synced via Adaxes: ' . $summary . '.'], self::ACTOR);
             $out['applied']++;
             $this->item($out, $pid, $name, 'groups', 'synced', $summary);
@@ -703,21 +711,36 @@ final class AdaxesReconciler
     }
 
     /**
-     * Resolve a group name to the directory identifier the group-member API needs
-     * (its DN, else objectGUID), cached for the run. Null when the group can't be
-     * found in AD (so the add is reported as an error rather than a 400).
+     * Resolve a configured group name to its LIVE AD identity: the real cn (as AD
+     * stores it, taken from the object's DN) and the identifier the group-member
+     * API needs (DN, else objectGUID). Cached per run.
+     *
+     * Comparing membership by this real cn — not the configured name — is what
+     * makes the groups phase idempotent: a group whose configured name is its
+     * sAMAccountName or display name rather than its cn would otherwise be added
+     * successfully yet never match on the next `memberOf` read (whose DNs carry
+     * the cn), so IDM would re-add it to every user on every run. Falls back to
+     * the given name with a null id when the group can't be found (the add then
+     * reports a clear "not found" instead of looping).
+     *
+     * @return array{cn:string, id:?string}
      */
-    private function resolveGroupId(string $cn): ?string
+    private function resolveGroup(string $name): array
     {
-        $key = strtolower(trim($cn));
-        if (array_key_exists($key, $this->groupIdCache)) {
-            $id = $this->groupIdCache[$key];
-            return $id === '' ? null : $id;
+        $key = strtolower(trim($name));
+        if (array_key_exists($key, $this->groupResolveCache)) {
+            return $this->groupResolveCache[$key];
         }
-        $res = $this->read->findGroup($cn);
-        $id = ($res['ok'] && $res['found']) ? (string) $res['id'] : '';
-        $this->groupIdCache[$key] = $id;
-        return $id === '' ? null : $id;
+        $res = $this->read->findGroup($name);
+        if (($res['ok'] ?? false) && ($res['found'] ?? false)) {
+            $dn  = trim((string) ($res['dn'] ?? ''));
+            $cn  = $dn !== '' ? self::cnOf($dn) : '';
+            $id  = trim((string) ($res['id'] ?? ''));
+            $out = ['cn' => $cn !== '' ? $cn : $name, 'id' => $id !== '' ? $id : null];
+        } else {
+            $out = ['cn' => $name, 'id' => null];
+        }
+        return $this->groupResolveCache[$key] = $out;
     }
 
     // ---- helpers ------------------------------------------------------------
