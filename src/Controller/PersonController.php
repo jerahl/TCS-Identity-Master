@@ -722,8 +722,13 @@ final class PersonController extends Controller
         if ($dob !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob)) {
             return $this->addForm($_POST, 'Date of birth must be YYYY-MM-DD.');
         }
+        $boardApproval = trim((string) ($_POST['board_approval_date'] ?? ''));
+        if ($boardApproval !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $boardApproval)) {
+            return $this->addForm($_POST, 'Board approval date must be YYYY-MM-DD.');
+        }
         $schoolId = ($_POST['school_id'] ?? '') !== '' ? (int) $_POST['school_id'] : null;
 
+        $ethSource = trim((string) ($_POST['ethnicity_source'] ?? ''));
         $row = new NormalizedRow(
             system: 'manual',
             sourceKey: '',
@@ -733,12 +738,26 @@ final class PersonController extends Controller
             preferredName: trim((string) ($_POST['preferred_name'] ?? '')) ?: null,
             dob: $dob ?: null,
             gender: trim((string) ($_POST['gender'] ?? '')) ?: null,
+            employeeId: trim((string) ($_POST['employee_id'] ?? '')) ?: null,
             schoolId: $schoolId,
+            ethnicitySource: $ethSource ?: null,
+            ethnicityCode: $ethSource === '' ? null : ($this->people->ethnicityCodeFor($ethSource) ?: null),
+            alsdeId: trim((string) ($_POST['alsde_id'] ?? '')) ?: null,
             personType: $type,
             title: trim((string) ($_POST['title'] ?? '')) ?: null,
             fte: trim((string) ($_POST['fte'] ?? '')) ?: null,
             isPrimary: true,
         );
+
+        // Fields createPerson() doesn't persist off the feed row (they have no
+        // NextGen/PowerSchool source) — written straight after create in the same
+        // transaction so a manual record can carry them from the start.
+        $profile = [
+            'board_approval_date' => $boardApproval,
+            'board_approval_note' => trim((string) ($_POST['board_approval_note'] ?? '')),
+            'notes'               => trim((string) ($_POST['notes'] ?? '')),
+        ];
+        $profile = array_filter($profile, static fn(string $val): bool => $val !== '');
 
         try {
             $db = Db::connect(Db::ROLE_APP);
@@ -749,6 +768,9 @@ final class PersonController extends Controller
             $pid = $writer->createPerson($row, $actor);
             $writer->attachSourceId($pid, 'manual', (string) $pid, $actor);
             $writer->upsertAssignment($pid, $row, $actor);
+            if ($profile !== []) {
+                $writer->updateProfile($pid, $profile, $actor);
+            }
             $db->commit();
 
             $this->flash("{$first} {$last} created — pending activation. OneSync will mint the username.");
