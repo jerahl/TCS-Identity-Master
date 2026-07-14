@@ -107,6 +107,52 @@ final class AdaxesWriterTest extends TestCase
         self::assertNull($res['guid']);
     }
 
+    public function testResetPasswordPostsSecretInBodyWithMustChange(): void
+    {
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+
+        $res = $w->resetPassword('2b6160e2-ad91-419c-8960-cf672c75528f', 'S3cret-Temp!');
+        self::assertTrue($res['ok']);
+        self::assertTrue($res['changed']);
+
+        self::assertSame('POST', $captured['method']);
+        // Endpoint is the resetPassword operation; the secret rides the BODY, never
+        // the URL/query, so it can't leak via request logging.
+        self::assertStringContainsString('/api/directoryObjects/resetPassword', $captured['url']);
+        self::assertStringNotContainsString('S3cret-Temp!', $captured['url']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $body['directoryObject']);
+        self::assertSame('S3cret-Temp!', $body['password']);
+        self::assertTrue($body['options']['mustChangePassword']);
+    }
+
+    public function testResetPasswordCanClearMustChange(): void
+    {
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+        $w->resetPassword('2b6160e2-ad91-419c-8960-cf672c75528f', 'x', false);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertFalse($body['options']['mustChangePassword']);
+    }
+
+    public function testResetPasswordRefusesEmptyPasswordWithoutCalling(): void
+    {
+        $captured = null;
+        $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
+        $res = $w->resetPassword('some-guid', '');
+        self::assertFalse($res['ok']);
+        self::assertNull($captured); // never hit the transport
+    }
+
+    public function testResetPasswordSurfacesHttpError(): void
+    {
+        $w = $this->writer(['status' => 400, 'body' => json_encode(['message' => 'does not meet policy'])]);
+        $res = $w->resetPassword('some-guid', 'weak');
+        self::assertFalse($res['ok']);
+        self::assertStringContainsString('does not meet policy', (string) $res['error']);
+    }
+
     public function testModifyPatchesChangedAttributesByGuid(): void
     {
         $captured = null;

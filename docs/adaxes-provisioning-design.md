@@ -216,11 +216,14 @@ The final phase. IDM mints identity and creates the account.
   `cn` hit the reconciler falls back to `"First Last (username)"`, which is
   guaranteed unique because the username is. (Exact payload field for the name is
   part of the "confirm payload shapes" open item.)
-  **Everything operational** (home dir, groups, licensing, initial password policy)
-  is left to **Adaxes Business Rules** — IDM does not replicate OneSync's full
-  provisioning; that logic moves server-side into Adaxes, where the write account
-  triggers it. (The password + must-change-at-logon + userAccountControl Business
-  Rule does not exist yet — it is a **Phase 3 cutover blocker**; see Open items.)
+  **Everything operational** (home dir, groups, licensing) is left to **Adaxes
+  Business Rules** — IDM does not replicate OneSync's full provisioning; that logic
+  moves server-side into Adaxes, where the write account triggers it. **Exception —
+  the initial password:** Business Rules do **not** fire on REST API events, so IDM
+  sets the initial password + must-change-at-next-logon itself, immediately after
+  the create, via the Adaxes `resetPassword` endpoint (`AdaxesWriter::resetPassword`),
+  then records the value encrypted on the golden record. Gated by
+  `ADAXES_SET_PASSWORD_ON_CREATE` (default on); needs `CREDENTIAL_ENC_KEY` set.
 - **Container / OU:** the full container DN is assembled most-specific first:
 
   ```
@@ -576,10 +579,13 @@ destination. IDM state is unchanged; no data migration to reverse.
   directory. Also confirm `OU=PTC` for contractors — it has **no OneSync
   counterpart** and is intentional new design; sign off (or change it) before
   cutover.
-- **Password + UAC Business Rule (Phase 3 cutover blocker).** OneSync does
-  generated-password + must-change-at-next-logon + Normal Account on create.
-  The design defers this to an Adaxes Business Rule so IDM never handles
-  secrets — that BR must be authored and tested before any real create.
+- **Password + UAC on create.** OneSync does generated-password +
+  must-change-at-next-logon + Normal Account on create. Business Rules do **not**
+  fire on REST API events, so IDM now sets the **password + must-change-at-logon**
+  itself right after the create (`AdaxesWriter::resetPassword`, gated by
+  `ADAXES_SET_PASSWORD_ON_CREATE`), recording the value encrypted on the golden
+  record. Still open: the **userAccountControl / Normal Account** bit, if the
+  created object doesn't already enable it — confirm against the deployed build.
 - **Welcome email on create.** OneSync's "Email on Create" has no equivalent
   yet — neither the reconciler nor a Business Rule sends the credentials /
   welcome notification. `NotifyTemplateService` is the natural hook if IDM owns

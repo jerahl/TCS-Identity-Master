@@ -21,8 +21,10 @@ use App\Config;
  * back to ADAXES_TOKEN, then the ADAXES_USERNAME/ADAXES_PASSWORD handshake.
  *
  * Everything OPERATIONAL about a new account (home directory, group membership,
- * licensing, initial password policy) is left to Adaxes Business Rules that fire
- * on the create — IDM sends only the identity core.
+ * licensing) is left to Adaxes Business Rules that fire on the create — IDM sends
+ * only the identity core. The initial password is the exception: Business Rules
+ * do NOT fire on REST API events, so IDM sets it itself via resetPassword() right
+ * after the create (see AdaxesReconciler), rather than relying on a create rule.
  *
  * @phpstan-type CreateResult array{ok:bool, error:?string, guid:?string, created:bool}
  * @phpstan-type ModifyResult array{ok:bool, error:?string, changed:array<string,string>}
@@ -45,6 +47,7 @@ final class AdaxesWriter
     private string $moveObjectField;
     private string $moveDestField;
     private string $createObjectType;
+    private string $resetPasswordPath;
 
     /**
      * @param callable(string,string,array<string,string>,?string):?array{status:int,body:string}|null $fetch
@@ -100,6 +103,10 @@ final class AdaxesWriter
         $this->moveObjectField = trim((string) Config::get('ADAXES_MOVE_OBJECT_FIELD', 'directoryObject')) ?: 'directoryObject';
         $this->moveDestField   = trim((string) Config::get('ADAXES_MOVE_DESTINATION_FIELD', 'targetContainer')) ?: 'targetContainer';
         $this->createObjectType = trim((string) Config::get('ADAXES_CREATE_OBJECT_TYPE', 'user')) ?: 'user';
+        // Password-reset operation endpoint (2025.x default). Used right after a
+        // create because Adaxes Business Rules don't fire on REST events, so IDM
+        // sets the initial password + must-change-at-logon itself.
+        $this->resetPasswordPath = trim((string) Config::get('ADAXES_RESET_PASSWORD_PATH', 'api/directoryObjects/resetPassword'), '/');
 
         $this->sessionPath = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
         $this->tokenPath   = trim((string) Config::get('ADAXES_TOKEN_PATH', 'api/auth'), '/');
@@ -157,6 +164,45 @@ final class AdaxesWriter
         // the caller re-resolves via a search — but that is the caller's job.
         $guid = self::extractGuid($res['data']);
         return ['ok' => true, 'error' => null, 'guid' => $guid, 'created' => true];
+    }
+
+    /**
+     * Set (reset) an account's password and, by default, force a change at next
+     * logon. IDM calls this immediately after create: the deployed Adaxes Business
+     * Rules do NOT fire on REST API events, so the generated-password +
+     * must-change-at-logon that OneSync's create rule applied must be set here
+     * explicitly. $objectGuid is the object identity (objectGUID or DN — the
+     * resetPassword endpoint accepts either under `directoryObject`).
+     *
+     * The password rides in the request BODY (never the URL/query), and the
+     * transport only ever debug-logs response snippets, so the secret is not
+     * written to logs.
+     *
+     * @return ToggleResult
+     */
+    public function resetPassword(string $objectGuid, string $password, bool $mustChangePassword = true): array
+    {
+        if (!$this->configured()) {
+            return ['ok' => false, 'error' => $this->disabledReason(), 'changed' => false];
+        }
+        $objectGuid = trim($objectGuid);
+        if ($objectGuid === '') {
+            return ['ok' => false, 'error' => 'No objectGUID for password reset.', 'changed' => false];
+        }
+        if ($password === '') {
+            return ['ok' => false, 'error' => 'Refusing to set an empty password.', 'changed' => false];
+        }
+
+        $body = [
+            $this->objectParam => $objectGuid,
+            'password'         => $password,
+            'options'          => ['mustChangePassword' => $mustChangePassword],
+        ];
+        $url = $this->baseUrl . '/' . $this->resetPasswordPath;
+        $res = $this->request('POST', $url, (string) json_encode($body));
+        return $res['ok']
+            ? ['ok' => true, 'error' => null, 'changed' => true]
+            : ['ok' => false, 'error' => $res['error'], 'changed' => false];
     }
 
     /**
