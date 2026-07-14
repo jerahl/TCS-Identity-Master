@@ -255,7 +255,7 @@ final class AdaxesReconciler
         foreach ($candidates as $pid => $c) {
             $desiredDate = $c['desiredDate'];
             $attrs = [
-                'accountExpires' => (string) self::accountExpiresFileTime($desiredDate),
+                'accountExpires' => (string) self::accountExpiresIso($desiredDate),
                 'description'    => $desc,
             ];
             // Dry-run report: show what AD holds now vs. what would be written.
@@ -778,7 +778,7 @@ final class AdaxesReconciler
         // Account expiration = the position end date, when one is set. AD's
         // accountExpires is a Windows FILETIME; midnight UTC of the end date reads
         // back as that date in the verify panel (compareToGolden), so the two agree.
-        $expires = self::accountExpiresFileTime((string) ($p['end_date'] ?? ''));
+        $expires = self::accountExpiresIso((string) ($p['end_date'] ?? ''));
         if ($expires !== null) {
             $attrs['accountExpires'] = $expires;
         }
@@ -1167,11 +1167,13 @@ final class AdaxesReconciler
     ];
 
     /**
-     * The Windows FILETIME (100-ns ticks since 1601-01-01 UTC) for midnight UTC of
-     * a Y-m-d date, as a string — the inverse of AdaxesService's accountExpires
-     * decode. Returns null for an empty/unparseable date (leave AD's expiry alone).
+     * The accountExpires value to WRITE for a Y-m-d date: midnight UTC of that
+     * date as an ISO-8601 timestamp (e.g. "2027-05-31T00:00:00Z"), which is the
+     * format the Adaxes REST API expects for a Timestamp property. Returns null
+     * for an empty/unparseable date (leave AD's expiry alone). (The read side
+     * decodes AD's native FILETIME back to a date — see AdaxesService.)
      */
-    private static function accountExpiresFileTime(string $endDate): ?string
+    private static function accountExpiresIso(string $endDate): ?string
     {
         $endDate = trim($endDate);
         if ($endDate === '') {
@@ -1181,7 +1183,7 @@ final class AdaxesReconciler
         if ($ts === false) {
             return null;
         }
-        return (string) (($ts + 11644473600) * 10000000);
+        return gmdate('Y-m-d\T00:00:00\Z', $ts);
     }
 
     /**

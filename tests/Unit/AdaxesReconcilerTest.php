@@ -114,6 +114,21 @@ final class AdaxesReconcilerTest extends TestCase
         return new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $fetch, 'write-token', true);
     }
 
+    /**
+     * Flatten an Adaxes REST property list ({propertyName, propertyType, values})
+     * from a request body to name => first value.
+     *
+     * @return array<string,string>
+     */
+    private static function props(array $body): array
+    {
+        $out = [];
+        foreach ($body['properties'] as $p) {
+            $out[$p['propertyName']] = $p['values'][0] ?? null;
+        }
+        return $out;
+    }
+
     private function seedPerson(PDO $db, array $cols): void
     {
         $keys = array_keys($cols);
@@ -154,14 +169,10 @@ final class AdaxesReconcilerTest extends TestCase
         // NOT an accountDisabled toggle.
         self::assertNotEmpty($calls);
         self::assertSame('PATCH', $calls[0]['method']);
-        $props = [];
-        foreach (json_decode((string) $calls[0]['body'], true)['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
         $today = gmdate('Y-m-d');
-        // accountExpires = midnight UTC of today, as a Windows FILETIME.
-        $expectFt = (string) ((strtotime($today . ' 00:00:00 UTC') + 11644473600) * 10000000);
-        self::assertSame($expectFt, $props['accountExpires']);
+        // accountExpires = midnight UTC of today, as an ISO-8601 timestamp.
+        self::assertSame($today . 'T00:00:00Z', $props['accountExpires']);
         self::assertSame('Account expired set by TCS-IDM on ' . $today, $props['description']);
         self::assertArrayNotHasKey('accountDisabled', $props); // no longer a disable toggle
 
@@ -185,13 +196,9 @@ final class AdaxesReconcilerTest extends TestCase
         $res = $rec->run(dryRun: false, phases: ['disable']);
 
         self::assertSame(1, $res['disable']['applied']);
-        $props = [];
-        foreach (json_decode((string) $calls[0]['body'], true)['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
-        // accountExpires = midnight UTC of the END DATE, not today.
-        $expectFt = (string) ((strtotime('2026-06-30 00:00:00 UTC') + 11644473600) * 10000000);
-        self::assertSame($expectFt, $props['accountExpires']);
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
+        // accountExpires = midnight UTC of the END DATE (ISO-8601), not today.
+        self::assertSame('2026-06-30T00:00:00Z', $props['accountExpires']);
         // description still records the run date (when IDM acted).
         self::assertSame('Account expired set by TCS-IDM on ' . gmdate('Y-m-d'), $props['description']);
     }
@@ -329,7 +336,7 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame(1, $res['edit']['applied']);
         self::assertNotEmpty($calls);
         $body = json_decode((string) $calls[0]['body'], true);
-        $names = array_column($body['properties'], 'name');
+        $names = array_column($body['properties'], 'propertyName');
         self::assertContains('userPrincipalName', $names);
         self::assertNotContains('sAMAccountName', $names); // immutable
     }
@@ -465,10 +472,7 @@ final class AdaxesReconcilerTest extends TestCase
                 }
             }
             self::assertNotNull($patch, 'expected a modify PATCH');
-            $props = [];
-            foreach (json_decode((string) $patch['body'], true)['properties'] as $pr) {
-                $props[$pr['name']] = $pr['value'];
-            }
+            $props = self::props(json_decode((string) $patch['body'], true));
             self::assertSame('Teacher', $props['title']);
             self::assertSame('Teacher', $props['description']);          // description ← title
             self::assertSame('Central Office', $props['department']);
@@ -587,16 +591,12 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['path']);
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn']);
+        $props = self::props($body);
         self::assertSame('jsmith', $props['sAMAccountName']);
         self::assertSame('E100', $props['employeeID']);
-        // accountExpires = midnight UTC of the end date, as a FILETIME.
-        $expectFt = (string) ((strtotime('2027-05-31 00:00:00 UTC') + 11644473600) * 10000000);
-        self::assertSame($expectFt, $props['accountExpires']);
+        // accountExpires = midnight UTC of the end date, as an ISO-8601 timestamp.
+        self::assertSame('2027-05-31T00:00:00Z', $props['accountExpires']);
     }
 
     /**
@@ -626,7 +626,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create, "no create POST for {$type}");
         $body = json_decode((string) $create['body'], true);
-        self::assertSame($expectedPath, $body['path']);
+        self::assertSame($expectedPath, $body['createIn']);
     }
 
     /** @return array<string,array{0:string,1:string}> */
@@ -664,13 +664,9 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        // CN rides top-level as the object name (the RDN), not as a property.
-        self::assertSame('John Smith', $body['name']);
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
-        self::assertArrayNotHasKey('cn', $props);
+        $props = self::props($body);
+        // CN (the RDN) rides in the property list like any other attribute.
+        self::assertSame('John Smith', $props['cn']);
         self::assertSame('Teacher - Math', $props['title']);
         self::assertSame('Central Office', $props['department']); // building name
     }
@@ -707,7 +703,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create);
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('John Smith (jsmith)', $body['name']); // unique via the username
+        self::assertSame('John Smith (jsmith)', self::props($body)['cn']); // unique via the username
     }
 
     public function testBusDriverPlacedInTransOuWithDepartmentOverride(): void
@@ -732,11 +728,8 @@ final class AdaxesReconcilerTest extends TestCase
             }
         }
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path']); // no school OU
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['createIn']); // no school OU
+        $props = self::props($body);
         self::assertSame('Transportation', $props['department']); // override, not a building
     }
 
@@ -767,11 +760,8 @@ final class AdaxesReconcilerTest extends TestCase
             }
         }
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path'], "{$title} OU");
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['createIn'], "{$title} OU");
+        $props = self::props($body);
         self::assertSame('Transportation', $props['department'], "{$title} department");
     }
 
@@ -810,11 +800,8 @@ final class AdaxesReconcilerTest extends TestCase
             }
         }
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['path']); // stays at the building
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn']); // stays at the building
+        $props = self::props($body);
         self::assertSame('Central Office', $props['department']);
     }
 
@@ -840,7 +827,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         $body = json_decode((string) $create['body'], true);
         // The SRO rule trumps the contractor type leaf (no OU=PTC).
-        self::assertSame('OU=SRO,OU=BHS,OU=Faculty,DC=example,DC=org', $body['path']);
+        self::assertSame('OU=SRO,OU=BHS,OU=Faculty,DC=example,DC=org', $body['createIn']);
     }
 
     /**
@@ -871,7 +858,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($create, "no create POST for {$title}");
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=Subs,OU=CO,OU=Faculty,DC=example,DC=org', $body['path'], "{$title} ({$type})");
+        self::assertSame('OU=Subs,OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn'], "{$title} ({$type})");
     }
 
     /** @return array<string,array{0:string,1:string}> */
@@ -950,11 +937,8 @@ final class AdaxesReconcilerTest extends TestCase
             }
         }
         $body = json_decode((string) $create['body'], true);
-        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['path']); // trans OU, no building
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        self::assertSame('OU=trans,OU=Faculty,DC=example,DC=org', $body['createIn']); // trans OU, no building
+        $props = self::props($body);
         self::assertSame('Transportation', $props['department']); // override, not the building name
     }
 
@@ -1028,10 +1012,7 @@ final class AdaxesReconcilerTest extends TestCase
 
         self::assertSame(1, $res['edit']['applied']);
         $body = json_decode((string) $calls[0]['body'], true);
-        $props = [];
-        foreach ($body['properties'] as $pr) {
-            $props[$pr['name']] = $pr['value'];
-        }
+        $props = self::props($body);
         self::assertSame('Central Office', $props['department']);
         self::assertSame('Coordinator', $props['title']);
     }
@@ -1056,7 +1037,7 @@ final class AdaxesReconcilerTest extends TestCase
                 }
             }
             $body = json_decode((string) $create['body'], true);
-            self::assertSame('OU=Vendors,OU=CO,OU=Faculty,DC=example,DC=org', $body['path']);
+            self::assertSame('OU=Vendors,OU=CO,OU=Faculty,DC=example,DC=org', $body['createIn']);
         } finally {
             putenv('AD_OU_CONTRACTOR');
         }

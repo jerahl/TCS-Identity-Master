@@ -159,7 +159,7 @@ trait AdaxesHttp
             return ['ok' => false, 'error' => 'Adaxes redirected the request (HTTP ' . $status . ') — likely a wrong path (the REST API is under {base}/api) or an unauthenticated request. Check ADAXES_BASE_URL / ADAXES_OBJECTS_PATH and ADAXES_TOKEN.', 'data' => []];
         }
         if ($status < 200 || $status >= 300) {
-            return ['ok' => false, 'error' => 'Adaxes returned HTTP ' . $status . '.', 'data' => []];
+            return ['ok' => false, 'error' => 'Adaxes returned HTTP ' . $status . self::bodyDetail((string) ($resp['body'] ?? '')) . '.', 'data' => []];
         }
         $data = json_decode((string) ($resp['body'] ?? ''), true);
         if (!is_array($data)) {
@@ -204,6 +204,29 @@ trait AdaxesHttp
         $this->debugLog($method, $url, $status, $resp === null ? null : (string) ($resp['body'] ?? ''), $location);
         $decoded['status'] = $status;
         return $decoded;
+    }
+
+    /**
+     * A short human-readable detail pulled from an error response body — Adaxes
+     * returns a JSON error (a `message`/`error` field) that explains a 4xx/5xx.
+     * Surfacing it turns an opaque "HTTP 400" into an actionable reason. Falls
+     * back to a trimmed snippet for a non-JSON body; empty when the body is empty.
+     */
+    private static function bodyDetail(string $body): string
+    {
+        $body = trim($body);
+        if ($body === '') {
+            return '';
+        }
+        $decoded = json_decode($body, true);
+        if (is_array($decoded)) {
+            foreach (['message', 'error', 'error_description', 'detail', 'Message'] as $k) {
+                if (isset($decoded[$k]) && is_string($decoded[$k]) && trim($decoded[$k]) !== '') {
+                    return ' — ' . trim($decoded[$k]);
+                }
+            }
+        }
+        return ' — ' . substr((string) preg_replace('/\s+/', ' ', $body), 0, 200);
     }
 
     /** The URL without its query string (drops the search filter / PII). */

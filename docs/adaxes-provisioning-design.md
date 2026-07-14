@@ -537,9 +537,16 @@ destination. IDM state is unchanged; no data migration to reverse.
 
 ## Open items
 
-- Confirm exact Adaxes REST create/modify/disable endpoints + payload shapes for
-  the deployed version — including the field name the create takes for the
-  object's **name/CN** (IDM sends top-level `name`).
+- ~~Confirm exact Adaxes REST create/modify/disable payload shapes.~~ **Done.**
+  Per the REST API docs ([Modify](https://www.adaxes.com/sdk/REST_ModifyDirectoryObject/),
+  [Create](https://www.adaxes.com/sdk/REST_CreateDirectoryObject/),
+  [Setting property values](https://www.adaxes.com/sdk/REST_SetPropertyValues/)):
+  the target is named in the **body** (`directoryObject` for modify, `createIn`
+  for create), properties are `{propertyName, propertyType, values:[…]}` (NOT
+  `{name, value}`), `cn` is a normal property (not a top-level `name`), and
+  `accountExpires` is a `Timestamp` in ISO-8601 (`2027-05-31T00:00:00Z`), not a
+  Windows FILETIME. `AdaxesWriter` now sends these; error responses surface the
+  Adaxes message so a bad property/value is obvious.
 - Confirm the staff OU layout so `school.ad_ou` values are complete/correct for
   every building before enabling create. The 22 per-school Everyone groups give
   the authoritative building list to validate against.

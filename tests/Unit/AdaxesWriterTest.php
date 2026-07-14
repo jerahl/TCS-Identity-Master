@@ -28,6 +28,21 @@ final class AdaxesWriterTest extends TestCase
         return new AdaxesWriter('https://adx.example.org/restv2', '', '', 5, $fetch, 'test-token', true);
     }
 
+    /**
+     * Flatten an Adaxes REST property list ({propertyName, propertyType, values})
+     * to name => first value, for assertions.
+     *
+     * @return array<string,string>
+     */
+    private static function props(array $body): array
+    {
+        $out = [];
+        foreach ($body['properties'] as $p) {
+            $out[$p['propertyName']] = $p['values'][0] ?? null;
+        }
+        return $out;
+    }
+
     public function testOffByDefault(): void
     {
         // Write-enabled flag false → not configured; every method no-ops with a reason.
@@ -73,13 +88,12 @@ final class AdaxesWriterTest extends TestCase
 
         $body = json_decode((string) $captured['body'], true);
         self::assertSame('user', $body['objectType']);
-        self::assertSame('OU=Faculty,DC=example,DC=org', $body['path']);
-        $props = [];
-        foreach ($body['properties'] as $p) {
-            $props[$p['name']] = $p['value'];
-        }
+        self::assertSame('OU=Faculty,DC=example,DC=org', $body['createIn']);
+        $props = self::props($body);
         self::assertSame('jsmith', $props['sAMAccountName']);
         self::assertSame('jsmith@tusc.k12.al.us', $props['mail']);
+        // Property list uses the Adaxes shape, not {name,value}.
+        self::assertSame('String', $body['properties'][0]['propertyType']);
     }
 
     public function testCreateWithNoGuidInResponseIsCreatedButUnresolved(): void
@@ -105,7 +119,11 @@ final class AdaxesWriterTest extends TestCase
 
         self::assertTrue($res['ok']);
         self::assertSame('PATCH', $captured['method']);
-        self::assertStringContainsString('directoryObject=2b6160e2-ad91-419c-8960-cf672c75528f', $captured['url']);
+        // The target is identified in the BODY (directoryObject), not the URL.
+        self::assertStringEndsWith('/api/directoryObjects', $captured['url']);
+        self::assertStringNotContainsString('?', $captured['url']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $body['directoryObject']);
         self::assertArrayHasKey('mail', $res['changed']);
         self::assertArrayHasKey('userPrincipalName', $res['changed']);
     }
@@ -123,7 +141,7 @@ final class AdaxesWriterTest extends TestCase
         self::assertTrue($res['ok']);
         self::assertArrayNotHasKey('sAMAccountName', $res['changed']);
         $body = json_decode((string) $captured['body'], true);
-        $names = array_column($body['properties'], 'name');
+        $names = array_column($body['properties'], 'propertyName');
         self::assertNotContains('sAMAccountName', $names);
         self::assertContains('mail', $names);
     }
@@ -147,12 +165,7 @@ final class AdaxesWriterTest extends TestCase
         self::assertTrue($res['ok']);
         self::assertTrue($res['changed']);
         self::assertSame('PATCH', $captured['method']);
-        $body = json_decode((string) $captured['body'], true);
-        $props = [];
-        foreach ($body['properties'] as $p) {
-            $props[$p['name']] = $p['value'];
-        }
-        self::assertSame('true', $props['accountDisabled']);
+        self::assertSame('true', self::props(json_decode((string) $captured['body'], true))['accountDisabled']);
     }
 
     public function testEnableSetsAccountDisabledFalse(): void
@@ -162,12 +175,7 @@ final class AdaxesWriterTest extends TestCase
 
         $res = $w->enable('2b6160e2-ad91-419c-8960-cf672c75528f');
         self::assertTrue($res['ok']);
-        $body = json_decode((string) $captured['body'], true);
-        $props = [];
-        foreach ($body['properties'] as $p) {
-            $props[$p['name']] = $p['value'];
-        }
-        self::assertSame('false', $props['accountDisabled']);
+        self::assertSame('false', self::props(json_decode((string) $captured['body'], true))['accountDisabled']);
     }
 
     public function testRenameSendsSamAccountNameUnlikeModify(): void
@@ -181,11 +189,7 @@ final class AdaxesWriterTest extends TestCase
         ]);
         self::assertTrue($res['ok']);
         self::assertSame('PATCH', $captured['method']);
-        $body = json_decode((string) $captured['body'], true);
-        $props = [];
-        foreach ($body['properties'] as $p) {
-            $props[$p['name']] = $p['value'];
-        }
+        $props = self::props(json_decode((string) $captured['body'], true));
         // Rename is the sanctioned exception — sAMAccountName IS sent here.
         self::assertSame('jjones', $props['sAMAccountName']);
         self::assertSame('jjones@tusc.k12.al.us', $props['mail']);
@@ -199,8 +203,9 @@ final class AdaxesWriterTest extends TestCase
         $res = $w->setProxyAddresses('2b6160e2-ad91-419c-8960-cf672c75528f', ['SMTP:jjones@x', 'smtp:jsmith@x', '']);
         self::assertTrue($res['ok']);
         $body = json_decode((string) $captured['body'], true);
-        self::assertSame('proxyAddresses', $body['properties'][0]['name']);
-        self::assertSame(['SMTP:jjones@x', 'smtp:jsmith@x'], $body['properties'][0]['value']); // blanks dropped, array preserved
+        self::assertSame('2b6160e2-ad91-419c-8960-cf672c75528f', $body['directoryObject']);
+        self::assertSame('proxyAddresses', $body['properties'][0]['propertyName']);
+        self::assertSame(['SMTP:jjones@x', 'smtp:jsmith@x'], $body['properties'][0]['values']); // blanks dropped, array preserved
     }
 
     public function testTransportFailureReturnsUnreachable(): void
@@ -211,12 +216,14 @@ final class AdaxesWriterTest extends TestCase
         self::assertStringContainsString('unreachable', (string) $res['error']);
     }
 
-    public function testClientErrorSurfacesHttpStatus(): void
+    public function testClientErrorSurfacesHttpStatusAndBodyDetail(): void
     {
-        $w = $this->writer(['status' => 400, 'body' => 'bad request']);
+        // Adaxes returns a JSON error explaining the 400 — surface its message.
+        $w = $this->writer(['status' => 400, 'body' => json_encode(['message' => "Property 'foo' does not exist."])]);
         $res = $w->modify('2b6160e2-ad91-419c-8960-cf672c75528f', ['mail' => 'x@tusc.k12.al.us']);
         self::assertFalse($res['ok']);
         self::assertStringContainsString('HTTP 400', (string) $res['error']);
+        self::assertStringContainsString("Property 'foo' does not exist.", (string) $res['error']);
     }
 
     public function testServerErrorSurfacesHttpStatus(): void
