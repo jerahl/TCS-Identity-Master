@@ -496,6 +496,12 @@ final class GoogleWorkspaceService
      * (the app never invents an address) — the caller must have verified there is
      * no existing account (correlate() found nothing) to avoid duplicates.
      *
+     * The new account is created under GOOGLE_DOMAIN, not the on-prem golden
+     * domain: the golden email/username local part is re-homed to GOOGLE_DOMAIN
+     * (via googleEmailFor) so a person whose golden email is jdoe@tusc.k12.al.us
+     * gets a jdoe@tuscaloosacityschools.com Google account. Only when GOOGLE_DOMAIN
+     * is unset does it fall back to the golden email verbatim.
+     *
      * @param array<string,mixed> $person   golden record
      * @param string|null $orgUnitPath       Google OU path (from school.google_ou); defaults to '/'
      * @return WriteResult
@@ -505,9 +511,14 @@ final class GoogleWorkspaceService
         if (!$this->configured()) {
             return self::writeFail('create', 'Direct Google provisioning is off.');
         }
-        $email = trim((string) ($person['email'] ?? ''));
-        if ($email === '') {
+        if (trim((string) ($person['email'] ?? '')) === '') {
             return self::writeFail('create', 'No golden email on file — create in Google requires the primary email to be set first.');
+        }
+        // Address the new account under GOOGLE_DOMAIN (falls back to the golden
+        // email only when GOOGLE_DOMAIN isn't configured).
+        $email = self::googleEmailFor($person, $this->domain);
+        if ($email === '') {
+            $email = trim((string) ($person['email'] ?? ''));
         }
 
         $body = self::buildCreateBody($person, $email, $orgUnitPath);

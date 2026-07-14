@@ -240,7 +240,10 @@ final class GoogleSync
                 }
                 $ou = $this->provisioner->activeOrgUnitFor($person);
                 $detail = 'new account' . ($ou !== null ? ' in ' . GoogleWorkspaceService::normalizeOu($ou) : '');
-                return ['action' => 'create', 'bucket' => 'created', 'email' => (string) $person['email'], 'detail' => $detail];
+                // The account is created under GOOGLE_DOMAIN, not the on-prem golden
+                // email — report that address in the plan/log.
+                $newEmail = GoogleWorkspaceService::googleEmailFor($person) ?: (string) $person['email'];
+                return ['action' => 'create', 'bucket' => 'created', 'email' => $newEmail, 'detail' => $detail];
             }
             // Linked. A golden-active account that Google shows suspended is a
             // manual/out-of-band override — the batch never auto-restores.

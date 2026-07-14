@@ -212,6 +212,40 @@ final class GoogleWorkspaceServiceTest extends TestCase
         self::assertSame('E1', $body['externalIds'][0]['value']);
     }
 
+    public function testCreateUserAddressesNewAccountUnderGoogleDomain(): void
+    {
+        $captured = null;
+        $svc = $this->service($this->userResponse(), $captured);
+        // Golden email is in the on-prem domain; the new Google account must be
+        // created under GOOGLE_DOMAIN (x.org here), local part preserved.
+        $res = $svc->createUser(['email' => 'jsmith@onprem.local', 'first_name' => 'John', 'last_name' => 'Smith'], '/Faculty');
+
+        self::assertTrue($res['ok']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('jsmith@x.org', $body['primaryEmail']);
+    }
+
+    public function testCreateUserPrefersUsernameLocalPartUnderGoogleDomain(): void
+    {
+        $captured = null;
+        $svc = $this->service($this->userResponse(), $captured);
+        // Username is the account convention — it wins over the email local part.
+        $res = $svc->createUser(['username' => 'jsmith', 'email' => 'john.smith@onprem.local', 'first_name' => 'John', 'last_name' => 'Smith'], '/Faculty');
+
+        self::assertTrue($res['ok']);
+        $body = json_decode((string) $captured['body'], true);
+        self::assertSame('jsmith@x.org', $body['primaryEmail']);
+    }
+
+    public function testCreateUserStillRequiresAGoldenEmail(): void
+    {
+        $svc = $this->service($this->userResponse());
+        $res = $svc->createUser(['username' => 'jsmith', 'first_name' => 'John', 'last_name' => 'Smith'], '/Faculty');
+
+        self::assertFalse($res['ok']);
+        self::assertStringContainsString('No golden email', (string) $res['error']);
+    }
+
     public function testAssignLicensePostsToLicensingApi(): void
     {
         putenv('GOOGLE_LICENSE_ENABLED=true');
