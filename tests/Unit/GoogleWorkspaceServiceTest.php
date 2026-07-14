@@ -127,6 +127,68 @@ final class GoogleWorkspaceServiceTest extends TestCase
         self::assertFalse($res['found']);
     }
 
+    public function testForeignDomainGoldenEmailIsNotQueriedAndFallsThroughToName(): void
+    {
+        // GOOGLE_DOMAIN is x.org, but the golden email is in the on-prem domain
+        // (onprem.local). Google 403s a userKey in a domain it doesn't own, which
+        // would abort correlation — so the on-prem address must never be queried,
+        // and correlation must fall through to the name tier instead.
+        $urls = [];
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$urls): ?array {
+            $urls[] = $url;
+            if (str_contains($url, '/users/') && str_contains($url, 'jsmith%40x.org')) {
+                return ['status' => 404, 'body' => (string) json_encode(['error' => ['message' => 'Not Found']])]; // re-homed miss
+            }
+            if (str_contains($url, '/users?') && str_contains(rawurldecode($url), 'givenName')) {
+                return ['status' => 200, 'body' => (string) json_encode(['users' => [json_decode($this->userResponse()['body'], true)]])];
+            }
+            return ['status' => 200, 'body' => (string) json_encode(['users' => []])]; // any other query → not found
+        };
+        $svc = new GoogleWorkspaceService(
+            enabled: true, clientEmail: 'svc@x.iam', privateKey: 'k', adminSubject: 'admin@x.org',
+            customer: 'my_customer', domain: 'x.org', timeout: 5, fetch: $fetch, signer: null,
+            accessToken: 'test-token', apiBase: 'https://admin.example/admin/directory/v1',
+            tokenUri: 'https://oauth.example/token', scopes: null,
+        );
+
+        $res = $svc->correlate([
+            'email' => 'jsmith@onprem.local', 'upn' => 'jsmith@onprem.local',
+            'first_name' => 'John', 'last_name' => 'Smith', 'status' => 'active',
+        ], []);
+
+        self::assertTrue($res['ok']);         // no 403 abort
+        self::assertTrue($res['found']);
+        self::assertSame('name', $res['by']); // fell through past the email tier
+        self::assertFalse($res['auto']);
+        foreach ($urls as $u) {
+            self::assertStringNotContainsString('onprem.local', rawurldecode($u), 'foreign domain must never be queried');
+        }
+        self::assertNotEmpty(array_filter($urls, static fn($u) => str_contains($u, 'jsmith%40x.org')), 're-homed candidate should be tried');
+    }
+
+    public function testRawGoldenEmailStillUsedWhenNoGoogleDomain(): void
+    {
+        // With GOOGLE_DOMAIN unset there is nothing to re-home to, so the raw golden
+        // email is the only email candidate (backward-compatible behavior).
+        $captured = null;
+        $fetch = function (string $method, string $url, array $headers, ?string $body) use (&$captured): ?array {
+            $captured = $url;
+            return $this->userResponse();
+        };
+        $svc = new GoogleWorkspaceService(
+            enabled: true, clientEmail: 'svc@x.iam', privateKey: 'k', adminSubject: 'admin@x.org',
+            customer: 'my_customer', domain: '', timeout: 5, fetch: $fetch, signer: null,
+            accessToken: 'test-token', apiBase: 'https://admin.example/admin/directory/v1',
+            tokenUri: 'https://oauth.example/token', scopes: null,
+        );
+
+        $res = $svc->correlate(['email' => 'jsmith@onprem.local', 'status' => 'active'], []);
+
+        self::assertTrue($res['found']);
+        self::assertSame('email', $res['by']);
+        self::assertStringContainsString('jsmith%40onprem.local', (string) $captured);
+    }
+
     public function testCreateUserBuildsCorrectBody(): void
     {
         $captured = null;
