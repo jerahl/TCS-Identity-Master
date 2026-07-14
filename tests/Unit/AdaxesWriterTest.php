@@ -286,7 +286,7 @@ final class AdaxesWriterTest extends TestCase
 
     public function testMovePostsObjectAndDestinationInBody(): void
     {
-        // Default shape: POST /api/directoryObjects/move {newParent, object}.
+        // Default shape: POST /api/directoryObjects/move {targetContainer, directoryObject}.
         $captured = null;
         $w = $this->writer(['status' => 200, 'body' => '{}'], $captured);
 
@@ -299,8 +299,8 @@ final class AdaxesWriterTest extends TestCase
         self::assertStringContainsString('/api/directoryObjects/move', $captured['url']);
         self::assertStringNotContainsString('{id}', $captured['url']);
         $body = json_decode((string) $captured['body'], true);
-        self::assertSame($dest, $body['newParent']);
-        self::assertSame($guid, $body['object']);
+        self::assertSame($dest, $body['targetContainer']);
+        self::assertSame($guid, $body['directoryObject']);
     }
 
     public function testMoveRequiresObjectAndDestination(): void

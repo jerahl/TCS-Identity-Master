@@ -403,8 +403,8 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertNotNull($move, 'expected a move call to the writer');
         self::assertSame('POST', $move['method']);
         $body = json_decode((string) $move['body'], true);
-        self::assertSame('OU=CO,OU=Faculty,' . self::BASE_DN, $body['newParent']);
-        self::assertSame(self::GUID1, $body['object']);
+        self::assertSame('OU=CO,OU=Faculty,' . self::BASE_DN, $body['targetContainer']);
+        self::assertSame(self::GUID1, $body['directoryObject']);
     }
 
     public function testEditDoesNotMoveWhenAlreadyInComputedOu(): void
@@ -908,7 +908,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($move, 'expected a move to the Subs OU');
         $body = json_decode((string) $move['body'], true);
-        self::assertSame('OU=Subs,OU=CO,OU=Faculty,' . self::BASE_DN, $body['newParent']);
+        self::assertSame('OU=Subs,OU=CO,OU=Faculty,' . self::BASE_DN, $body['targetContainer']);
     }
 
     public function testTransportationLocationCodeGetsTransOuRegardlessOfTitle(): void
@@ -982,7 +982,7 @@ final class AdaxesReconcilerTest extends TestCase
         }
         self::assertNotNull($move, 'expected a move to the transportation OU');
         $body = json_decode((string) $move['body'], true);
-        self::assertSame('OU=trans,OU=Faculty,' . self::BASE_DN, $body['newParent']); // no building OU
+        self::assertSame('OU=trans,OU=Faculty,' . self::BASE_DN, $body['targetContainer']); // no building OU
     }
 
     public function testEditPushesTitleAndDepartmentDrift(): void

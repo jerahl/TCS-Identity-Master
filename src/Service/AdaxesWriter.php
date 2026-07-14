@@ -94,8 +94,11 @@ final class AdaxesWriter
         // the destination rides the body; otherwise both ride the body under the
         // configurable ADAXES_MOVE_OBJECT_FIELD / ADAXES_MOVE_DESTINATION_FIELD.
         $this->movePath        = trim((string) Config::get('ADAXES_MOVE_PATH', 'api/directoryObjects/move'), '/');
-        $this->moveObjectField = trim((string) Config::get('ADAXES_MOVE_OBJECT_FIELD', 'object')) ?: 'object';
-        $this->moveDestField   = trim((string) Config::get('ADAXES_MOVE_DESTINATION_FIELD', 'newParent')) ?: 'newParent';
+        // Adaxes' move endpoint requires DirectoryObject + TargetContainer in the
+        // body (case-insensitive model binding, so camelCase matches the rest of
+        // the API). Overridable in case a build names them differently.
+        $this->moveObjectField = trim((string) Config::get('ADAXES_MOVE_OBJECT_FIELD', 'directoryObject')) ?: 'directoryObject';
+        $this->moveDestField   = trim((string) Config::get('ADAXES_MOVE_DESTINATION_FIELD', 'targetContainer')) ?: 'targetContainer';
         $this->createObjectType = trim((string) Config::get('ADAXES_CREATE_OBJECT_TYPE', 'user')) ?: 'user';
 
         $this->sessionPath = trim((string) Config::get('ADAXES_SESSION_PATH', 'api/authSessions/create'), '/');
