@@ -689,6 +689,21 @@ Resource Officer" → `contractor`; "Substitute" / "Long-term Substitute" → `s
 **and** whose current type differs are written; each change is audited and added
 to the person timeline. Idempotent — safe to re-run.
 
+**Reconcile .env against .env.example.** After pulling changes that add new
+settings, backfill any keys your `.env` is missing — without touching what's
+already there:
+
+```sh
+php bin/reconcile_env.php --dry-run   # list what would be added
+php bin/reconcile_env.php             # append missing keys (writes .env.bak first)
+```
+
+Appends missing settings (copied verbatim from `.env.example`, with their help
+comments) in one marked block at the end of `.env`. Keys already present — active
+**or** commented — are left untouched, so your values and deliberate opt-outs are
+preserved. Idempotent. Review the appended block: some example values are
+placeholders (`change-me-*`).
+
 **Give Transportation its own building (one-time).** NextGen flags transportation
 staff with a distinct location code (8410 at TCS). If that code is only an *alias*
 on the Central Office school row, every Central Office employee resolves to the
