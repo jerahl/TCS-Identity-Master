@@ -171,10 +171,17 @@ final class RenameService
     // ---- lookups ------------------------------------------------------------
 
     /**
-     * Email addresses of the person's school principal(s), from the golden record
-     * (an active person at the same building whose assignment title contains
-     * "Principal"). Preferred over a PowerSchool query — same data, always present,
-     * no ODBC dependency. Empty when none is on file.
+     * Email address of the person's school principal at their PRIMARY school, from
+     * the golden record (the active person at that building whose assignment title
+     * IS "Principal"). Preferred over a PowerSchool query — same data, always
+     * present, no ODBC dependency. Empty when none is on file.
+     *
+     * Only the head principal: the title must START with "principal" (so
+     * "Assistant/Associate/Vice/Deputy Principal" — which merely CONTAIN the word —
+     * are excluded), and titles that start with "principal" but name a different
+     * role ("Principal Secretary", "Principal's Clerk") are excluded too. At most
+     * one recipient is returned; a broad substring match here previously cc'd every
+     * assistant principal and office staffer at the building.
      *
      * @return list<string>
      */
@@ -187,15 +194,23 @@ final class RenameService
             return [];
         }
         $stmt = $this->db->prepare(
-            "SELECT DISTINCT p.email
+            "SELECT p.email
                FROM person p
                JOIN assignment a ON a.person_id = p.person_id
               WHERE a.school_id = :sid
                 AND p.status = 'active'
                 AND p.email IS NOT NULL AND p.email <> ''
-                AND LOWER(a.title) LIKE '%principal%'
+                AND LOWER(TRIM(a.title)) LIKE 'principal%'
+                AND LOWER(a.title) NOT LIKE '%assistant%'
+                AND LOWER(a.title) NOT LIKE '%associate%'
+                AND LOWER(a.title) NOT LIKE '%vice%'
+                AND LOWER(a.title) NOT LIKE '%deputy%'
+                AND LOWER(a.title) NOT LIKE '%secretary%'
+                AND LOWER(a.title) NOT LIKE '%clerk%'
                 AND p.person_id <> :self
-              ORDER BY CASE WHEN LOWER(a.title) LIKE 'principal%' THEN 0 ELSE 1 END"
+              ORDER BY CASE WHEN LOWER(TRIM(a.title)) = 'principal' THEN 0 ELSE 1 END,
+                       LENGTH(a.title), p.person_id
+              LIMIT 1"
         );
         $stmt->execute([':sid' => (int) $sid, ':self' => $personId]);
         return array_values(array_filter(array_map(static fn($r) => trim((string) $r['email']), $stmt->fetchAll())));

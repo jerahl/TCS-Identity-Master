@@ -134,6 +134,39 @@ final class RenameServiceTest extends TestCase
         }
     }
 
+    public function testPrincipalEmailsReturnsOnlyHeadPrincipalAtPrimarySchool(): void
+    {
+        $db = $this->db();
+        $this->seedLocked($db); // person 1, primary_school_id 30
+        // The head principal at school 30.
+        $db->exec("INSERT INTO person (person_id, first_name, last_name, username, email, upn, username_locked, status, primary_school_id)
+                   VALUES (2, 'Head', 'Principal', 'hprincipal', 'principal@tusc.k12.al.us', 'principal@tusc.k12.al.us', 1, 'active', 30)");
+        $db->exec("INSERT INTO assignment (person_id, school_id, title) VALUES (2, 30, 'Principal - High')");
+        // Roles that merely CONTAIN "principal" or start with it but are not the principal.
+        $noise = [
+            [3, 'Ass', 'Prin',  'assistant@tusc.k12.al.us', 'Assistant Principal'],
+            [4, 'Vic', 'Prin',  'vice@tusc.k12.al.us',      'Vice Principal'],
+            [5, 'Aso', 'Prin',  'assoc@tusc.k12.al.us',     'Associate Principal'],
+            [6, 'Dep', 'Prin',  'deputy@tusc.k12.al.us',    'Deputy Principal'],
+            [7, 'Sec', 'Retary','psec@tusc.k12.al.us',      'Principal Secretary'],
+            [8, 'Clk', 'Erk',   'pclerk@tusc.k12.al.us',    'Principal Clerk'],
+        ];
+        foreach ($noise as [$id, $fn, $ln, $email, $title]) {
+            $db->exec("INSERT INTO person (person_id, first_name, last_name, username, email, upn, username_locked, status, primary_school_id)
+                       VALUES ($id, '$fn', '$ln', 'u$id', '$email', '$email', 1, 'active', 30)");
+            $db->exec("INSERT INTO assignment (person_id, school_id, title) VALUES ($id, 30, '$title')");
+        }
+        // A real principal, but at a DIFFERENT school — must not be included.
+        $db->exec("INSERT INTO person (person_id, first_name, last_name, username, email, upn, username_locked, status, primary_school_id)
+                   VALUES (9, 'Other', 'Principal', 'oprincipal', 'other@tusc.k12.al.us', 'other@tusc.k12.al.us', 1, 'active', 40)");
+        $db->exec("INSERT INTO assignment (person_id, school_id, title) VALUES (9, 40, 'Principal')");
+
+        $captured = null;
+        $emails = $this->service($db, $this->mailer($db, $captured))->principalEmails(1);
+
+        self::assertSame(['principal@tusc.k12.al.us'], $emails);
+    }
+
     public function testNoticeVarsIncludesDaysRemaining(): void
     {
         $plan = [
