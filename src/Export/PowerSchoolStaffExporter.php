@@ -200,7 +200,7 @@ final class PowerSchoolStaffExporter
      */
     public static function row(array $p): array
     {
-        $school = trim((string) ($p['ps_school_id'] ?? ''));
+        $school = self::psSchoolId((string) ($p['ps_school_id'] ?? ''));
         return [
             'Users.Last_Name'           => trim((string) ($p['last_name'] ?? '')),
             'Users.First_Name'          => trim((string) ($p['first_name'] ?? '')),
@@ -286,6 +286,16 @@ final class PowerSchoolStaffExporter
         $client->connect();
         $client->upload($localPath, $remotePath);
         return $remotePath;
+    }
+
+    /**
+     * PowerSchool location codes are 4 digits — left-pad shorter numeric IDM
+     * codes with zeros ("130" -> "0130"). Empty and non-numeric pass through.
+     */
+    public static function psSchoolId(string $code): string
+    {
+        $code = trim($code);
+        return preg_match('/^\d{1,3}$/', $code) ? str_pad($code, 4, '0', STR_PAD_LEFT) : $code;
     }
 
     /** "Male"/"female"/"M" -> "M"; empty stays empty (PowerSchool stores M/F). */

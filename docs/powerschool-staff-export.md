@@ -77,13 +77,13 @@ Import Manager.
 | `Users.TeacherNumber` | `person.employee_id` | the NextGen employee id |
 | `Users.SIF_StatePrid` | `person.employee_id` | district practice: StatePrId = Employee ID |
 | `Users.Title` | primary `assignment.title` | |
-| `Users.HomeSchoolId` | `school.ps_school_id` of the primary school | |
+| `Users.HomeSchoolId` | `school.ps_school_id` of the primary school | zero-padded to 4 digits (`130` → `0130`) |
 | `Users.TeacherLoginID` | `person.username` | AD username for PowerTeacher SSO (blank until minted) |
 | `UsersCoreFields.gender` | `person.gender` | initial only — PowerSchool stores `M`/`F` |
 | `UsersCoreFields.dob` | `person.dob` | `MM/DD/YYYY` |
 | `S_USR_X.State_StaffNumber` | `person.alsde_id` | **the ALSDE ID** |
 | `S_USR_X.HireDate` | `person.hire_date` | `MM/DD/YYYY` |
-| `SchoolStaff.SchoolID` | `school.ps_school_id` | school association |
+| `SchoolStaff.SchoolID` | `school.ps_school_id` | school association, zero-padded to 4 digits |
 | `SchoolStaff.Status` | constant `1` | 1 = Current |
 | `SchoolStaff.StaffStatus` | `person.person_type` | faculty → `1` (Teacher), everything else → `2` (Staff) |
 | `TeacherRace.RaceCd` | `person.ethnicity_code` | resolved ALSDE race code (`ethnicity_map`) |

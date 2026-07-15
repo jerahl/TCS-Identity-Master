@@ -146,8 +146,8 @@ final class PowerSchoolStaffExporterTest extends TestCase
         self::assertSame('F', $row['UsersCoreFields.gender'], 'Female -> F');
         self::assertSame('04/07/1990', $row['UsersCoreFields.dob'], 'Y-m-d -> MM/DD/YYYY');
         self::assertSame('08/01/2026', $row['S_USR_X.HireDate']);
-        self::assertSame('310', $row['Users.HomeSchoolId']);
-        self::assertSame('310', $row['SchoolStaff.SchoolID']);
+        self::assertSame('0310', $row['Users.HomeSchoolId'], '3-digit IDM code padded to 4 for PS');
+        self::assertSame('0310', $row['SchoolStaff.SchoolID']);
         self::assertSame('1', $row['SchoolStaff.Status'], '1 = Current');
         self::assertSame('1', $row['SchoolStaff.StaffStatus'], 'faculty -> 1 = Teacher');
         self::assertSame('B', $row['TeacherRace.RaceCd']);
@@ -158,6 +158,16 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $row = PowerSchoolStaffExporter::row(['person_type' => 'sub']);
         self::assertSame('2', $row['SchoolStaff.StaffStatus'], 'anything but faculty -> 2 = Staff');
+    }
+
+    public function testPsSchoolIdPadsShortNumericCodesToFourDigits(): void
+    {
+        self::assertSame('0130', PowerSchoolStaffExporter::psSchoolId('130'), '3 digits -> leading zero');
+        self::assertSame('0045', PowerSchoolStaffExporter::psSchoolId('45'));
+        self::assertSame('0310', PowerSchoolStaffExporter::psSchoolId(' 310 '), 'trimmed before padding');
+        self::assertSame('1300', PowerSchoolStaffExporter::psSchoolId('1300'), '4 digits untouched');
+        self::assertSame('', PowerSchoolStaffExporter::psSchoolId(''), 'no school stays blank');
+        self::assertSame('N/A', PowerSchoolStaffExporter::psSchoolId('N/A'), 'non-numeric passes through');
     }
 
     public function testCsvRoundTripsThroughTheCsvReader(): void
