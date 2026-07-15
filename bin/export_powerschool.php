@@ -3,27 +3,32 @@
 declare(strict_types=1);
 
 /**
- * Export staff changes for PowerSchool as CSVs and upload them to the district
- * SFTP server. Two files, always written under the SAME names (each run
- * overwrites the last, so the PowerSchool Data Import Manager scheduled import
- * can point at a constant file name):
- *   ps_new_staff.csv     NEW people (ALSDE ID set, not in PowerSchool yet)
- *   ps_name_updates.csv  name/email/username changes for people already in
- *                        PowerSchool, keyed by Users.TeacherNumber (= Employee ID)
+ * Export the staff roster for PowerSchool as two tab-delimited files and
+ * upload them to the district SFTP server. Files are always written under the
+ * SAME names (each run overwrites the last, so the PowerSchool scheduled
+ * imports can point at constant file names):
  *
- *   php bin/export_powerschool.php                write CSVs + upload to SFTP
- *   php bin/export_powerschool.php --dry-run      list what would be exported
- *   php bin/export_powerschool.php --no-upload    write the CSVs, skip SFTP
- *   php bin/export_powerschool.php --new-only     only the new-staff file
- *   php bin/export_powerschool.php --updates-only only the name-update file
- *   php bin/export_powerschool.php --out=DIR      override EXPORT_POWERSCHOOL_DIR
+ *   ps_staff_demographics.txt  Data Import Manager -> USERSCOREFIELDS, one row
+ *                              per staff member, matched on USERS.TeacherNumber
+ *   ps_staff_assignments.txt   AutoComm/Quick Import -> Teachers view, one row
+ *                              per staff member per school assignment
+ *
+ * Also written locally (never uploaded):
+ *   ps_staff_demographics_sample.txt / ps_staff_assignments_sample.txt
+ *                              3-row samples for a manual test import
+ *   ps_staff_exceptions.txt    rejected rows, truncations, unmapped types
+ *
+ *   php bin/export_powerschool.php                     write files + upload
+ *   php bin/export_powerschool.php --dry-run           print summary + exceptions only
+ *   php bin/export_powerschool.php --no-upload         write the files, skip SFTP
+ *   php bin/export_powerschool.php --demographics-only only file 1
+ *   php bin/export_powerschool.php --assignments-only  only file 2
+ *   php bin/export_powerschool.php --out=DIR           override EXPORT_POWERSCHOOL_DIR
  *
  * Local files land in EXPORT_POWERSCHOOL_DIR; uploads go to SFTP_PS_EXPORT_DIR
  * on the same SFTP server the feed pull uses (SFTP_HOST / SFTP_USER / key).
- * Column headers are the data-dictionary table.field names (see
- * docs/powerschool-staff-export.md) so the files map 1:1 in PowerSchool's Data
- * Import Manager. New hires missing an ALSDE ID — and name changes missing an
- * employee id to match on — are listed and held back, never silently dropped.
+ * See docs/powerschool-staff-export.md for the column contract and the
+ * PowerSchool-side import setup.
  */
 
 use App\Config;
@@ -41,76 +46,58 @@ foreach (array_slice($_SERVER['argv'] ?? [], 1) as $arg) {
 }
 $dryRun = isset($opts['dry-run']);
 $doUpload = !isset($opts['no-upload']);
-$wantNew = !isset($opts['updates-only']);
-$wantUpdates = !isset($opts['new-only']);
+$wantDemographics = !isset($opts['assignments-only']);
+$wantAssignments = !isset($opts['demographics-only']);
 $outDir = isset($opts['out']) && $opts['out'] !== '1'
     ? $opts['out']
     : trim((string) Config::get('EXPORT_POWERSCHOOL_DIR', ''));
 
 $exporter = new PowerSchoolStaffExporter();
-$candidates = $wantNew ? $exporter->candidates() : [];
-$held = $wantNew ? $exporter->missingAlsdeId() : [];
-$nameChanges = $wantUpdates ? $exporter->nameUpdates() : ['updates' => [], 'held' => []];
+$result = $exporter->export();
+$summary = $result['summary'];
 
 printf("PowerSchool staff export%s\n", $dryRun ? '  (DRY RUN)' : '');
-if ($wantNew) {
-    printf("  new staff:    %d ready (ALSDE ID set), %d held back (no ALSDE ID)\n",
-        count($candidates), count($held));
-}
-if ($wantUpdates) {
-    printf("  name updates: %d changed, %d held back (no employee id to match on)\n",
-        count($nameChanges['updates']), count($nameChanges['held']));
+printf("  demographics: %d row(s)\n", $summary['demographics']);
+printf("  assignments:  %d row(s) across %d school(s)\n", $summary['assignments'], $summary['schools']);
+printf("  exceptions:   %d (rejected / truncated / unmapped — see below)\n", $summary['exceptions']);
+foreach ($result['exceptions'] as $line) {
+    echo "  ! {$line}\n";
 }
 echo "\n";
-
-foreach ($candidates as $p) {
-    printf("  + %-30s emp %-10s ALSDE %s\n",
-        $p['last_name'] . ', ' . $p['first_name'], (string) $p['employee_id'], (string) $p['alsde_id']);
-}
-foreach ($held as $p) {
-    printf("  ! %-30s emp %-10s — no ALSDE ID, not exported\n",
-        $p['last_name'] . ', ' . $p['first_name'], (string) $p['employee_id']);
-}
-foreach ($nameChanges['updates'] as $p) {
-    $email = trim((string) ($p['email'] ?? ''));
-    $psEmail = $p['ps_email'] ?? null;
-    $emailNote = ($psEmail !== null && $email !== '' && strcasecmp($email, $psEmail) !== 0)
-        ? ", email was {$psEmail}"
-        : '';
-    printf("  ~ %-30s emp %-10s was %s%s\n",
-        $p['last_name'] . ', ' . $p['first_name'], (string) $p['employee_id'],
-        $p['ps_last'] . ', ' . $p['ps_first'], $emailNote);
-}
-foreach ($nameChanges['held'] as $p) {
-    printf("  ! %-30s (was %s) — no employee id, change not exported\n",
-        $p['last_name'] . ', ' . $p['first_name'], $p['ps_last'] . ', ' . $p['ps_first']);
-}
 
 if ($dryRun) {
     exit(0);
 }
-if ($candidates === [] && $nameChanges['updates'] === []) {
-    echo "\nNothing to export.\n";
-    exit(0);
-}
 if ($outDir === '') {
-    fwrite(STDERR, "\nEXPORT_POWERSCHOOL_DIR is not set (or pass --out=DIR).\n");
+    fwrite(STDERR, "EXPORT_POWERSCHOOL_DIR is not set (or pass --out=DIR).\n");
     exit(1);
 }
 
-$files = [];
-if ($candidates !== []) {
-    $files[] = PowerSchoolStaffExporter::writeFile(
-        PowerSchoolStaffExporter::csv($candidates), $outDir, 'ps_new_staff.csv');
-    printf("\n  wrote %s (%d bytes, %d row(s))\n", $files[0]['path'], $files[0]['bytes'], count($candidates));
+$uploads = [];
+if ($wantDemographics) {
+    $content = PowerSchoolStaffExporter::render(
+        PowerSchoolStaffExporter::DEMOGRAPHIC_HEADERS, $result['demographics']);
+    $f = PowerSchoolStaffExporter::writeFile($content, $outDir, PowerSchoolStaffExporter::DEMOGRAPHICS_FILE);
+    $uploads[] = $f;
+    printf("  wrote %s (%d bytes, %d row(s))\n", $f['path'], $f['bytes'], $summary['demographics']);
+    PowerSchoolStaffExporter::writeFile(
+        PowerSchoolStaffExporter::sample(PowerSchoolStaffExporter::DEMOGRAPHIC_HEADERS, $result['demographics']),
+        $outDir, PowerSchoolStaffExporter::DEMOGRAPHICS_SAMPLE_FILE);
 }
-if ($nameChanges['updates'] !== []) {
-    $f = PowerSchoolStaffExporter::writeFile(
-        PowerSchoolStaffExporter::updatesCsv($nameChanges['updates']), $outDir, 'ps_name_updates.csv');
-    $files[] = $f;
-    printf("%s  wrote %s (%d bytes, %d row(s))\n",
-        count($files) === 1 ? "\n" : '', $f['path'], $f['bytes'], count($nameChanges['updates']));
+if ($wantAssignments) {
+    $content = PowerSchoolStaffExporter::render(
+        PowerSchoolStaffExporter::ASSIGNMENT_HEADERS, $result['assignments']);
+    $f = PowerSchoolStaffExporter::writeFile($content, $outDir, PowerSchoolStaffExporter::ASSIGNMENTS_FILE);
+    $uploads[] = $f;
+    printf("  wrote %s (%d bytes, %d row(s))\n", $f['path'], $f['bytes'], $summary['assignments']);
+    PowerSchoolStaffExporter::writeFile(
+        PowerSchoolStaffExporter::sample(PowerSchoolStaffExporter::ASSIGNMENT_HEADERS, $result['assignments']),
+        $outDir, PowerSchoolStaffExporter::ASSIGNMENTS_SAMPLE_FILE);
 }
+$exceptions = PowerSchoolStaffExporter::writeFile(
+    PowerSchoolStaffExporter::exceptionsFile($result['exceptions']),
+    $outDir, PowerSchoolStaffExporter::EXCEPTIONS_FILE);
+printf("  wrote %s (%d exception(s))\n", $exceptions['path'], $summary['exceptions']);
 
 if (!$doUpload) {
     echo "  upload skipped (--no-upload)\n";
@@ -124,7 +111,7 @@ if ($remoteDir === '') {
 }
 try {
     $client = FeedSync::clientFromConfig();
-    foreach ($files as $f) {
+    foreach ($uploads as $f) {
         $remotePath = PowerSchoolStaffExporter::uploadFile($client, $f['path'], $remoteDir);
         printf("  uploaded to sftp://%s%s\n", (string) Config::get('SFTP_HOST', ''), $remotePath);
     }

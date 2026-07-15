@@ -10,92 +10,145 @@ use PDO;
 use RuntimeException;
 
 /**
- * Exports staff changes as CSVs ready for the PowerSchool SIS staff import,
- * and uploads them to the district SFTP server. Two files:
+ * Exports the current staff roster as two tab-delimited files that load
+ * cleanly into PowerSchool SIS (see docs/powerschool-staff-export.md and the
+ * district import spec), and uploads them to the district SFTP server:
  *
- * NEW STAFF — an active/pending person with an ALSDE ID on the golden record
- * but NO active person_source_id row with system='powerschool' — i.e. HR has
- * hired them and the ALSDE ID has been entered, but PowerSchool has never
- * reported them back through the nightly import. People without an ALSDE ID
- * are deliberately excluded (PowerSchool demographics require it); the CLI
- * surfaces them so the operator knows who is being held back.
+ * ps_staff_demographics.txt — Data Import Manager, target USERSCOREFIELDS.
+ * One row per active/pending staff member, matched on USERS.TeacherNumber
+ * (= Employee ID). Spec columns with no IDM source (USERS.FedEthnicity,
+ * USERS.FedRaceDecline, S_USR_X.employmentstatus) are omitted entirely —
+ * header and values — so a DIM update never mass-blanks them.
  *
- * NAME UPDATES — people already in PowerSchool whose golden-record first/last
- * name OR district email no longer matches the latest PowerSchool import
- * snapshot (the newest matched staging_record row), e.g. a marriage-related
- * last-name change made in NextGen/IDM and the username/email rename that
- * follows it. Rows are keyed by Users.TeacherNumber (= Employee ID, the
- * district's staff match key) and carry the full current name plus the current
- * email (Users.Email_Addr) and username (Users.TeacherLoginID), so a rename
- * cutover reaches PowerSchool in the same file as the name change.
+ * ps_staff_assignments.txt — AutoComm/Quick Import into the Teachers view.
+ * One row per staff member PER school assignment (multi-school staff repeat),
+ * headers WITHOUT table prefixes (the Teachers import rejects Table.Field).
+ * Sorted by SchoolID so a split-by-school is trivial.
  *
- * Column headers use the exact table.field names from the district's
- * PowerSchool data dictionary (/ws/schema/table metadata), so the file maps
- * 1:1 in Data Import Manager:
- *   Users.*                    core staff record (name, email, TeacherNumber)
- *   Users.SIF_StatePrid        Employee ID (district practice: StatePrId = employee id)
- *   UsersCoreFields.gender/dob staff gender + date of birth extension
- *   S_USR_X.State_StaffNumber  the ALSDE ID
- *   S_USR_X.HireDate           hire date
- *   SchoolStaff.*              school association (Status 1 = Current)
- *   TeacherRace.RaceCd         resolved ALSDE race code
+ * Individual race codes (TeacherRace.RaceCd) are NOT importable in this
+ * PowerSchool build and are deliberately not exported. Users.Ethnicity is
+ * deprecated and never populated. Passwords and SSNs are never exported.
+ *
+ * Validation (per the spec) — every problem lands in the exceptions list,
+ * nothing is dropped silently:
+ *   - rows missing TeacherNumber, Last_Name, or First_Name are rejected;
+ *   - a TeacherNumber longer than 20 chars is rejected (truncating the match
+ *     key could collide with or update the wrong record);
+ *   - duplicate TeacherNumbers within the demographics file are rejected;
+ *   - HomeSchoolId / SchoolID that cannot be resolved to a PowerSchool
+ *     School_Number (school.ps_school_id) reject the row;
+ *   - over-long non-key values are truncated to the spec max and logged;
+ *   - unmapped person types default to StaffStatus 2 (Staff) and are logged.
  */
 final class PowerSchoolStaffExporter
 {
-    /** SchoolStaff.Status: 1 = Current. */
-    private const STAFF_CURRENT = '1';
-    /** SchoolStaff.StaffStatus: 1 = Teacher, 2 = Staff. */
-    private const STAFF_STATUS = ['faculty' => '1', 'staff' => '2'];
+    public const DEMOGRAPHICS_FILE = 'ps_staff_demographics.txt';
+    public const ASSIGNMENTS_FILE = 'ps_staff_assignments.txt';
+    public const DEMOGRAPHICS_SAMPLE_FILE = 'ps_staff_demographics_sample.txt';
+    public const ASSIGNMENTS_SAMPLE_FILE = 'ps_staff_assignments_sample.txt';
+    public const EXCEPTIONS_FILE = 'ps_staff_exceptions.txt';
 
-    /** CSV headers, in output order — exact data-dictionary table.field names. */
-    public const HEADERS = [
-        'Users.Last_Name',
-        'Users.First_Name',
-        'Users.Middle_Name',
-        'Users.Email_Addr',
-        'Users.TeacherNumber',
-        'Users.SIF_StatePrid',
-        'Users.Title',
-        'Users.HomeSchoolId',
-        'Users.TeacherLoginID',
-        'UsersCoreFields.gender',
-        'UsersCoreFields.dob',
-        'S_USR_X.State_StaffNumber',
-        'S_USR_X.HireDate',
-        'SchoolStaff.SchoolID',
-        'SchoolStaff.Status',
-        'SchoolStaff.StaffStatus',
-        'TeacherRace.RaceCd',
+    /**
+     * Demographics headers, in output order — exact names from the district
+     * spec. Spec columns 10 (USERS.FedEthnicity), 11 (USERS.FedRaceDecline)
+     * and 13 (S_USR_X.employmentstatus) have no IDM source and are omitted.
+     */
+    public const DEMOGRAPHIC_HEADERS = [
+        'USERS.TeacherNumber',
+        'USERS.Last_Name',
+        'USERS.First_Name',
+        'USERS.Middle_Name',
+        'USERS.Email_Addr',
+        'USERS.SIF_StatePrid',
+        'USERS.Title',
+        'USERS.HomeSchoolId',
+        'USERS.TeacherLoginID',
+        'S_USR_X.hiredate',
+        'S_USR_X.state_staffnumber',
     ];
 
-    /** Name-update CSV headers: match key first, then the current name + login. */
-    public const UPDATE_HEADERS = [
-        'Users.TeacherNumber',
-        'Users.First_Name',
-        'Users.Middle_Name',
-        'Users.Last_Name',
-        'Users.Email_Addr',
-        'Users.TeacherLoginID',
+    /** Assignment headers — NO table prefix (the Teachers import rejects them). */
+    public const ASSIGNMENT_HEADERS = [
+        'TeacherNumber',
+        'SchoolID',
+        'Status',
+        'StaffStatus',
     ];
+
+    /** Spec max lengths, keyed by demographics column. */
+    private const MAX_LENGTHS = [
+        'USERS.TeacherNumber'  => 20,
+        'USERS.Last_Name'      => 100,
+        'USERS.First_Name'     => 100,
+        'USERS.Middle_Name'    => 100,
+        'USERS.Email_Addr'     => 50,
+        'USERS.SIF_StatePrid'  => 32,
+        'USERS.Title'          => 40,
+        'USERS.TeacherLoginID' => 20,
+    ];
+
+    /** Status: 1 = Current, 2 = No longer here. */
+    private const STATUS_CURRENT = '1';
+    private const STATUS_ENDED = '2';
+
+    /** StaffStatus: 0 Not Assigned, 1 Teacher, 2 Staff, 3 Lunch Staff, 4 Substitute. */
+    private const STAFF_STATUS = ['faculty' => '1', 'staff' => '2', 'sub' => '4'];
+    private const STAFF_STATUS_DEFAULT = '2';
 
     private PDO $db;
+    private string $today;
 
-    public function __construct(?PDO $db = null)
+    public function __construct(?PDO $db = null, ?string $today = null)
     {
         $this->db = $db ?? Db::connect();
+        $this->today = $today ?? date('Y-m-d');
     }
 
     /**
-     * People ready to be created in PowerSchool: active/pending, ALSDE ID set,
-     * no active PowerSchool source id yet.
+     * Build both files' rows plus the exception log and run summary.
      *
-     * @return array<int,array<string,mixed>>
+     * @return array{
+     *     demographics: array<int,array<string,string>>,
+     *     assignments: array<int,array<string,string>>,
+     *     exceptions: array<int,string>,
+     *     summary: array{demographics:int,assignments:int,exceptions:int,schools:int}
+     * }
      */
-    public function candidates(): array
+    public function export(): array
     {
-        $sql = "SELECT p.person_id, p.person_type, p.first_name, p.middle_name, p.last_name,
-                       p.dob, p.gender, p.ethnicity_code, p.alsde_id, p.employee_id,
-                       p.hire_date, p.email, p.username,
+        $exceptions = [];
+        $demographics = $this->demographicRows($exceptions);
+        $assignments = $this->assignmentRows($exceptions);
+
+        $schools = array_unique(array_merge(
+            array_column($demographics, 'USERS.HomeSchoolId'),
+            array_column($assignments, 'SchoolID'),
+        ));
+
+        return [
+            'demographics' => $demographics,
+            'assignments' => $assignments,
+            'exceptions' => $exceptions,
+            'summary' => [
+                'demographics' => count($demographics),
+                'assignments' => count($assignments),
+                'exceptions' => count($exceptions),
+                'schools' => count($schools),
+            ],
+        ];
+    }
+
+    /**
+     * One validated demographics row per active/pending staff member, keyed
+     * by DEMOGRAPHIC_HEADERS.
+     *
+     * @param array<int,string> $exceptions
+     * @return array<int,array<string,string>>
+     */
+    private function demographicRows(array &$exceptions): array
+    {
+        $sql = "SELECT p.person_id, p.first_name, p.middle_name, p.last_name,
+                       p.email, p.username, p.employee_id, p.alsde_id, p.hire_date,
                        s.ps_school_id,
                        (SELECT a.title FROM assignment a
                          WHERE a.person_id = p.person_id AND a.is_primary = 1
@@ -103,176 +156,178 @@ final class PowerSchoolStaffExporter
                   FROM person p
                   LEFT JOIN school s ON s.school_id = p.primary_school_id
                  WHERE p.status IN ('active','pending')
-                   AND p.alsde_id IS NOT NULL AND TRIM(p.alsde_id) <> ''
-                   AND NOT EXISTS (SELECT 1 FROM person_source_id psi
-                                    WHERE psi.person_id = p.person_id
-                                      AND psi.system = 'powerschool'
-                                      AND psi.is_active = 1)
-                 ORDER BY p.last_name, p.first_name, p.person_id";
-        return $this->db->query($sql)->fetchAll();
-    }
-
-    /**
-     * People who WOULD be exported but are missing the ALSDE ID — reported by
-     * the CLI so held-back hires are visible, never silently dropped.
-     *
-     * @return array<int,array<string,mixed>>
-     */
-    public function missingAlsdeId(): array
-    {
-        $sql = "SELECT p.person_id, p.first_name, p.last_name, p.employee_id
-                  FROM person p
-                 WHERE p.status IN ('active','pending')
-                   AND (p.alsde_id IS NULL OR TRIM(p.alsde_id) = '')
-                   AND NOT EXISTS (SELECT 1 FROM person_source_id psi
-                                    WHERE psi.person_id = p.person_id
-                                      AND psi.system = 'powerschool'
-                                      AND psi.is_active = 1)
-                 ORDER BY p.last_name, p.first_name, p.person_id";
-        return $this->db->query($sql)->fetchAll();
-    }
-
-    /**
-     * People already in PowerSchool whose golden-record name OR district email
-     * differs from the latest PowerSchool import snapshot — the rows for the
-     * name-update CSV. Name comparison is on first + last (case-insensitive);
-     * middle name isn't in the snapshot, but the exported row always carries
-     * the full current name, email, and username. The email comparison only
-     * fires when the golden email is set AND the snapshot actually recorded a
-     * PowerSchool email (raw_json fields.hr_email) — older snapshots without
-     * it never trigger a false update. People with no snapshot yet are skipped
-     * (nothing to compare), and people without an employee id land in `held`
-     * (no match key to update by).
-     *
-     * @return array{updates:array<int,array<string,mixed>>,held:array<int,array<string,mixed>>}
-     */
-    public function nameUpdates(): array
-    {
-        $sql = "SELECT p.person_id, p.first_name, p.middle_name, p.last_name, p.employee_id,
-                       p.email, p.username,
-                       (SELECT sr.n_first FROM staging_record sr
-                         WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
-                         ORDER BY sr.id DESC LIMIT 1) AS ps_first,
-                       (SELECT sr.n_last FROM staging_record sr
-                         WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
-                         ORDER BY sr.id DESC LIMIT 1) AS ps_last,
-                       (SELECT sr.raw_json FROM staging_record sr
-                         WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
-                         ORDER BY sr.id DESC LIMIT 1) AS ps_raw
-                  FROM person p
-                 WHERE p.status IN ('active','pending')
-                   AND EXISTS (SELECT 1 FROM person_source_id psi
-                                WHERE psi.person_id = p.person_id
-                                  AND psi.system = 'powerschool'
-                                  AND psi.is_active = 1)
                  ORDER BY p.last_name, p.first_name, p.person_id";
 
-        $updates = [];
-        $held = [];
+        $rows = [];
+        $seen = [];
         foreach ($this->db->query($sql)->fetchAll() as $p) {
-            $psFirst = trim((string) ($p['ps_first'] ?? ''));
-            $psLast = trim((string) ($p['ps_last'] ?? ''));
-            if ($psFirst === '' && $psLast === '') {
-                continue; // never snapshotted — nothing to compare against
-            }
-            $p['ps_email'] = self::snapshotEmail($p['ps_raw'] ?? null);
-            unset($p['ps_raw']);
-            $nameChanged = !self::sameName((string) $p['first_name'], $psFirst)
-                || !self::sameName((string) $p['last_name'], $psLast);
-            $emailChanged = self::emailChanged((string) ($p['email'] ?? ''), $p['ps_email']);
-            if (!$nameChanged && !$emailChanged) {
+            $who = $this->label($p);
+            $teacherNumber = self::clean((string) ($p['employee_id'] ?? ''));
+            $last = self::clean((string) ($p['last_name'] ?? ''));
+            $first = self::clean((string) ($p['first_name'] ?? ''));
+
+            $missing = array_keys(array_filter(
+                ['TeacherNumber' => $teacherNumber, 'Last_Name' => $last, 'First_Name' => $first],
+                static fn(string $v): bool => $v === ''
+            ));
+            if ($missing !== []) {
+                $exceptions[] = "demographics: {$who} — missing " . implode(', ', $missing) . '; row rejected';
                 continue;
             }
-            if (trim((string) ($p['employee_id'] ?? '')) === '') {
-                $held[] = $p;
+            if (mb_strlen($teacherNumber) > self::MAX_LENGTHS['USERS.TeacherNumber']) {
+                $exceptions[] = "demographics: {$who} — TeacherNumber '{$teacherNumber}' exceeds 20 chars"
+                    . ' (match key is never truncated); row rejected';
                 continue;
             }
-            $updates[] = $p;
+            if (isset($seen[$teacherNumber])) {
+                $exceptions[] = "demographics: {$who} — duplicate TeacherNumber '{$teacherNumber}'"
+                    . " (already used by {$seen[$teacherNumber]}); row rejected";
+                continue;
+            }
+            $school = self::psSchoolId(self::clean((string) ($p['ps_school_id'] ?? '')));
+            if ($school === '') {
+                $exceptions[] = "demographics: {$who} — home school cannot be resolved to a"
+                    . ' PowerSchool School_Number; row rejected';
+                continue;
+            }
+            $seen[$teacherNumber] = $who;
+
+            $rows[] = [
+                'USERS.TeacherNumber'     => $teacherNumber,
+                'USERS.Last_Name'         => $this->limit('USERS.Last_Name', $last, $who, $exceptions),
+                'USERS.First_Name'        => $this->limit('USERS.First_Name', $first, $who, $exceptions),
+                'USERS.Middle_Name'       => $this->limit('USERS.Middle_Name', self::clean((string) ($p['middle_name'] ?? '')), $who, $exceptions),
+                'USERS.Email_Addr'        => $this->limit('USERS.Email_Addr', self::clean((string) ($p['email'] ?? '')), $who, $exceptions),
+                // District practice: the state personnel id IS the employee id.
+                'USERS.SIF_StatePrid'     => $this->limit('USERS.SIF_StatePrid', $teacherNumber, $who, $exceptions),
+                'USERS.Title'             => $this->limit('USERS.Title', self::clean((string) ($p['title'] ?? '')), $who, $exceptions),
+                'USERS.HomeSchoolId'      => $school,
+                'USERS.TeacherLoginID'    => $this->limit('USERS.TeacherLoginID', self::clean((string) ($p['username'] ?? '')), $who, $exceptions),
+                'S_USR_X.hiredate'        => self::usDate((string) ($p['hire_date'] ?? '')),
+                'S_USR_X.state_staffnumber' => self::clean((string) ($p['alsde_id'] ?? '')),
+            ];
         }
-        return ['updates' => $updates, 'held' => $held];
+        return $rows;
     }
 
     /**
-     * Project one candidate onto the CSV columns (keyed by HEADERS).
+     * One validated assignment row per staff member per school, keyed by
+     * ASSIGNMENT_HEADERS and sorted by SchoolID. Ended assignments export
+     * Status 2 (No longer here) so transfers clear the old school; people
+     * with no assignment rows fall back to their primary school. Duplicate
+     * (TeacherNumber, SchoolID) pairs collapse to one row, preferring Current.
      *
-     * @param array<string,mixed> $p
-     * @return array<string,string>
+     * @param array<int,string> $exceptions
+     * @return array<int,array<string,string>>
      */
-    public static function row(array $p): array
+    private function assignmentRows(array &$exceptions): array
     {
-        $school = self::psSchoolId((string) ($p['ps_school_id'] ?? ''));
-        return [
-            'Users.Last_Name'           => trim((string) ($p['last_name'] ?? '')),
-            'Users.First_Name'          => trim((string) ($p['first_name'] ?? '')),
-            'Users.Middle_Name'         => trim((string) ($p['middle_name'] ?? '')),
-            'Users.Email_Addr'          => trim((string) ($p['email'] ?? '')),
-            'Users.TeacherNumber'       => trim((string) ($p['employee_id'] ?? '')),
-            'Users.SIF_StatePrid'       => trim((string) ($p['employee_id'] ?? '')),
-            'Users.Title'               => trim((string) ($p['title'] ?? '')),
-            'Users.HomeSchoolId'        => $school,
-            'Users.TeacherLoginID'      => trim((string) ($p['username'] ?? '')),
-            'UsersCoreFields.gender'    => self::genderInitial((string) ($p['gender'] ?? '')),
-            'UsersCoreFields.dob'       => self::usDate((string) ($p['dob'] ?? '')),
-            'S_USR_X.State_StaffNumber' => trim((string) ($p['alsde_id'] ?? '')),
-            'S_USR_X.HireDate'          => self::usDate((string) ($p['hire_date'] ?? '')),
-            'SchoolStaff.SchoolID'      => $school,
-            'SchoolStaff.Status'        => self::STAFF_CURRENT,
-            'SchoolStaff.StaffStatus'   => self::STAFF_STATUS[(string) ($p['person_type'] ?? '')] ?? self::STAFF_STATUS['staff'],
-            'TeacherRace.RaceCd'        => trim((string) ($p['ethnicity_code'] ?? '')),
-        ];
+        $sql = "SELECT p.person_id, p.first_name, p.last_name, p.employee_id, p.person_type,
+                       s.ps_school_id, a.end_date
+                  FROM assignment a
+                  JOIN person p ON p.person_id = a.person_id
+                  LEFT JOIN school s ON s.school_id = a.school_id
+                 WHERE p.status IN ('active','pending')
+                 ORDER BY p.person_id, a.id";
+        $fallback = "SELECT p.person_id, p.first_name, p.last_name, p.employee_id, p.person_type,
+                            s.ps_school_id, NULL AS end_date
+                       FROM person p
+                       LEFT JOIN school s ON s.school_id = p.primary_school_id
+                      WHERE p.status IN ('active','pending')
+                        AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.person_id = p.person_id)
+                      ORDER BY p.person_id";
+
+        $byKey = [];
+        $unmappedTypes = [];
+        $source = array_merge($this->db->query($sql)->fetchAll(), $this->db->query($fallback)->fetchAll());
+        foreach ($source as $a) {
+            $who = $this->label($a);
+            $teacherNumber = self::clean((string) ($a['employee_id'] ?? ''));
+            if ($teacherNumber === '' || mb_strlen($teacherNumber) > self::MAX_LENGTHS['USERS.TeacherNumber']) {
+                $exceptions[] = "assignments: {$who} — missing or over-long TeacherNumber; row rejected";
+                continue;
+            }
+            $school = self::psSchoolId(self::clean((string) ($a['ps_school_id'] ?? '')));
+            if ($school === '') {
+                $exceptions[] = "assignments: {$who} — school cannot be resolved to a"
+                    . ' PowerSchool School_Number; row rejected';
+                continue;
+            }
+            $type = (string) ($a['person_type'] ?? '');
+            if (!isset(self::STAFF_STATUS[$type]) && !isset($unmappedTypes[$type])) {
+                $unmappedTypes[$type] = true;
+                $exceptions[] = "assignments: unmapped person type '{$type}' (first seen on {$who})"
+                    . ' — defaulted to StaffStatus ' . self::STAFF_STATUS_DEFAULT . ' (Staff)';
+            }
+            $endDate = trim((string) ($a['end_date'] ?? ''));
+            $status = ($endDate !== '' && $endDate <= $this->today) ? self::STATUS_ENDED : self::STATUS_CURRENT;
+
+            $key = "{$teacherNumber}\t{$school}";
+            if (isset($byKey[$key]) && $byKey[$key]['Status'] === self::STATUS_CURRENT) {
+                continue; // already have a Current row for this person+school
+            }
+            $byKey[$key] = [
+                'TeacherNumber' => $teacherNumber,
+                'SchoolID'      => $school,
+                'Status'        => $status,
+                'StaffStatus'   => self::STAFF_STATUS[$type] ?? self::STAFF_STATUS_DEFAULT,
+            ];
+        }
+
+        $rows = array_values($byKey);
+        usort($rows, static fn(array $x, array $y): int =>
+            [$x['SchoolID'], $x['TeacherNumber']] <=> [$y['SchoolID'], $y['TeacherNumber']]);
+        return $rows;
     }
 
     /**
-     * Project one name-update row onto the update CSV columns (UPDATE_HEADERS).
+     * Render a full file: tab-delimited, header row first, CRLF line endings,
+     * one trailing newline, no quoting (values are already tab/newline-free).
      *
-     * @param array<string,mixed> $p
-     * @return array<string,string>
+     * @param array<int,string> $headers
+     * @param array<int,array<string,string>> $rows keyed by $headers
      */
-    public static function updateRow(array $p): array
+    public static function render(array $headers, array $rows): string
     {
-        return [
-            'Users.TeacherNumber'  => trim((string) ($p['employee_id'] ?? '')),
-            'Users.First_Name'     => trim((string) ($p['first_name'] ?? '')),
-            'Users.Middle_Name'    => trim((string) ($p['middle_name'] ?? '')),
-            'Users.Last_Name'      => trim((string) ($p['last_name'] ?? '')),
-            'Users.Email_Addr'     => trim((string) ($p['email'] ?? '')),
-            'Users.TeacherLoginID' => trim((string) ($p['username'] ?? '')),
-        ];
+        $lines = [implode("\t", $headers)];
+        foreach ($rows as $row) {
+            $lines[] = implode("\t", array_values($row));
+        }
+        return implode("\r\n", $lines) . "\r\n";
     }
 
     /**
-     * Render the new-staff CSV (header + one line per candidate).
+     * The 3-row sample of a file for a manual test import before the full
+     * file is used.
      *
-     * @param array<int,array<string,mixed>> $candidates raw candidates() rows
+     * @param array<int,string> $headers
+     * @param array<int,array<string,string>> $rows
      */
-    public static function csv(array $candidates): string
+    public static function sample(array $headers, array $rows): string
     {
-        return self::render(self::HEADERS, array_map(self::row(...), $candidates));
+        return self::render($headers, array_slice($rows, 0, 3));
+    }
+
+    /** @param array<int,string> $exceptions one line each; empty -> empty file */
+    public static function exceptionsFile(array $exceptions): string
+    {
+        return $exceptions === [] ? '' : implode("\r\n", $exceptions) . "\r\n";
     }
 
     /**
-     * Render the name-update CSV (header + one line per changed person).
-     *
-     * @param array<int,array<string,mixed>> $updates nameUpdates()['updates'] rows
-     */
-    public static function updatesCsv(array $updates): string
-    {
-        return self::render(self::UPDATE_HEADERS, array_map(self::updateRow(...), $updates));
-    }
-
-    /**
-     * Write a rendered CSV into $dir. CRLF line ends and RFC-4180 quoting,
-     * matching what PowerSchool's importer accepts.
+     * Write a rendered file into $dir under a FIXED name — every run
+     * overwrites the last, so PowerSchool's scheduled imports can point at a
+     * constant file name.
      *
      * @return array{path:string,bytes:int}
      */
-    public static function writeFile(string $csv, string $dir, string $fileName): array
+    public static function writeFile(string $content, string $dir, string $fileName): array
     {
         if (!is_dir($dir) && !mkdir($dir, 0750, true) && !is_dir($dir)) {
             throw new RuntimeException("Cannot create export directory: {$dir}");
         }
         $path = rtrim($dir, '/') . '/' . $fileName;
-        $bytes = file_put_contents($path, $csv);
+        $bytes = file_put_contents($path, $content);
         if ($bytes === false) {
             throw new RuntimeException("Cannot write export file: {$path}");
         }
@@ -298,13 +353,6 @@ final class PowerSchoolStaffExporter
         return preg_match('/^\d{1,3}$/', $code) ? str_pad($code, 4, '0', STR_PAD_LEFT) : $code;
     }
 
-    /** "Male"/"female"/"M" -> "M"; empty stays empty (PowerSchool stores M/F). */
-    public static function genderInitial(string $gender): string
-    {
-        $g = ltrim($gender);
-        return $g === '' ? '' : mb_strtoupper(mb_substr($g, 0, 1));
-    }
-
     /** Y-m-d (DB) -> MM/DD/YYYY (PowerSchool import format); anything else passes through. */
     public static function usDate(string $date): string
     {
@@ -315,58 +363,29 @@ final class PowerSchoolStaffExporter
         return $date;
     }
 
-    /** Case-insensitive name equality (mirrors FieldMap::valuesEqual's default). */
-    private static function sameName(string $a, string $b): bool
+    /** Tab-delimited output: tabs/newlines become spaces, then trim. */
+    private static function clean(string $value): string
     {
-        return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+        return trim(str_replace(["\t", "\r\n", "\r", "\n"], ' ', $value));
     }
 
-    /**
-     * The PowerSchool email from a snapshot's raw_json (fields.hr_email), or
-     * null when the snapshot predates email capture — null means "unknown",
-     * not "blank in PowerSchool".
-     */
-    private static function snapshotEmail(?string $rawJson): ?string
+    /** Enforce the spec max length: truncate over-long values and log it. */
+    private function limit(string $column, string $value, string $who, array &$exceptions): string
     {
-        if ($rawJson === null || $rawJson === '') {
-            return null;
+        $max = self::MAX_LENGTHS[$column];
+        if (mb_strlen($value) <= $max) {
+            return $value;
         }
-        $decoded = json_decode($rawJson, true);
-        $fields = is_array($decoded) ? ($decoded['fields'] ?? null) : null;
-        if (!is_array($fields) || !array_key_exists('hr_email', $fields)) {
-            return null;
-        }
-        return trim((string) ($fields['hr_email'] ?? ''));
+        $truncated = mb_substr($value, 0, $max);
+        $exceptions[] = "demographics: {$who} — {$column} truncated to {$max} chars"
+            . " ('{$value}' -> '{$truncated}')";
+        return $truncated;
     }
 
-    /** Golden email is set, the snapshot email is known, and they differ. */
-    private static function emailChanged(string $golden, ?string $snapshot): bool
+    /** "Last, First (person 42)" for exception messages. */
+    private function label(array $p): string
     {
-        return trim($golden) !== '' && $snapshot !== null && !self::sameName($golden, $snapshot);
-    }
-
-    /**
-     * @param array<int,string> $headers
-     * @param array<int,array<string,string>> $rows keyed by $headers
-     */
-    private static function render(array $headers, array $rows): string
-    {
-        $lines = [self::csvLine($headers)];
-        foreach ($rows as $row) {
-            $lines[] = self::csvLine(array_values($row));
-        }
-        return implode("\r\n", $lines) . "\r\n";
-    }
-
-    /** @param array<int,string> $values */
-    private static function csvLine(array $values): string
-    {
-        $out = [];
-        foreach ($values as $v) {
-            $out[] = preg_match('/[",\r\n]/', $v)
-                ? '"' . str_replace('"', '""', $v) . '"'
-                : $v;
-        }
-        return implode(',', $out);
+        $name = trim((string) ($p['last_name'] ?? '') . ', ' . (string) ($p['first_name'] ?? ''), ', ');
+        return ($name !== '' ? $name : '(unnamed)') . ' (person ' . (string) ($p['person_id'] ?? '?') . ')';
     }
 }

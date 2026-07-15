@@ -1,138 +1,134 @@
-# PowerSchool staff export (CSV → SFTP)
+# PowerSchool staff export (tab-delimited → SFTP)
 
-`bin/export_powerschool.php` generates CSVs for the PowerSchool SIS staff
-import and uploads them to the district SFTP server. Two files per run, always
-written under the **same fixed names** (each run overwrites the previous file,
-so PowerSchool's Data Import Manager scheduled import can point at a constant
-file name):
+`bin/export_powerschool.php` exports the current staff roster as two
+tab-delimited files that load cleanly into PowerSchool SIS, and uploads them
+to the district SFTP server. Files are always written under the **same fixed
+names** (each run overwrites the previous file, so the PowerSchool scheduled
+imports can point at a constant file name):
 
-- **`ps_new_staff.csv`** — people the IDM knows about (hired in NextGen,
-  ALSDE ID entered) who do **not** exist in PowerSchool yet. Closes the manual
-  "People > Staff > New Staff Member" copy/paste loop from the Identity
-  Management runbook.
-- **`ps_name_updates.csv`** — people **already in PowerSchool** whose name or
-  district email changed on the golden record (e.g. a marriage-related
-  last-name change from NextGen and the username/email rename that follows
-  it), keyed by `Users.TeacherNumber` so PowerSchool updates the existing
-  record instead of creating a new one. Rows carry the current name **and**
-  the current email + username.
+- **`ps_staff_demographics.txt`** — imported via **Data Import Manager**,
+  target module `USERSCOREFIELDS` (writes the `Users` table + AL extensions).
+  One row per active/pending staff member, matched on `USERS.TeacherNumber`
+  (= Employee ID) so PowerSchool updates the existing record.
+- **`ps_staff_assignments.txt`** — imported via **AutoComm / Quick Import**
+  into the **Teachers** view (writes the `SchoolStaff` school-assignment
+  fields). One row per staff member **per school assignment** (multi-school
+  staff repeat), sorted by `SchoolID` so a split-by-school is trivial.
 
-## Who is exported (new staff)
+Also written locally on every run (never uploaded):
 
-A person is a candidate when **all** of these hold:
+- `ps_staff_demographics_sample.txt` / `ps_staff_assignments_sample.txt` —
+  header + first 3 rows of each file, for a **manual test import** before the
+  full file is used.
+- `ps_staff_exceptions.txt` — every rejected row, truncation, and unmapped
+  person type from the run (empty file when the run was clean).
 
-- `person.status` is `active` or `pending`;
-- `person.alsde_id` is set (the ALSDE ID from the
-  [ALSDE Certification Search](https://tcert.alsde.edu/Portal/Public/Pages/SearchCerts.aspx));
-- there is **no** active `person_source_id` row with `system='powerschool'` —
-  i.e. the nightly PowerSchool import has never reported this person back.
+Individual race codes (`TeacherRace.RaceCd`) are **not importable** in this
+PowerSchool build and are deliberately not exported; only spec-listed columns
+are emitted. `Users.Ethnicity` is deprecated and never populated. Passwords
+and SSNs are never exported.
 
-People who match everything except the ALSDE ID are **held back**, and the CLI
-lists them explicitly (`! Lastname, Firstname … no ALSDE ID, not exported`) so
-nobody is silently dropped. Once the record appears in PowerSchool and the
-nightly import attaches the `powerschool` source id, the person drops out of
-this export automatically.
+## File format (both files)
 
-## Who is exported (name updates)
+Tab-delimited, UTF-8 without BOM, CRLF line endings, header row first, one
+trailing newline, no blank rows, no quoting. Tabs and newlines inside source
+values are replaced with spaces. Unknown values are empty strings — never the
+literal `NULL`.
 
-A person lands in the update file when **all** of these hold:
+## Who is exported
 
-- `person.status` is `active` or `pending`;
-- they have an **active** `powerschool` source id (they exist in PowerSchool);
-- their golden-record first or last name differs (case-insensitively) from the
-  **latest** PowerSchool import snapshot (`staging_record` row matched to
-  them), **or** their golden-record district email differs from the email that
-  snapshot recorded (`raw_json` → `fields.hr_email`) — i.e. the IDM/NextGen
-  name changed, or a rename moved the username/email, and PowerSchool still
-  has the old value.
+Every person with `person.status` of `active` or `pending`. There is no
+change detection: the full roster goes out each run and PowerSchool updates
+in place by match key. Rows that fail validation (below) are **rejected and
+logged** to the exceptions file — never silently dropped.
 
-The email comparison only fires when the golden email is set **and** the
-snapshot actually recorded a PowerSchool email — snapshots that predate email
-capture never trigger a false update.
+## `ps_staff_demographics.txt` (DIM → USERSCOREFIELDS)
 
-The row carries the full current name (first, middle, last) plus the current
-district email (`Users.Email_Addr`) and username (`Users.TeacherLoginID`), so
-a rename cutover reaches PowerSchool in the same file as the name change. Once
-PowerSchool is updated and the nightly import snapshots the new values, the
-person drops out of this file automatically. Changed people with **no employee
-id** have no match key and are held back — the CLI lists them (`! … no
-employee id, change not exported`). People PowerSchool has never snapshotted
-are skipped (there is nothing to compare against).
-
-## Columns
-
-Headers use the exact `Table.Field` names from the district's PowerSchool data
-dictionary (pulled from `/ws/schema/table/{name}/metadata` on
-tuscaloosacs.powerschool.com), so the files map 1:1 in PowerSchool's Data
-Import Manager.
-
-### `ps_new_staff.csv`
-
-| CSV column | Golden-record source | Notes |
+| Column header | IDM source | Notes |
 |---|---|---|
-| `Users.Last_Name` | `person.last_name` | |
-| `Users.First_Name` | `person.first_name` | |
-| `Users.Middle_Name` | `person.middle_name` | |
-| `Users.Email_Addr` | `person.email` | district e-mail (blank until OneSync mints it) |
-| `Users.TeacherNumber` | `person.employee_id` | the NextGen employee id |
-| `Users.SIF_StatePrid` | `person.employee_id` | district practice: StatePrId = Employee ID |
-| `Users.Title` | primary `assignment.title` | |
-| `Users.HomeSchoolId` | `school.ps_school_id` of the primary school | zero-padded to 4 digits (`130` → `0130`) |
-| `Users.TeacherLoginID` | `person.username` | AD username for PowerTeacher SSO (blank until minted) |
-| `UsersCoreFields.gender` | `person.gender` | initial only — PowerSchool stores `M`/`F` |
-| `UsersCoreFields.dob` | `person.dob` | `MM/DD/YYYY` |
-| `S_USR_X.State_StaffNumber` | `person.alsde_id` | **the ALSDE ID** |
-| `S_USR_X.HireDate` | `person.hire_date` | `MM/DD/YYYY` |
-| `SchoolStaff.SchoolID` | `school.ps_school_id` | school association, zero-padded to 4 digits |
-| `SchoolStaff.Status` | constant `1` | 1 = Current |
-| `SchoolStaff.StaffStatus` | `person.person_type` | faculty → `1` (Teacher), everything else → `2` (Staff) |
-| `TeacherRace.RaceCd` | `person.ethnicity_code` | resolved ALSDE race code (`ethnicity_map`) |
+| `USERS.TeacherNumber` | `person.employee_id` | **match key**; required, unique, ≤ 20 chars (an over-long key rejects the row — the match key is never truncated) |
+| `USERS.Last_Name` | `person.last_name` | required, ≤ 100 chars |
+| `USERS.First_Name` | `person.first_name` | required, ≤ 100 chars |
+| `USERS.Middle_Name` | `person.middle_name` | ≤ 100 chars |
+| `USERS.Email_Addr` | `person.email` | ≤ 50 chars |
+| `USERS.SIF_StatePrid` | `person.employee_id` | district practice: state personnel id = Employee ID; ≤ 32 chars |
+| `USERS.Title` | primary `assignment.title` | ≤ 40 chars |
+| `USERS.HomeSchoolId` | `school.ps_school_id` of the primary school | the PowerSchool `School_Number`, zero-padded to 4 digits (`130` → `0130`); unresolvable → row rejected |
+| `USERS.TeacherLoginID` | `person.username` | PowerTeacher login; ≤ 20 chars |
+| `S_USR_X.hiredate` | `person.hire_date` | `MM/DD/YYYY` |
+| `S_USR_X.state_staffnumber` | `person.alsde_id` | the ALSDE ID |
 
-### `ps_name_updates.csv`
+Spec columns with **no IDM source** are omitted entirely — header and values —
+so a DIM update never mass-blanks them: `USERS.FedEthnicity`,
+`USERS.FedRaceDecline`, `S_USR_X.employmentstatus`. If IDM ever gains a
+Hispanic/Latino indicator, race-decline flag, or employment status, add the
+columns back per the spec (FedEthnicity: `1`/`0`/`-1`; FedRaceDecline:
+`1`/`0`).
 
-| CSV column | Golden-record source | Notes |
+## `ps_staff_assignments.txt` (AutoComm/Quick Import → Teachers)
+
+Headers have **no table prefix** — the Teachers import rejects `Table.Field`
+names.
+
+| Column header | IDM source | Notes |
 |---|---|---|
-| `Users.TeacherNumber` | `person.employee_id` | **match key** — updates the existing record |
-| `Users.First_Name` | `person.first_name` | |
-| `Users.Middle_Name` | `person.middle_name` | |
-| `Users.Last_Name` | `person.last_name` | |
-| `Users.Email_Addr` | `person.email` | current district e-mail (new address after a rename) |
-| `Users.TeacherLoginID` | `person.username` | current AD username for PowerTeacher SSO |
+| `TeacherNumber` | `person.employee_id` | match key; same value as file 1 |
+| `SchoolID` | `school.ps_school_id` of the assignment | `School_Number`, zero-padded to 4 digits; unresolvable → row rejected |
+| `Status` | `assignment.end_date` | `1` = Current; `2` = No longer here (assignment end date has passed — clears the old school after a transfer) |
+| `StaffStatus` | `person.person_type` | `faculty` → `1` (Teacher), `staff` → `2` (Staff), `sub` → `4` (Substitute); anything else defaults to `2` and is logged once per type |
 
-Format (both files): comma-delimited, RFC-4180 quoting, CRLF line endings,
-header row first.
+People with **no** `assignment` rows fall back to one row for their primary
+school. Duplicate (TeacherNumber, SchoolID) pairs collapse to a single row,
+preferring Current over ended.
+
+## Validation
+
+- Rows missing `TeacherNumber`, `Last_Name`, or `First_Name` are rejected and
+  logged.
+- Spec max lengths are enforced: over-long values are truncated **and
+  logged** (never silently); an over-long `TeacherNumber` rejects the whole
+  row instead, since truncating the match key could update the wrong record.
+- `TeacherNumber` uniqueness is enforced within the demographics file —
+  duplicates after the first are rejected and logged.
+- Every `HomeSchoolId` / `SchoolID` must resolve to a PowerSchool
+  `School_Number` via `school.ps_school_id`; unresolvable rows are rejected
+  and logged.
+- The CLI prints a run summary: rows per file, exceptions, distinct schools —
+  and writes every exception line to `ps_staff_exceptions.txt`.
 
 ## Running it
 
 ```
-php bin/export_powerschool.php                # write CSVs + upload to SFTP
-php bin/export_powerschool.php --dry-run      # list who would be exported / held back
-php bin/export_powerschool.php --no-upload    # write the CSVs locally, skip SFTP
-php bin/export_powerschool.php --new-only     # only the new-staff file
-php bin/export_powerschool.php --updates-only # only the name-update file
-php bin/export_powerschool.php --out=DIR      # override EXPORT_POWERSCHOOL_DIR
+php bin/export_powerschool.php                     # write files + upload to SFTP
+php bin/export_powerschool.php --dry-run           # print summary + exceptions only
+php bin/export_powerschool.php --no-upload         # write the files locally, skip SFTP
+php bin/export_powerschool.php --demographics-only # only ps_staff_demographics.txt
+php bin/export_powerschool.php --assignments-only  # only ps_staff_assignments.txt
+php bin/export_powerschool.php --out=DIR           # override EXPORT_POWERSCHOOL_DIR
 ```
 
 Exit code is non-zero when the export directory / SFTP drop dir is missing or
-the upload fails, so it is cron-safe.
+the upload fails, so it is cron-safe. Validation exceptions do **not** fail
+the run — they are reported in the summary and the exceptions file.
 
 ## Configuration (.env)
 
 | Key | Meaning |
 |---|---|
-| `EXPORT_POWERSCHOOL_DIR` | local directory where the CSVs are written (`ps_new_staff.csv`, `ps_name_updates.csv` — fixed names, each run overwrites the last) |
-| `SFTP_PS_EXPORT_DIR` | remote drop directory on the district SFTP server |
+| `EXPORT_POWERSCHOOL_DIR` | local directory for the export files (fixed names, each run overwrites the last) |
+| `SFTP_PS_EXPORT_DIR` | remote drop directory on the district SFTP server (only the two `.txt` import files are uploaded — samples and exceptions stay local) |
 | `SFTP_HOST` / `SFTP_PORT` / `SFTP_USER` / key or password / `SFTP_FINGERPRINT` | shared with the feed pull (`bin/fetch_feeds.php`) — same server, same credentials |
 
 ## Importing on the PowerSchool side
 
-In PowerSchool SIS use **Data Import Manager** with the staff/users import.
-Match the columns by the `Table.Field` header names above; the `SchoolStaff.*`
-constants create the school association as *Current*, and
-`S_USR_X.State_StaffNumber` fills the Demographics "ALSDE ID" field. Race
-(`TeacherRace.RaceCd`) and access/roles remain the district's existing manual
-steps if the import template doesn't cover them.
+1. **Demographics** — Data Import Manager, target `USERSCOREFIELDS`, match on
+   `USERS.TeacherNumber`, update existing records. The header names map 1:1.
+   Run the 3-row `ps_staff_demographics_sample.txt` through DIM first and
+   verify the mapped fields before importing the full file.
+2. **Assignments** — AutoComm or Quick Import into the **Teachers** view.
+   Because the Teachers import runs per school context, the file is sorted by
+   `SchoolID`; split it by school if the import requires it. Test with
+   `ps_staff_assignments_sample.txt` first.
 
-For the name-update file, set the import to **update existing records** matched
-on `Users.TeacherNumber` (never insert) — the file only ever contains people
-who already exist in PowerSchool.
+On the first production run, verify the exported values against the district
+code lists (StaffStatus codes, School_Numbers) before scheduling it.
