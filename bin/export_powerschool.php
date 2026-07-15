@@ -76,17 +76,17 @@ if ($outDir === '') {
     exit(1);
 }
 if ($summary['rows'] === 0) {
-    // Still write + upload the (header-only) file: the name is fixed, so this
+    // Still write + upload the (empty) file: the name is fixed, so this
     // clears yesterday's changes out of the AutoComm drop directory.
     echo "  nothing to export — writing an empty file to clear the drop\n";
 }
 
 $file = PowerSchoolStaffExporter::writeFile(
-    PowerSchoolStaffExporter::render(PowerSchoolStaffExporter::HEADERS, $result['rows']),
+    PowerSchoolStaffExporter::render($result['rows']),
     $outDir, PowerSchoolStaffExporter::EXPORT_FILE);
 printf("  wrote %s (%d bytes, %d row(s))\n", $file['path'], $file['bytes'], $summary['rows']);
 PowerSchoolStaffExporter::writeFile(
-    PowerSchoolStaffExporter::sample(PowerSchoolStaffExporter::HEADERS, $result['rows']),
+    PowerSchoolStaffExporter::sample($result['rows']),
     $outDir, PowerSchoolStaffExporter::SAMPLE_FILE);
 $exceptions = PowerSchoolStaffExporter::writeFile(
     PowerSchoolStaffExporter::exceptionsFile($result['exceptions']),

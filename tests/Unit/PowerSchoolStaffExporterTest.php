@@ -340,24 +340,28 @@ final class PowerSchoolStaffExporterTest extends TestCase
         self::assertSame("O'Neal Jr", $row['Last_Name'], 'tab replaced with a space');
     }
 
-    public function testRenderIsTabDelimitedWithHeaderAndTrailingNewline(): void
+    public function testRenderIsTabDelimitedDataOnlyNoHeaderRow(): void
     {
         $res = $this->export();
-        $txt = PowerSchoolStaffExporter::render(PowerSchoolStaffExporter::HEADERS, $res['rows']);
+        $txt = PowerSchoolStaffExporter::render($res['rows']);
 
         $lines = explode("\r\n", rtrim($txt, "\r\n"));
-        self::assertSame(implode("\t", PowerSchoolStaffExporter::HEADERS), $lines[0],
-            'prefix-free Teachers-view headers');
-        self::assertCount(1 + count($res['rows']), $lines, 'no blank rows');
+        self::assertStringNotContainsString('TeacherNumber', $txt,
+            'no header row — AutoComm maps fields by column position');
+        self::assertCount(count($res['rows']), $lines, 'data rows only, no blank rows');
+        self::assertSame(count(PowerSchoolStaffExporter::HEADERS) - 1, substr_count($lines[0], "\t"),
+            'every column present, in HEADERS order');
         self::assertStringEndsWith("\r\n", $txt, 'one trailing newline');
         self::assertStringNotContainsString('"', $txt, 'no quoting');
+        self::assertSame('', PowerSchoolStaffExporter::render([]),
+            'no rows -> truly empty file, not a blank line');
     }
 
-    public function testSampleIsHeaderPlusAtMostThreeRows(): void
+    public function testSampleIsAtMostThreeRows(): void
     {
         $res = $this->export();
-        $sample = PowerSchoolStaffExporter::sample(PowerSchoolStaffExporter::HEADERS, $res['rows']);
-        self::assertCount(4, explode("\r\n", rtrim($sample, "\r\n")), 'header + 3 rows');
+        $sample = PowerSchoolStaffExporter::sample($res['rows']);
+        self::assertCount(3, explode("\r\n", rtrim($sample, "\r\n")), 'first 3 rows, no header');
     }
 
     public function testSummaryCountsRowsExceptionsAndDistinctSchools(): void
@@ -393,7 +397,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $dir = sys_get_temp_dir() . '/psx_export_' . uniqid();
 
         $file = PowerSchoolStaffExporter::writeFile(
-            PowerSchoolStaffExporter::render(PowerSchoolStaffExporter::HEADERS, $res['rows']),
+            PowerSchoolStaffExporter::render($res['rows']),
             $dir, PowerSchoolStaffExporter::EXPORT_FILE);
         self::assertFileExists($file['path']);
         self::assertStringEndsWith('/ps_staff_teachers.txt', $file['path'], 'fixed file name');

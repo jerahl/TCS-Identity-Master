@@ -14,7 +14,7 @@ date travel in the file. Column names are the exact field list the AutoComm
 template accepts.
 
 Files are always written under the **same fixed names** (each run overwrites
-the previous file — an empty run writes a header-only file so yesterday's
+the previous file — an empty run writes an empty file so yesterday's
 changes never get re-imported — so AutoComm can point at a constant name):
 
 - **`ps_staff_teachers.txt`** — the import file (uploaded to SFTP). One row
@@ -22,17 +22,19 @@ changes never get re-imported — so AutoComm can point at a constant name):
   repeat on every row, the SchoolStaff-sourced fields (`SchoolID`, `Status`,
   `StaffStatus`) vary per school. Sorted by `SchoolID` — the Teachers import
   runs per school context, so split-by-school is trivial if needed.
-- **`ps_staff_teachers_sample.txt`** — header + first 3 rows, for a **manual
-  test import** before the full file is used (local only).
+- **`ps_staff_teachers_sample.txt`** — the first 3 rows, for a **manual test
+  import** before the full file is used (local only).
 - **`ps_staff_exceptions.txt`** — every held-back/rejected row, truncation,
   and unmapped person type from the run (local only; empty when clean).
 
 ## File format
 
-Tab-delimited, UTF-8 without BOM, CRLF line endings, header row first, one
-trailing newline, no blank rows, no quoting. Tabs and newlines inside source
-values are replaced with spaces. Unknown values are empty strings — never the
-literal `NULL`.
+Tab-delimited, UTF-8 without BOM, CRLF line endings, **no header row** — the
+AutoComm field mapping is by column position, in the order listed under
+[Columns](#columns). One trailing newline, no blank rows, no quoting. Tabs
+and newlines inside source values are replaced with spaces. Unknown values
+are empty strings — never the literal `NULL`. An empty run produces an empty
+(0-byte) file.
 
 ## Who is exported
 
@@ -134,8 +136,8 @@ the run — they are reported in the summary and the exceptions file.
 Set up **AutoComm** (Start Page > System > AutoComm) against the **Teachers**
 view, pointed at `ps_staff_teachers.txt` in the SFTP drop directory:
 
-- Field delimiter: **Tab**; end-of-line: **CRLF**; first row contains field
-  names matching the Teachers-view columns above.
+- Field delimiter: **Tab**; end-of-line: **CRLF**; **no header row** — map
+  the fields by position in the exact order of the Columns table above.
 - Match on `TeacherNumber` so existing staff update instead of duplicating.
 - Because the Teachers import runs per school context, the file is sorted by
   `SchoolID`; split it by school if the AutoComm setup requires it.

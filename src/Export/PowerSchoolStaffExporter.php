@@ -356,16 +356,19 @@ final class PowerSchoolStaffExporter
     }
 
     /**
-     * Render the file: tab-delimited, header row first, CRLF line endings,
-     * one trailing newline, no blank rows, no quoting (values are already
-     * tab/newline-free).
+     * Render the file: tab-delimited data rows ONLY — no header row (the
+     * AutoComm field mapping is by column position; HEADERS documents the
+     * order). CRLF line endings, one trailing newline, no blank rows, no
+     * quoting (values are already tab/newline-free). No rows -> empty file.
      *
-     * @param array<int,string> $headers
-     * @param array<int,array<string,string>> $rows keyed by $headers
+     * @param array<int,array<string,string>> $rows keyed + ordered by HEADERS
      */
-    public static function render(array $headers, array $rows): string
+    public static function render(array $rows): string
     {
-        $lines = [implode("\t", $headers)];
+        if ($rows === []) {
+            return '';
+        }
+        $lines = [];
         foreach ($rows as $row) {
             $lines[] = implode("\t", array_values($row));
         }
@@ -376,12 +379,11 @@ final class PowerSchoolStaffExporter
      * The 3-row sample of the file for a manual test import before the full
      * file is used.
      *
-     * @param array<int,string> $headers
      * @param array<int,array<string,string>> $rows
      */
-    public static function sample(array $headers, array $rows): string
+    public static function sample(array $rows): string
     {
-        return self::render($headers, array_slice($rows, 0, 3));
+        return self::render(array_slice($rows, 0, 3));
     }
 
     /** @param array<int,string> $exceptions one line each; empty -> empty file */
