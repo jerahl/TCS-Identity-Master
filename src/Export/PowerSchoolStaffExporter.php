@@ -10,17 +10,23 @@ use PDO;
 use RuntimeException;
 
 /**
- * Exports the current staff roster as two tab-delimited files that load
- * cleanly into PowerSchool SIS (see docs/powerschool-staff-export.md and the
- * district import spec), and uploads them to the district SFTP server:
+ * Exports staff changes as ONE tab-delimited file for PowerSchool's
+ * AutoComm import into the Teachers view — the only import path exposed in
+ * the district's PowerSchool build (no Data Import Manager, no direct
+ * USERSCOREFIELDS/S_USR_X access) — and uploads it to the district SFTP
+ * server. Column names are the exact Teachers-view field names from the
+ * district's data dictionary; Users-sourced fields repeat on every row,
+ * SchoolStaff-sourced fields (SCHOOLID/STATUS/STAFFSTATUS) vary per school.
  *
  * Only people who need a PowerSchool update are exported — NOT the full
  * roster. A person (active/pending) is included when they are:
  *
  *   NEW — no active person_source_id row with system='powerschool', i.e.
  *   PowerSchool has never reported them back through the nightly import.
- *   New users without an ALSDE ID are held back and logged (district
- *   practice: PowerSchool staff demographics require it).
+ *   New users MUST have an ALSDE ID on the golden record to be created in
+ *   PowerSchool; without one they are held back and logged. (The Teachers
+ *   view has no ALSDE column — the ID itself is entered in PowerSchool
+ *   demographics by hand — so the requirement is enforced here as a gate.)
  *
  *   CHANGED — already in PowerSchool, but the golden-record first/last name
  *   OR district email differs from the latest PowerSchool import snapshot
@@ -31,84 +37,69 @@ use RuntimeException;
  *   PowerSchool email (raw_json fields.hr_email); people never snapshotted
  *   are skipped (nothing to compare against).
  *
- * ps_staff_demographics.txt — Data Import Manager, target USERSCOREFIELDS.
- * One row per exported person, matched on USERS.TeacherNumber (= Employee
- * ID). Spec columns with no IDM source (USERS.FedEthnicity,
- * USERS.FedRaceDecline, S_USR_X.employmentstatus) are omitted entirely —
- * header and values — so a DIM update never mass-blanks them.
- *
- * ps_staff_assignments.txt — AutoComm/Quick Import into the Teachers view.
  * One row per exported person PER school assignment (multi-school staff
- * repeat), headers WITHOUT table prefixes (the Teachers import rejects
- * Table.Field). Sorted by SchoolID so a split-by-school is trivial.
+ * repeat, with identical Users fields), sorted by SCHOOLID — the Teachers
+ * import runs per school context, so grouping makes split-by-school trivial.
  *
- * Individual race codes (TeacherRace.RaceCd) are NOT importable in this
- * PowerSchool build and are deliberately not exported. Users.Ethnicity is
- * deprecated and never populated. Passwords and SSNs are never exported.
+ * Never exported: passwords, SSN, address/phone fields, FEDETHNICITY /
+ * FEDRACEDECLINE (no IDM source — omitted entirely so an update never
+ * mass-blanks them), and the deprecated ETHNICITY field.
  *
- * Validation (per the spec) — every problem lands in the exceptions list,
- * nothing is dropped silently:
- *   - rows missing TeacherNumber, Last_Name, or First_Name are rejected;
- *   - a TeacherNumber longer than 20 chars is rejected (truncating the match
- *     key could collide with or update the wrong record);
- *   - duplicate TeacherNumbers within the demographics file are rejected;
- *   - HomeSchoolId / SchoolID that cannot be resolved to a PowerSchool
+ * Validation — every problem lands in the exceptions list, nothing is
+ * dropped silently:
+ *   - new users without an ALSDE ID are held back;
+ *   - rows missing TEACHERNUMBER, LAST_NAME, or FIRST_NAME are rejected;
+ *   - a TEACHERNUMBER longer than 20 chars is rejected (truncating the match
+ *     key could update the wrong record);
+ *   - duplicate TEACHERNUMBERs across people are rejected;
+ *   - HOMESCHOOLID / SCHOOLID that cannot be resolved to a PowerSchool
  *     School_Number (school.ps_school_id) reject the row;
- *   - over-long non-key values are truncated to the spec max and logged;
- *   - unmapped person types default to StaffStatus 2 (Staff) and are logged.
+ *   - over-long non-key values are truncated to the dictionary max and logged;
+ *   - unmapped person types default to STAFFSTATUS 2 (Staff) and are logged.
  */
 final class PowerSchoolStaffExporter
 {
-    public const DEMOGRAPHICS_FILE = 'ps_staff_demographics.txt';
-    public const ASSIGNMENTS_FILE = 'ps_staff_assignments.txt';
-    public const DEMOGRAPHICS_SAMPLE_FILE = 'ps_staff_demographics_sample.txt';
-    public const ASSIGNMENTS_SAMPLE_FILE = 'ps_staff_assignments_sample.txt';
+    public const EXPORT_FILE = 'ps_staff_teachers.txt';
+    public const SAMPLE_FILE = 'ps_staff_teachers_sample.txt';
     public const EXCEPTIONS_FILE = 'ps_staff_exceptions.txt';
 
     /**
-     * Demographics headers, in output order — exact names from the district
-     * spec. Spec columns 10 (USERS.FedEthnicity), 11 (USERS.FedRaceDecline)
-     * and 13 (S_USR_X.employmentstatus) have no IDM source and are omitted.
+     * Output columns, in order — exact Teachers-view field names from the
+     * district data dictionary (no Table.Field prefixes; the Teachers import
+     * rejects them).
      */
-    public const DEMOGRAPHIC_HEADERS = [
-        'USERS.TeacherNumber',
-        'USERS.Last_Name',
-        'USERS.First_Name',
-        'USERS.Middle_Name',
-        'USERS.Email_Addr',
-        'USERS.SIF_StatePrid',
-        'USERS.Title',
-        'USERS.HomeSchoolId',
-        'USERS.TeacherLoginID',
-        'S_USR_X.hiredate',
-        'S_USR_X.state_staffnumber',
+    public const HEADERS = [
+        'TEACHERNUMBER',   // Users: district staff number — the match key
+        'LAST_NAME',       // Users: required
+        'FIRST_NAME',      // Users: required
+        'MIDDLE_NAME',     // Users
+        'EMAIL_ADDR',      // Users: max 50
+        'SIF_STATEPRID',   // Users: district practice — StatePrId = employee id
+        'TITLE',           // Users: max 40, display/sort only
+        'HOMESCHOOLID',    // Users: School_Number of the home school
+        'TEACHERLOGINID',  // Users: PowerTeacher login, max 20
+        'SCHOOLID',        // SchoolStaff: School_Number of this assignment
+        'STATUS',          // SchoolStaff: 1 = Current, 2 = No longer here
+        'STAFFSTATUS',     // SchoolStaff: 0..4, see STAFF_STATUS
     ];
 
-    /** Assignment headers — NO table prefix (the Teachers import rejects them). */
-    public const ASSIGNMENT_HEADERS = [
-        'TeacherNumber',
-        'SchoolID',
-        'Status',
-        'StaffStatus',
-    ];
-
-    /** Spec max lengths, keyed by demographics column. */
+    /** Data-dictionary max lengths, keyed by column. */
     private const MAX_LENGTHS = [
-        'USERS.TeacherNumber'  => 20,
-        'USERS.Last_Name'      => 100,
-        'USERS.First_Name'     => 100,
-        'USERS.Middle_Name'    => 100,
-        'USERS.Email_Addr'     => 50,
-        'USERS.SIF_StatePrid'  => 32,
-        'USERS.Title'          => 40,
-        'USERS.TeacherLoginID' => 20,
+        'TEACHERNUMBER'  => 20,
+        'LAST_NAME'      => 100,
+        'FIRST_NAME'     => 100,
+        'MIDDLE_NAME'    => 100,
+        'EMAIL_ADDR'     => 50,
+        'SIF_STATEPRID'  => 32,
+        'TITLE'          => 40,
+        'TEACHERLOGINID' => 20,
     ];
 
-    /** Status: 1 = Current, 2 = No longer here. */
+    /** SchoolStaff.Status: 1 = Current, 2 = No longer here. */
     private const STATUS_CURRENT = '1';
     private const STATUS_ENDED = '2';
 
-    /** StaffStatus: 0 Not Assigned, 1 Teacher, 2 Staff, 3 Lunch Staff, 4 Substitute. */
+    /** SchoolStaff.StaffStatus: 0 Not Assigned, 1 Teacher, 2 Staff, 3 Lunch Staff, 4 Substitute. */
     private const STAFF_STATUS = ['faculty' => '1', 'staff' => '2', 'sub' => '4'];
     private const STAFF_STATUS_DEFAULT = '2';
 
@@ -122,35 +113,27 @@ final class PowerSchoolStaffExporter
     }
 
     /**
-     * Build both files' rows plus the exception log and run summary.
+     * Build the file's rows plus the exception log and run summary.
      *
      * @return array{
-     *     demographics: array<int,array<string,string>>,
-     *     assignments: array<int,array<string,string>>,
+     *     rows: array<int,array<string,string>>,
      *     new: array<int,string>,
      *     changed: array<int,string>,
      *     exceptions: array<int,string>,
-     *     summary: array{new:int,changed:int,demographics:int,assignments:int,exceptions:int,schools:int}
+     *     summary: array{new:int,changed:int,rows:int,exceptions:int,schools:int}
      * }
      */
     public function export(): array
     {
         $exceptions = [];
         $people = $this->selectPeople($exceptions);
-        $demographics = $this->demographicRows($people, $exceptions);
-        $assignments = $this->assignmentRows(
-            array_column($people, 'person_id', 'person_id'), $exceptions);
+        $rows = $this->rows($people, $exceptions);
 
-        $schools = array_unique(array_merge(
-            array_column($demographics, 'USERS.HomeSchoolId'),
-            array_column($assignments, 'SchoolID'),
-        ));
         $new = array_values(array_filter($people, static fn(array $p): bool => $p['_reason'] === 'new'));
         $changed = array_values(array_filter($people, static fn(array $p): bool => $p['_reason'] === 'changed'));
 
         return [
-            'demographics' => $demographics,
-            'assignments' => $assignments,
+            'rows' => $rows,
             'new' => array_map($this->label(...), $new),
             'changed' => array_map(
                 fn(array $p): string => $this->label($p)
@@ -162,10 +145,9 @@ final class PowerSchoolStaffExporter
             'summary' => [
                 'new' => count($new),
                 'changed' => count($changed),
-                'demographics' => count($demographics),
-                'assignments' => count($assignments),
+                'rows' => count($rows),
                 'exceptions' => count($exceptions),
-                'schools' => count($schools),
+                'schools' => count(array_unique(array_column($rows, 'SCHOOLID'))),
             ],
         ];
     }
@@ -182,7 +164,7 @@ final class PowerSchoolStaffExporter
     private function selectPeople(array &$exceptions): array
     {
         $sql = "SELECT p.person_id, p.first_name, p.middle_name, p.last_name,
-                       p.email, p.username, p.employee_id, p.alsde_id, p.hire_date,
+                       p.email, p.username, p.employee_id, p.alsde_id, p.person_type,
                        s.ps_school_id,
                        (SELECT a.title FROM assignment a
                          WHERE a.person_id = p.person_id AND a.is_primary = 1
@@ -213,7 +195,8 @@ final class PowerSchoolStaffExporter
             if (!(bool) $p['in_ps']) {
                 if (trim((string) ($p['alsde_id'] ?? '')) === '') {
                     $exceptions[] = 'selection: ' . $this->label($p)
-                        . ' — new user without an ALSDE ID; held back';
+                        . ' — new user without an ALSDE ID; held back'
+                        . ' (an ALSDE ID is required to create a user in PowerSchool)';
                     continue;
                 }
                 $p['_reason'] = 'new';
@@ -238,17 +221,23 @@ final class PowerSchoolStaffExporter
     }
 
     /**
-     * One validated demographics row per selected person, keyed by
-     * DEMOGRAPHIC_HEADERS.
+     * One validated row per selected person per school assignment, keyed by
+     * HEADERS and sorted by SCHOOLID. Ended assignments export STATUS 2
+     * (No longer here) so transfers clear the old school; people with no
+     * assignment rows fall back to their primary school. Duplicate
+     * (TEACHERNUMBER, SCHOOLID) pairs collapse to one row, preferring Current.
      *
      * @param array<int,array<string,mixed>> $people selectPeople() rows
      * @param array<int,string> $exceptions
      * @return array<int,array<string,string>>
      */
-    private function demographicRows(array $people, array &$exceptions): array
+    private function rows(array $people, array &$exceptions): array
     {
-        $rows = [];
+        $assignments = $this->assignmentsByPerson();
+
+        $byKey = [];
         $seen = [];
+        $unmappedTypes = [];
         foreach ($people as $p) {
             $who = $this->label($p);
             $teacherNumber = self::clean((string) ($p['employee_id'] ?? ''));
@@ -256,126 +245,110 @@ final class PowerSchoolStaffExporter
             $first = self::clean((string) ($p['first_name'] ?? ''));
 
             $missing = array_keys(array_filter(
-                ['TeacherNumber' => $teacherNumber, 'Last_Name' => $last, 'First_Name' => $first],
+                ['TEACHERNUMBER' => $teacherNumber, 'LAST_NAME' => $last, 'FIRST_NAME' => $first],
                 static fn(string $v): bool => $v === ''
             ));
             if ($missing !== []) {
-                $exceptions[] = "demographics: {$who} — missing " . implode(', ', $missing) . '; row rejected';
+                $exceptions[] = "export: {$who} — missing " . implode(', ', $missing) . '; rejected';
                 continue;
             }
-            if (mb_strlen($teacherNumber) > self::MAX_LENGTHS['USERS.TeacherNumber']) {
-                $exceptions[] = "demographics: {$who} — TeacherNumber '{$teacherNumber}' exceeds 20 chars"
-                    . ' (match key is never truncated); row rejected';
+            if (mb_strlen($teacherNumber) > self::MAX_LENGTHS['TEACHERNUMBER']) {
+                $exceptions[] = "export: {$who} — TEACHERNUMBER '{$teacherNumber}' exceeds 20 chars"
+                    . ' (match key is never truncated); rejected';
                 continue;
             }
             if (isset($seen[$teacherNumber])) {
-                $exceptions[] = "demographics: {$who} — duplicate TeacherNumber '{$teacherNumber}'"
-                    . " (already used by {$seen[$teacherNumber]}); row rejected";
+                $exceptions[] = "export: {$who} — duplicate TEACHERNUMBER '{$teacherNumber}'"
+                    . " (already used by {$seen[$teacherNumber]}); rejected";
                 continue;
             }
-            $school = self::psSchoolId(self::clean((string) ($p['ps_school_id'] ?? '')));
-            if ($school === '') {
-                $exceptions[] = "demographics: {$who} — home school cannot be resolved to a"
-                    . ' PowerSchool School_Number; row rejected';
+            $homeSchool = self::psSchoolId(self::clean((string) ($p['ps_school_id'] ?? '')));
+            if ($homeSchool === '') {
+                $exceptions[] = "export: {$who} — home school cannot be resolved to a"
+                    . ' PowerSchool School_Number; rejected';
                 continue;
             }
             $seen[$teacherNumber] = $who;
 
-            $rows[] = [
-                'USERS.TeacherNumber'     => $teacherNumber,
-                'USERS.Last_Name'         => $this->limit('USERS.Last_Name', $last, $who, $exceptions),
-                'USERS.First_Name'        => $this->limit('USERS.First_Name', $first, $who, $exceptions),
-                'USERS.Middle_Name'       => $this->limit('USERS.Middle_Name', self::clean((string) ($p['middle_name'] ?? '')), $who, $exceptions),
-                'USERS.Email_Addr'        => $this->limit('USERS.Email_Addr', self::clean((string) ($p['email'] ?? '')), $who, $exceptions),
+            $type = (string) ($p['person_type'] ?? '');
+            if (!isset(self::STAFF_STATUS[$type]) && !isset($unmappedTypes[$type])) {
+                $unmappedTypes[$type] = true;
+                $exceptions[] = "export: unmapped person type '{$type}' (first seen on {$who})"
+                    . ' — defaulted to STAFFSTATUS ' . self::STAFF_STATUS_DEFAULT . ' (Staff)';
+            }
+            $staffStatus = self::STAFF_STATUS[$type] ?? self::STAFF_STATUS_DEFAULT;
+
+            $user = [
+                'TEACHERNUMBER'  => $teacherNumber,
+                'LAST_NAME'      => $this->limit('LAST_NAME', $last, $who, $exceptions),
+                'FIRST_NAME'     => $this->limit('FIRST_NAME', $first, $who, $exceptions),
+                'MIDDLE_NAME'    => $this->limit('MIDDLE_NAME', self::clean((string) ($p['middle_name'] ?? '')), $who, $exceptions),
+                'EMAIL_ADDR'     => $this->limit('EMAIL_ADDR', self::clean((string) ($p['email'] ?? '')), $who, $exceptions),
                 // District practice: the state personnel id IS the employee id.
-                'USERS.SIF_StatePrid'     => $this->limit('USERS.SIF_StatePrid', $teacherNumber, $who, $exceptions),
-                'USERS.Title'             => $this->limit('USERS.Title', self::clean((string) ($p['title'] ?? '')), $who, $exceptions),
-                'USERS.HomeSchoolId'      => $school,
-                'USERS.TeacherLoginID'    => $this->limit('USERS.TeacherLoginID', self::clean((string) ($p['username'] ?? '')), $who, $exceptions),
-                'S_USR_X.hiredate'        => self::usDate((string) ($p['hire_date'] ?? '')),
-                'S_USR_X.state_staffnumber' => self::clean((string) ($p['alsde_id'] ?? '')),
+                'SIF_STATEPRID'  => $this->limit('SIF_STATEPRID', $teacherNumber, $who, $exceptions),
+                'TITLE'          => $this->limit('TITLE', self::clean((string) ($p['title'] ?? '')), $who, $exceptions),
+                'HOMESCHOOLID'   => $homeSchool,
+                'TEACHERLOGINID' => $this->limit('TEACHERLOGINID', self::clean((string) ($p['username'] ?? '')), $who, $exceptions),
             ];
+
+            // Fall back to the primary school when there are no assignment rows.
+            $schools = $assignments[(int) $p['person_id']]
+                ?? [['ps_school_id' => (string) ($p['ps_school_id'] ?? ''), 'end_date' => null]];
+            foreach ($schools as $a) {
+                $school = self::psSchoolId(self::clean((string) ($a['ps_school_id'] ?? '')));
+                if ($school === '') {
+                    $exceptions[] = "export: {$who} — assignment school cannot be resolved to a"
+                        . ' PowerSchool School_Number; row rejected';
+                    continue;
+                }
+                $endDate = trim((string) ($a['end_date'] ?? ''));
+                $status = ($endDate !== '' && $endDate <= $this->today) ? self::STATUS_ENDED : self::STATUS_CURRENT;
+
+                $key = "{$teacherNumber}\t{$school}";
+                if (isset($byKey[$key]) && $byKey[$key]['STATUS'] === self::STATUS_CURRENT) {
+                    continue; // already have a Current row for this person+school
+                }
+                $byKey[$key] = $user + [
+                    'SCHOOLID'    => $school,
+                    'STATUS'      => $status,
+                    'STAFFSTATUS' => $staffStatus,
+                ];
+            }
         }
+
+        $rows = [];
+        foreach ($byKey as $row) {
+            $rows[] = array_replace(array_fill_keys(self::HEADERS, ''), $row);
+        }
+        usort($rows, static fn(array $x, array $y): int =>
+            [$x['SCHOOLID'], $x['TEACHERNUMBER']] <=> [$y['SCHOOLID'], $y['TEACHERNUMBER']]);
         return $rows;
     }
 
     /**
-     * One validated assignment row per exported person per school, keyed by
-     * ASSIGNMENT_HEADERS and sorted by SchoolID. Ended assignments export
-     * Status 2 (No longer here) so transfers clear the old school; people
-     * with no assignment rows fall back to their primary school. Duplicate
-     * (TeacherNumber, SchoolID) pairs collapse to one row, preferring Current.
+     * All assignments for active/pending people, grouped by person_id.
      *
-     * @param array<int,int|string> $personIds person_ids selected for export
-     * @param array<int,string> $exceptions
-     * @return array<int,array<string,string>>
+     * @return array<int,array<int,array{ps_school_id:?string,end_date:?string}>>
      */
-    private function assignmentRows(array $personIds, array &$exceptions): array
+    private function assignmentsByPerson(): array
     {
-        $sql = "SELECT p.person_id, p.first_name, p.last_name, p.employee_id, p.person_type,
-                       s.ps_school_id, a.end_date
+        $sql = "SELECT a.person_id, s.ps_school_id, a.end_date
                   FROM assignment a
                   JOIN person p ON p.person_id = a.person_id
                   LEFT JOIN school s ON s.school_id = a.school_id
                  WHERE p.status IN ('active','pending')
-                 ORDER BY p.person_id, a.id";
-        $fallback = "SELECT p.person_id, p.first_name, p.last_name, p.employee_id, p.person_type,
-                            s.ps_school_id, NULL AS end_date
-                       FROM person p
-                       LEFT JOIN school s ON s.school_id = p.primary_school_id
-                      WHERE p.status IN ('active','pending')
-                        AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.person_id = p.person_id)
-                      ORDER BY p.person_id";
-
-        $byKey = [];
-        $unmappedTypes = [];
-        $source = array_merge($this->db->query($sql)->fetchAll(), $this->db->query($fallback)->fetchAll());
-        foreach ($source as $a) {
-            if (!isset($personIds[(int) $a['person_id']])) {
-                continue; // not part of this export (unchanged / held back / terminated)
-            }
-            $who = $this->label($a);
-            $teacherNumber = self::clean((string) ($a['employee_id'] ?? ''));
-            if ($teacherNumber === '' || mb_strlen($teacherNumber) > self::MAX_LENGTHS['USERS.TeacherNumber']) {
-                $exceptions[] = "assignments: {$who} — missing or over-long TeacherNumber; row rejected";
-                continue;
-            }
-            $school = self::psSchoolId(self::clean((string) ($a['ps_school_id'] ?? '')));
-            if ($school === '') {
-                $exceptions[] = "assignments: {$who} — school cannot be resolved to a"
-                    . ' PowerSchool School_Number; row rejected';
-                continue;
-            }
-            $type = (string) ($a['person_type'] ?? '');
-            if (!isset(self::STAFF_STATUS[$type]) && !isset($unmappedTypes[$type])) {
-                $unmappedTypes[$type] = true;
-                $exceptions[] = "assignments: unmapped person type '{$type}' (first seen on {$who})"
-                    . ' — defaulted to StaffStatus ' . self::STAFF_STATUS_DEFAULT . ' (Staff)';
-            }
-            $endDate = trim((string) ($a['end_date'] ?? ''));
-            $status = ($endDate !== '' && $endDate <= $this->today) ? self::STATUS_ENDED : self::STATUS_CURRENT;
-
-            $key = "{$teacherNumber}\t{$school}";
-            if (isset($byKey[$key]) && $byKey[$key]['Status'] === self::STATUS_CURRENT) {
-                continue; // already have a Current row for this person+school
-            }
-            $byKey[$key] = [
-                'TeacherNumber' => $teacherNumber,
-                'SchoolID'      => $school,
-                'Status'        => $status,
-                'StaffStatus'   => self::STAFF_STATUS[$type] ?? self::STAFF_STATUS_DEFAULT,
-            ];
+                 ORDER BY a.person_id, a.id";
+        $byPerson = [];
+        foreach ($this->db->query($sql)->fetchAll() as $a) {
+            $byPerson[(int) $a['person_id']][] = $a;
         }
-
-        $rows = array_values($byKey);
-        usort($rows, static fn(array $x, array $y): int =>
-            [$x['SchoolID'], $x['TeacherNumber']] <=> [$y['SchoolID'], $y['TeacherNumber']]);
-        return $rows;
+        return $byPerson;
     }
 
     /**
-     * Render a full file: tab-delimited, header row first, CRLF line endings,
-     * one trailing newline, no quoting (values are already tab/newline-free).
+     * Render the file: tab-delimited, header row first, CRLF line endings,
+     * one trailing newline, no blank rows, no quoting (values are already
+     * tab/newline-free).
      *
      * @param array<int,string> $headers
      * @param array<int,array<string,string>> $rows keyed by $headers
@@ -390,7 +363,7 @@ final class PowerSchoolStaffExporter
     }
 
     /**
-     * The 3-row sample of a file for a manual test import before the full
+     * The 3-row sample of the file for a manual test import before the full
      * file is used.
      *
      * @param array<int,string> $headers
@@ -409,8 +382,8 @@ final class PowerSchoolStaffExporter
 
     /**
      * Write a rendered file into $dir under a FIXED name — every run
-     * overwrites the last, so PowerSchool's scheduled imports can point at a
-     * constant file name.
+     * overwrites the last, so PowerSchool's scheduled AutoComm import can
+     * point at a constant file name.
      *
      * @return array{path:string,bytes:int}
      */
@@ -444,16 +417,6 @@ final class PowerSchoolStaffExporter
     {
         $code = trim($code);
         return preg_match('/^\d{1,3}$/', $code) ? str_pad($code, 4, '0', STR_PAD_LEFT) : $code;
-    }
-
-    /** Y-m-d (DB) -> MM/DD/YYYY (PowerSchool import format); anything else passes through. */
-    public static function usDate(string $date): string
-    {
-        $date = trim($date);
-        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $date, $m)) {
-            return "{$m[2]}/{$m[3]}/{$m[1]}";
-        }
-        return $date;
     }
 
     /** Tab-delimited output: tabs/newlines become spaces, then trim. */
@@ -492,7 +455,7 @@ final class PowerSchoolStaffExporter
         return trim($golden) !== '' && $snapshot !== null && !self::sameValue($golden, $snapshot);
     }
 
-    /** Enforce the spec max length: truncate over-long values and log it. */
+    /** Enforce the dictionary max length: truncate over-long values and log it. */
     private function limit(string $column, string $value, string $who, array &$exceptions): string
     {
         $max = self::MAX_LENGTHS[$column];
@@ -500,7 +463,7 @@ final class PowerSchoolStaffExporter
             return $value;
         }
         $truncated = mb_substr($value, 0, $max);
-        $exceptions[] = "demographics: {$who} — {$column} truncated to {$max} chars"
+        $exceptions[] = "export: {$who} — {$column} truncated to {$max} chars"
             . " ('{$value}' -> '{$truncated}')";
         return $truncated;
     }
