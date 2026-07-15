@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 /**
  * Export staff changes for PowerSchool as CSVs and upload them to the district
- * SFTP server. Two files:
- *   ps_new_staff_*.csv     NEW people (ALSDE ID set, not in PowerSchool yet)
- *   ps_name_updates_*.csv  name changes for people already in PowerSchool,
- *                          keyed by Users.TeacherNumber (= Employee ID)
+ * SFTP server. Two files, always written under the SAME names (each run
+ * overwrites the last, so the PowerSchool Data Import Manager scheduled import
+ * can point at a constant file name):
+ *   ps_new_staff.csv     NEW people (ALSDE ID set, not in PowerSchool yet)
+ *   ps_name_updates.csv  name/email/username changes for people already in
+ *                        PowerSchool, keyed by Users.TeacherNumber (= Employee ID)
  *
  *   php bin/export_powerschool.php                write CSVs + upload to SFTP
  *   php bin/export_powerschool.php --dry-run      list what would be exported
@@ -70,12 +72,17 @@ foreach ($held as $p) {
         $p['last_name'] . ', ' . $p['first_name'], (string) $p['employee_id']);
 }
 foreach ($nameChanges['updates'] as $p) {
-    printf("  ~ %-30s emp %-10s was %s\n",
+    $email = trim((string) ($p['email'] ?? ''));
+    $psEmail = $p['ps_email'] ?? null;
+    $emailNote = ($psEmail !== null && $email !== '' && strcasecmp($email, $psEmail) !== 0)
+        ? ", email was {$psEmail}"
+        : '';
+    printf("  ~ %-30s emp %-10s was %s%s\n",
         $p['last_name'] . ', ' . $p['first_name'], (string) $p['employee_id'],
-        $p['ps_last'] . ', ' . $p['ps_first']);
+        $p['ps_last'] . ', ' . $p['ps_first'], $emailNote);
 }
 foreach ($nameChanges['held'] as $p) {
-    printf("  ! %-30s (was %s) — no employee id, name change not exported\n",
+    printf("  ! %-30s (was %s) — no employee id, change not exported\n",
         $p['last_name'] . ', ' . $p['first_name'], $p['ps_last'] . ', ' . $p['ps_first']);
 }
 
@@ -91,16 +98,15 @@ if ($outDir === '') {
     exit(1);
 }
 
-$stamp = date('Ymd_His');
 $files = [];
 if ($candidates !== []) {
     $files[] = PowerSchoolStaffExporter::writeFile(
-        PowerSchoolStaffExporter::csv($candidates), $outDir, "ps_new_staff_{$stamp}.csv");
+        PowerSchoolStaffExporter::csv($candidates), $outDir, 'ps_new_staff.csv');
     printf("\n  wrote %s (%d bytes, %d row(s))\n", $files[0]['path'], $files[0]['bytes'], count($candidates));
 }
 if ($nameChanges['updates'] !== []) {
     $f = PowerSchoolStaffExporter::writeFile(
-        PowerSchoolStaffExporter::updatesCsv($nameChanges['updates']), $outDir, "ps_name_updates_{$stamp}.csv");
+        PowerSchoolStaffExporter::updatesCsv($nameChanges['updates']), $outDir, 'ps_name_updates.csv');
     $files[] = $f;
     printf("%s  wrote %s (%d bytes, %d row(s))\n",
         count($files) === 1 ? "\n" : '', $f['path'], $f['bytes'], count($nameChanges['updates']));

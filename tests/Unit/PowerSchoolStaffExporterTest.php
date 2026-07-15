@@ -15,8 +15,9 @@ use PHPUnit\Framework\TestCase;
  * New staff: active/pending person with an ALSDE ID and no active powerschool
  * source id; columns are the data-dictionary table.field names with
  * S_USR_X.State_StaffNumber carrying the ALSDE ID. Name updates: person IS in
- * PowerSchool but the golden name differs from the latest import snapshot;
- * keyed by Users.TeacherNumber.
+ * PowerSchool but the golden name OR district email differs from the latest
+ * import snapshot; keyed by Users.TeacherNumber and carrying the current
+ * name, email, and username.
  */
 final class PowerSchoolStaffExporterTest extends TestCase
 {
@@ -37,7 +38,8 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec('CREATE TABLE person_source_id (
             id INTEGER PRIMARY KEY, person_id INTEGER, system TEXT, source_key TEXT, is_active INTEGER DEFAULT 1)');
         $db->exec('CREATE TABLE staging_record (
-            id INTEGER PRIMARY KEY, system TEXT, matched_person_id INTEGER, n_first TEXT, n_last TEXT)');
+            id INTEGER PRIMARY KEY, system TEXT, matched_person_id INTEGER,
+            n_first TEXT, n_last TEXT, raw_json TEXT)');
 
         $db->exec("INSERT INTO school (school_id, name, ps_school_id) VALUES (1, 'Central High', '310')");
 
@@ -52,8 +54,9 @@ final class PowerSchoolStaffExporterTest extends TestCase
             '1985-01-02', 'Male', 'C', 'AL-100002', 'E1002', 1, '2020-08-01',
             'cadams@example.org', 'cadams')");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (2, 'powerschool', '5555')");
-        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
-                   VALUES ('powerschool', 2, 'casey', 'ADAMS')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
+                   VALUES ('powerschool', 2, 'casey', 'ADAMS',
+                           '{\"fields\":{\"hr_email\":\"CADAMS@example.org\"}}')");
 
         // 3: no ALSDE ID -> held back (missingAlsdeId), never exported.
         $db->exec("INSERT INTO person VALUES (3, 'staff', 'pending', 'Drew', NULL, 'Cole',
@@ -69,14 +72,16 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active) VALUES (5, 'powerschool', '6666', 0)");
 
         // 6: in PowerSchool, married name in IDM differs from the PS snapshot
-        //    (two snapshots — only the NEWEST counts) -> name update.
+        //    (two snapshots — only the NEWEST counts) -> name update. The rename
+        //    also minted a new username/email; PS still has the old email.
         $db->exec("INSERT INTO person VALUES (6, 'faculty', 'active', 'Morgan', 'L', 'Foster-Hill',
-            NULL, 'F', NULL, 'AL-100006', 'E1006', 1, NULL, 'mfoster@example.org', 'mfoster')");
+            NULL, 'F', NULL, 'AL-100006', 'E1006', 1, NULL, 'mfosterhill@example.org', 'mfosterhill')");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (6, 'powerschool', '7777')");
         $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
                    VALUES ('powerschool', 6, 'Morgan', 'Foster-Hill')"); // older, already renamed once
-        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
-                   VALUES ('powerschool', 6, 'Morgan', 'Foster')");      // newest snapshot: old name
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
+                   VALUES ('powerschool', 6, 'Morgan', 'Foster',
+                           '{\"fields\":{\"hr_email\":\"mfoster@example.org\"}}')"); // newest: old name + email
 
         // 7: name changed but no employee id -> held back from the update file.
         $db->exec("INSERT INTO person VALUES (7, 'staff', 'active', 'Riley', NULL, 'Grant',
@@ -89,6 +94,23 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec("INSERT INTO person VALUES (8, 'staff', 'active', 'Sam', NULL, 'Hale',
             NULL, NULL, NULL, NULL, 'E1008', NULL, NULL, NULL, NULL)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (8, 'powerschool', '9999')");
+
+        // 9: name unchanged but the district email moved on (e.g. username
+        //    conflict resolved after the PS snapshot) -> update on email alone.
+        $db->exec("INSERT INTO person VALUES (9, 'staff', 'active', 'Jesse', NULL, 'Irwin',
+            NULL, NULL, NULL, NULL, 'E1009', NULL, NULL, 'jirwin2@example.org', 'jirwin2')");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (9, 'powerschool', '1111')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
+                   VALUES ('powerschool', 9, 'Jesse', 'Irwin',
+                           '{\"fields\":{\"hr_email\":\"jirwin@example.org\"}}')");
+
+        // 10: email differs from golden but the snapshot predates email capture
+        //     (no fields.hr_email) -> unknown, NOT an update.
+        $db->exec("INSERT INTO person VALUES (10, 'staff', 'active', 'Kai', NULL, 'Jones',
+            NULL, NULL, NULL, NULL, 'E1010', NULL, NULL, 'kjones@example.org', 'kjones')");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (10, 'powerschool', '2222')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
+                   VALUES ('powerschool', 10, 'Kai', 'Jones')");
 
         return $db;
     }
@@ -170,12 +192,25 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $res = (new PowerSchoolStaffExporter($this->db()))->nameUpdates();
 
-        self::assertSame([6], array_map(static fn($r) => (int) $r['person_id'], $res['updates']),
-            'only the person whose golden name differs from the NEWEST snapshot; '
-            . 'case-insensitive match excludes person 2, no-snapshot person 8 skipped');
+        self::assertSame([6, 9], array_map(static fn($r) => (int) $r['person_id'], $res['updates']),
+            'people whose golden name or email differs from the NEWEST snapshot; '
+            . 'case-insensitive match excludes person 2, no-snapshot person 8 skipped, '
+            . 'email-unknown snapshot (person 10) never triggers on email');
         self::assertSame('Foster', $res['updates'][0]['ps_last'], 'old PS name carried for reporting');
+        self::assertSame('mfoster@example.org', $res['updates'][0]['ps_email'],
+            'old PS email carried for reporting');
         self::assertSame([7], array_map(static fn($r) => (int) $r['person_id'], $res['held']),
             'changed name without an employee id is held back, not dropped');
+    }
+
+    public function testEmailChangeAloneTriggersAnUpdate(): void
+    {
+        $res = (new PowerSchoolStaffExporter($this->db()))->nameUpdates();
+        $byId = array_column($res['updates'], null, 'person_id');
+
+        self::assertArrayHasKey(9, $byId, 'unchanged name but changed email still exports');
+        self::assertSame('jirwin@example.org', $byId[9]['ps_email']);
+        self::assertSame('jirwin2@example.org', $byId[9]['email']);
     }
 
     public function testUpdateRowAndCsvKeyedByTeacherNumber(): void
@@ -188,13 +223,16 @@ final class PowerSchoolStaffExporterTest extends TestCase
         self::assertSame('E1006', $row['Users.TeacherNumber'], 'match key = employee id');
         self::assertSame('Foster-Hill', $row['Users.Last_Name']);
         self::assertSame('L', $row['Users.Middle_Name'], 'full current name exported');
+        self::assertSame('mfosterhill@example.org', $row['Users.Email_Addr'], 'renamed email exported');
+        self::assertSame('mfosterhill', $row['Users.TeacherLoginID'], 'renamed username exported');
 
         $tmp = tempnam(sys_get_temp_dir(), 'psu');
         file_put_contents($tmp, PowerSchoolStaffExporter::updatesCsv($updates));
         $rows = Csv::read($tmp);
         unlink($tmp);
-        self::assertCount(1, $rows);
+        self::assertCount(2, $rows);
         self::assertSame('Foster-Hill', $rows[0]['Users.Last_Name']);
+        self::assertSame('jirwin2', $rows[1]['Users.TeacherLoginID']);
     }
 
     public function testWriteFileAndUpload(): void

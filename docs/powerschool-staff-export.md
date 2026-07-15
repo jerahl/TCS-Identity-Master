@@ -1,16 +1,21 @@
 # PowerSchool staff export (CSV → SFTP)
 
 `bin/export_powerschool.php` generates CSVs for the PowerSchool SIS staff
-import and uploads them to the district SFTP server. Two files per run:
+import and uploads them to the district SFTP server. Two files per run, always
+written under the **same fixed names** (each run overwrites the previous file,
+so PowerSchool's Data Import Manager scheduled import can point at a constant
+file name):
 
-- **`ps_new_staff_*.csv`** — people the IDM knows about (hired in NextGen,
+- **`ps_new_staff.csv`** — people the IDM knows about (hired in NextGen,
   ALSDE ID entered) who do **not** exist in PowerSchool yet. Closes the manual
   "People > Staff > New Staff Member" copy/paste loop from the Identity
   Management runbook.
-- **`ps_name_updates_*.csv`** — people **already in PowerSchool** whose name
-  changed on the golden record (e.g. a marriage-related last-name change from
-  NextGen), keyed by `Users.TeacherNumber` so PowerSchool updates the existing
-  record instead of creating a new one.
+- **`ps_name_updates.csv`** — people **already in PowerSchool** whose name or
+  district email changed on the golden record (e.g. a marriage-related
+  last-name change from NextGen and the username/email rename that follows
+  it), keyed by `Users.TeacherNumber` so PowerSchool updates the existing
+  record instead of creating a new one. Rows carry the current name **and**
+  the current email + username.
 
 ## Who is exported (new staff)
 
@@ -36,15 +41,23 @@ A person lands in the update file when **all** of these hold:
 - they have an **active** `powerschool` source id (they exist in PowerSchool);
 - their golden-record first or last name differs (case-insensitively) from the
   **latest** PowerSchool import snapshot (`staging_record` row matched to
-  them) — i.e. the IDM/NextGen name changed and PowerSchool still has the old
-  one.
+  them), **or** their golden-record district email differs from the email that
+  snapshot recorded (`raw_json` → `fields.hr_email`) — i.e. the IDM/NextGen
+  name changed, or a rename moved the username/email, and PowerSchool still
+  has the old value.
 
-The row carries the full current name (first, middle, last). Once PowerSchool
-is updated and the nightly import snapshots the new name, the person drops out
-of this file automatically. Changed people with **no employee id** have no
-match key and are held back — the CLI lists them (`! … no employee id, name
-change not exported`). People PowerSchool has never snapshotted are skipped
-(there is nothing to compare against).
+The email comparison only fires when the golden email is set **and** the
+snapshot actually recorded a PowerSchool email — snapshots that predate email
+capture never trigger a false update.
+
+The row carries the full current name (first, middle, last) plus the current
+district email (`Users.Email_Addr`) and username (`Users.TeacherLoginID`), so
+a rename cutover reaches PowerSchool in the same file as the name change. Once
+PowerSchool is updated and the nightly import snapshots the new values, the
+person drops out of this file automatically. Changed people with **no employee
+id** have no match key and are held back — the CLI lists them (`! … no
+employee id, change not exported`). People PowerSchool has never snapshotted
+are skipped (there is nothing to compare against).
 
 ## Columns
 
@@ -53,7 +66,7 @@ dictionary (pulled from `/ws/schema/table/{name}/metadata` on
 tuscaloosacs.powerschool.com), so the files map 1:1 in PowerSchool's Data
 Import Manager.
 
-### `ps_new_staff_*.csv`
+### `ps_new_staff.csv`
 
 | CSV column | Golden-record source | Notes |
 |---|---|---|
@@ -75,7 +88,7 @@ Import Manager.
 | `SchoolStaff.StaffStatus` | `person.person_type` | faculty → `1` (Teacher), everything else → `2` (Staff) |
 | `TeacherRace.RaceCd` | `person.ethnicity_code` | resolved ALSDE race code (`ethnicity_map`) |
 
-### `ps_name_updates_*.csv`
+### `ps_name_updates.csv`
 
 | CSV column | Golden-record source | Notes |
 |---|---|---|
@@ -83,6 +96,8 @@ Import Manager.
 | `Users.First_Name` | `person.first_name` | |
 | `Users.Middle_Name` | `person.middle_name` | |
 | `Users.Last_Name` | `person.last_name` | |
+| `Users.Email_Addr` | `person.email` | current district e-mail (new address after a rename) |
+| `Users.TeacherLoginID` | `person.username` | current AD username for PowerTeacher SSO |
 
 Format (both files): comma-delimited, RFC-4180 quoting, CRLF line endings,
 header row first.
@@ -105,7 +120,7 @@ the upload fails, so it is cron-safe.
 
 | Key | Meaning |
 |---|---|
-| `EXPORT_POWERSCHOOL_DIR` | local directory where the timestamped CSVs are written (`ps_new_staff_YYYYMMDD_HHMMSS.csv`, `ps_name_updates_YYYYMMDD_HHMMSS.csv`) |
+| `EXPORT_POWERSCHOOL_DIR` | local directory where the CSVs are written (`ps_new_staff.csv`, `ps_name_updates.csv` — fixed names, each run overwrites the last) |
 | `SFTP_PS_EXPORT_DIR` | remote drop directory on the district SFTP server |
 | `SFTP_HOST` / `SFTP_PORT` / `SFTP_USER` / key or password / `SFTP_FINGERPRINT` | shared with the feed pull (`bin/fetch_feeds.php`) — same server, same credentials |
 

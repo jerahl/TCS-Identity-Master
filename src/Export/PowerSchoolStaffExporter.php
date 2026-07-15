@@ -21,10 +21,13 @@ use RuntimeException;
  * surfaces them so the operator knows who is being held back.
  *
  * NAME UPDATES — people already in PowerSchool whose golden-record first/last
- * name no longer matches the latest PowerSchool import snapshot (the newest
- * matched staging_record row), e.g. a marriage-related last-name change made
- * in NextGen/IDM. Rows are keyed by Users.TeacherNumber (= Employee ID, the
- * district's staff match key) and carry the full current name.
+ * name OR district email no longer matches the latest PowerSchool import
+ * snapshot (the newest matched staging_record row), e.g. a marriage-related
+ * last-name change made in NextGen/IDM and the username/email rename that
+ * follows it. Rows are keyed by Users.TeacherNumber (= Employee ID, the
+ * district's staff match key) and carry the full current name plus the current
+ * email (Users.Email_Addr) and username (Users.TeacherLoginID), so a rename
+ * cutover reaches PowerSchool in the same file as the name change.
  *
  * Column headers use the exact table.field names from the district's
  * PowerSchool data dictionary (/ws/schema/table metadata), so the file maps
@@ -65,12 +68,14 @@ final class PowerSchoolStaffExporter
         'TeacherRace.RaceCd',
     ];
 
-    /** Name-update CSV headers: match key first, then the current name. */
+    /** Name-update CSV headers: match key first, then the current name + login. */
     public const UPDATE_HEADERS = [
         'Users.TeacherNumber',
         'Users.First_Name',
         'Users.Middle_Name',
         'Users.Last_Name',
+        'Users.Email_Addr',
+        'Users.TeacherLoginID',
     ];
 
     private PDO $db;
@@ -128,24 +133,32 @@ final class PowerSchoolStaffExporter
     }
 
     /**
-     * People already in PowerSchool whose golden-record name differs from the
-     * latest PowerSchool import snapshot — the rows for the name-update CSV.
-     * Comparison is on first + last name (case-insensitive); middle name isn't
-     * in the snapshot, but the exported row always carries the full current
-     * name. People with no snapshot yet are skipped (nothing to compare), and
-     * people without an employee id land in `held` (no match key to update by).
+     * People already in PowerSchool whose golden-record name OR district email
+     * differs from the latest PowerSchool import snapshot — the rows for the
+     * name-update CSV. Name comparison is on first + last (case-insensitive);
+     * middle name isn't in the snapshot, but the exported row always carries
+     * the full current name, email, and username. The email comparison only
+     * fires when the golden email is set AND the snapshot actually recorded a
+     * PowerSchool email (raw_json fields.hr_email) — older snapshots without
+     * it never trigger a false update. People with no snapshot yet are skipped
+     * (nothing to compare), and people without an employee id land in `held`
+     * (no match key to update by).
      *
      * @return array{updates:array<int,array<string,mixed>>,held:array<int,array<string,mixed>>}
      */
     public function nameUpdates(): array
     {
         $sql = "SELECT p.person_id, p.first_name, p.middle_name, p.last_name, p.employee_id,
+                       p.email, p.username,
                        (SELECT sr.n_first FROM staging_record sr
                          WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
                          ORDER BY sr.id DESC LIMIT 1) AS ps_first,
                        (SELECT sr.n_last FROM staging_record sr
                          WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
-                         ORDER BY sr.id DESC LIMIT 1) AS ps_last
+                         ORDER BY sr.id DESC LIMIT 1) AS ps_last,
+                       (SELECT sr.raw_json FROM staging_record sr
+                         WHERE sr.matched_person_id = p.person_id AND sr.system = 'powerschool'
+                         ORDER BY sr.id DESC LIMIT 1) AS ps_raw
                   FROM person p
                  WHERE p.status IN ('active','pending')
                    AND EXISTS (SELECT 1 FROM person_source_id psi
@@ -162,8 +175,12 @@ final class PowerSchoolStaffExporter
             if ($psFirst === '' && $psLast === '') {
                 continue; // never snapshotted — nothing to compare against
             }
-            if (self::sameName((string) $p['first_name'], $psFirst)
-                && self::sameName((string) $p['last_name'], $psLast)) {
+            $p['ps_email'] = self::snapshotEmail($p['ps_raw'] ?? null);
+            unset($p['ps_raw']);
+            $nameChanged = !self::sameName((string) $p['first_name'], $psFirst)
+                || !self::sameName((string) $p['last_name'], $psLast);
+            $emailChanged = self::emailChanged((string) ($p['email'] ?? ''), $p['ps_email']);
+            if (!$nameChanged && !$emailChanged) {
                 continue;
             }
             if (trim((string) ($p['employee_id'] ?? '')) === '') {
@@ -214,10 +231,12 @@ final class PowerSchoolStaffExporter
     public static function updateRow(array $p): array
     {
         return [
-            'Users.TeacherNumber' => trim((string) ($p['employee_id'] ?? '')),
-            'Users.First_Name'    => trim((string) ($p['first_name'] ?? '')),
-            'Users.Middle_Name'   => trim((string) ($p['middle_name'] ?? '')),
-            'Users.Last_Name'     => trim((string) ($p['last_name'] ?? '')),
+            'Users.TeacherNumber'  => trim((string) ($p['employee_id'] ?? '')),
+            'Users.First_Name'     => trim((string) ($p['first_name'] ?? '')),
+            'Users.Middle_Name'    => trim((string) ($p['middle_name'] ?? '')),
+            'Users.Last_Name'      => trim((string) ($p['last_name'] ?? '')),
+            'Users.Email_Addr'     => trim((string) ($p['email'] ?? '')),
+            'Users.TeacherLoginID' => trim((string) ($p['username'] ?? '')),
         ];
     }
 
@@ -290,6 +309,30 @@ final class PowerSchoolStaffExporter
     private static function sameName(string $a, string $b): bool
     {
         return mb_strtolower(trim($a)) === mb_strtolower(trim($b));
+    }
+
+    /**
+     * The PowerSchool email from a snapshot's raw_json (fields.hr_email), or
+     * null when the snapshot predates email capture — null means "unknown",
+     * not "blank in PowerSchool".
+     */
+    private static function snapshotEmail(?string $rawJson): ?string
+    {
+        if ($rawJson === null || $rawJson === '') {
+            return null;
+        }
+        $decoded = json_decode($rawJson, true);
+        $fields = is_array($decoded) ? ($decoded['fields'] ?? null) : null;
+        if (!is_array($fields) || !array_key_exists('hr_email', $fields)) {
+            return null;
+        }
+        return trim((string) ($fields['hr_email'] ?? ''));
+    }
+
+    /** Golden email is set, the snapshot email is known, and they differ. */
+    private static function emailChanged(string $golden, ?string $snapshot): bool
+    {
+        return trim($golden) !== '' && $snapshot !== null && !self::sameName($golden, $snapshot);
     }
 
     /**
