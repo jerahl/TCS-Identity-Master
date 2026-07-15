@@ -3,10 +3,13 @@
 declare(strict_types=1);
 
 /**
- * Export the staff roster for PowerSchool as two tab-delimited files and
- * upload them to the district SFTP server. Files are always written under the
- * SAME names (each run overwrites the last, so the PowerSchool scheduled
- * imports can point at constant file names):
+ * Export staff changes for PowerSchool as two tab-delimited files and upload
+ * them to the district SFTP server. Only NEW users (not in PowerSchool yet,
+ * ALSDE ID set) and CHANGED users (name or username/email moved since the
+ * latest PowerSchool import snapshot) are exported — not the full roster.
+ * Files are always written under the SAME names (each run overwrites the
+ * last, so the PowerSchool scheduled imports can point at constant file
+ * names):
  *
  *   ps_staff_demographics.txt  Data Import Manager -> USERSCOREFIELDS, one row
  *                              per staff member, matched on USERS.TeacherNumber
@@ -57,13 +60,27 @@ $result = $exporter->export();
 $summary = $result['summary'];
 
 printf("PowerSchool staff export%s\n", $dryRun ? '  (DRY RUN)' : '');
+printf("  new users:    %d (not in PowerSchool yet)\n", $summary['new']);
+printf("  changed:      %d (name or username/email moved since last snapshot)\n", $summary['changed']);
 printf("  demographics: %d row(s)\n", $summary['demographics']);
 printf("  assignments:  %d row(s) across %d school(s)\n", $summary['assignments'], $summary['schools']);
-printf("  exceptions:   %d (rejected / truncated / unmapped — see below)\n", $summary['exceptions']);
+printf("  exceptions:   %d (held back / rejected / truncated / unmapped)\n", $summary['exceptions']);
+foreach ($result['new'] as $line) {
+    echo "  + {$line}\n";
+}
+foreach ($result['changed'] as $line) {
+    echo "  ~ {$line}\n";
+}
 foreach ($result['exceptions'] as $line) {
     echo "  ! {$line}\n";
 }
 echo "\n";
+
+if ($summary['new'] === 0 && $summary['changed'] === 0 && !$dryRun) {
+    // Still write + upload the (header-only) files: the names are fixed, so
+    // this clears yesterday's changes out of the drop directory.
+    echo "  nothing to export — writing empty files to clear the drop\n";
+}
 
 if ($dryRun) {
     exit(0);

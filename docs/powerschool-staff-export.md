@@ -1,18 +1,21 @@
 # PowerSchool staff export (tab-delimited → SFTP)
 
-`bin/export_powerschool.php` exports the current staff roster as two
-tab-delimited files that load cleanly into PowerSchool SIS, and uploads them
-to the district SFTP server. Files are always written under the **same fixed
-names** (each run overwrites the previous file, so the PowerSchool scheduled
-imports can point at a constant file name):
+`bin/export_powerschool.php` exports staff changes — **new users** (not in
+PowerSchool yet) and **changed users** (name or username/email moved since the
+last PowerSchool import snapshot) — as two tab-delimited files that load
+cleanly into PowerSchool SIS, and uploads them to the district SFTP server.
+Files are always written under the **same fixed names** (each run overwrites
+the previous file — an empty run writes header-only files so yesterday's
+changes never get re-imported — so the PowerSchool scheduled imports can point
+at a constant file name):
 
 - **`ps_staff_demographics.txt`** — imported via **Data Import Manager**,
   target module `USERSCOREFIELDS` (writes the `Users` table + AL extensions).
-  One row per active/pending staff member, matched on `USERS.TeacherNumber`
+  One row per exported person, matched on `USERS.TeacherNumber`
   (= Employee ID) so PowerSchool updates the existing record.
 - **`ps_staff_assignments.txt`** — imported via **AutoComm / Quick Import**
   into the **Teachers** view (writes the `SchoolStaff` school-assignment
-  fields). One row per staff member **per school assignment** (multi-school
+  fields). One row per exported person **per school assignment** (multi-school
   staff repeat), sorted by `SchoolID` so a split-by-school is trivial.
 
 Also written locally on every run (never uploaded):
@@ -37,10 +40,30 @@ literal `NULL`.
 
 ## Who is exported
 
-Every person with `person.status` of `active` or `pending`. There is no
-change detection: the full roster goes out each run and PowerSchool updates
-in place by match key. Rows that fail validation (below) are **rejected and
-logged** to the exceptions file — never silently dropped.
+Only people who need a PowerSchool update — **not** the full roster. A person
+with `person.status` of `active` or `pending` is exported when they are:
+
+- **New** — no active `person_source_id` row with `system='powerschool'`,
+  i.e. the nightly PowerSchool import has never reported them back. New users
+  without an ALSDE ID are **held back** and logged (district practice:
+  PowerSchool staff demographics require it); once the ID is entered they
+  export on the next run.
+- **Changed** — already in PowerSchool, but the golden-record first/last name
+  **or** district email differs from the **latest** PowerSchool import
+  snapshot (the newest matched `staging_record` row). A username rename
+  always moves the email with it, so the email comparison is how a
+  username change is detected — the PowerSchool snapshot doesn't carry the
+  login id. The email comparison only fires when the golden email is set and
+  the snapshot recorded a PowerSchool email (`raw_json` → `fields.hr_email`);
+  snapshots that predate email capture never trigger a false update.
+
+People PowerSchool has never snapshotted are skipped (nothing to compare
+against). Once PowerSchool is updated and the nightly import snapshots the
+new values, changed people drop out of the export automatically; new people
+drop out when the import attaches their `powerschool` source id. Rows that
+fail validation (below) are **rejected and logged** to the exceptions file —
+never silently dropped. Both files cover the same people: the assignments
+file carries only the exported (new + changed) users' school assignments.
 
 ## `ps_staff_demographics.txt` (DIM → USERSCOREFIELDS)
 
