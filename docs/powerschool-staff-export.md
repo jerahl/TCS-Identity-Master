@@ -41,10 +41,6 @@ with `person.status` of `active` or `pending` is exported when they are:
 
 - **New** — no active `person_source_id` row with `system='powerschool'`,
   i.e. the nightly PowerSchool import has never reported them back.
-  **New users must have an ALSDE ID** on the golden record to be created in
-  PowerSchool; without one they are **held back** and logged. Once the ID is
-  entered in IDM they export on the next run, with the ID carried in
-  `S_USR_X.State_StaffNumber`.
 - **Changed** — already in PowerSchool, but the golden-record first/last name
   **or** district email differs from the **latest** PowerSchool import
   snapshot (the newest matched `staging_record` row). A username rename
@@ -53,6 +49,11 @@ with `person.status` of `active` or `pending` is exported when they are:
   login id. The email comparison only fires when the golden email is set and
   the snapshot recorded a PowerSchool email (`raw_json` → `fields.hr_email`);
   snapshots that predate email capture never trigger a false update.
+
+**Everyone exported — new or changed — must have an ALSDE ID** on the golden
+record; without one the person is **held back** and logged. Once the ID is
+entered in IDM they export on the next run, with the ID carried in
+`S_USR_X.State_StaffNumber`.
 
 People PowerSchool has never snapshotted are skipped (nothing to compare
 against). Once PowerSchool is updated and the nightly import snapshots the
@@ -93,7 +94,7 @@ the columns entirely means an update never mass-blanks them).
 
 ## Validation
 
-- New users without an ALSDE ID are held back and logged.
+- People without an ALSDE ID — new **or** changed — are held back and logged.
 - Rows missing `TeacherNumber`, `Last_Name`, or `First_Name` are rejected and
   logged.
 - Dictionary max lengths are enforced: over-long values are truncated **and
@@ -143,5 +144,5 @@ view, pointed at `ps_staff_teachers.txt` in the SFTP drop directory:
   district code lists before scheduling the full file.
 
 The ALSDE ID travels in `S_USR_X.State_StaffNumber` and the hire date in
-`S_USR_X.HireDate`. IDM still holds new users back until the ALSDE ID is on
-the golden record — no one is created in PowerSchool without one.
+`S_USR_X.HireDate`. IDM holds anyone without an ALSDE ID back — new or
+changed — so nothing reaches PowerSchool without one.

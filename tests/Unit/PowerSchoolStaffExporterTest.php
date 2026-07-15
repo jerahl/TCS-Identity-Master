@@ -98,7 +98,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
         //    (rename detected via the email comparison). Sub with no assignment
         //    rows -> falls back to primary school, StaffStatus 4.
         $db->exec("INSERT INTO person VALUES (7, 'sub', 'active', 'Jesse', NULL, 'Irwin',
-            NULL, 'E1007', 2, 'jirwin2@example.org', 'jirwin2', NULL, NULL, NULL)");
+            'AL-100007', 'E1007', 2, 'jirwin2@example.org', 'jirwin2', NULL, NULL, NULL)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (7, 'powerschool', '8888')");
         $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
                    VALUES ('powerschool', 7, 'Jesse', 'Irwin',
@@ -116,6 +116,15 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec("INSERT INTO person VALUES (9, 'staff', 'active', 'Sam', NULL, 'Hale',
             NULL, 'E1009', 1, NULL, NULL, NULL, NULL, NULL)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (9, 'powerschool', '1010')");
+
+        // 20: CHANGED (name moved) but no ALSDE ID -> held back, same gate as
+        //     new users. (Id 20 to leave 10/11 free for per-test inserts.)
+        $db->exec("INSERT INTO person VALUES (20, 'staff', 'active', 'Pat', NULL, 'King',
+            NULL, 'E1020', 1, 'pking@example.org', 'pking', NULL, NULL, NULL)");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (20, 'powerschool', '2020')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
+                   VALUES ('powerschool', 20, 'Pat', 'Kim',
+                           '{\"fields\":{\"hr_email\":\"pking@example.org\"}}')");
 
         return $db;
     }
@@ -145,6 +154,19 @@ final class PowerSchoolStaffExporterTest extends TestCase
         self::assertNotContains('E1004', array_column($res['rows'], 'TeacherNumber'));
         self::assertStringContainsString(
             'Dane, Em (person 4) — new user without an ALSDE ID; held back',
+            implode("\n", $res['exceptions']));
+    }
+
+    public function testChangedUserWithoutAlsdeIdIsHeldBackToo(): void
+    {
+        $res = $this->export();
+
+        self::assertNotContains('E1020', array_column($res['rows'], 'TeacherNumber'),
+            'the ALSDE ID gate applies to changed users, not just creation');
+        self::assertStringNotContainsString('King, Pat', implode("\n", $res['changed']),
+            'held-back person is not counted as changed');
+        self::assertStringContainsString(
+            'King, Pat (person 20) — changed user without an ALSDE ID; held back',
             implode("\n", $res['exceptions']));
     }
 
@@ -191,8 +213,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $irwin = array_values(array_filter($rows,
             static fn(array $r): bool => $r['TeacherNumber'] === 'E1007'))[0];
         self::assertSame('', $irwin['UsersCoreFields.gender'], 'unknown values stay empty');
-        self::assertSame('', $irwin['S_USR_X.State_StaffNumber'],
-            'changed user without an ALSDE ID still exports (gate applies to creation only)');
+        self::assertSame('AL-100007', $irwin['S_USR_X.State_StaffNumber']);
     }
 
     public function testUsersFieldsRepeatOnEveryRowOfAPerson(): void
@@ -346,7 +367,8 @@ final class PowerSchoolStaffExporterTest extends TestCase
         self::assertSame(2, $s['changed']);
         self::assertSame(4, $s['rows']);
         self::assertSame(2, $s['schools'], '0220 and 0310');
-        self::assertSame(2, $s['exceptions'], 'Dane held back + Ellis unresolvable school');
+        self::assertSame(3, $s['exceptions'],
+            'Dane + King held back (no ALSDE ID), Ellis unresolvable school');
     }
 
     public function testExceptionsFileRendering(): void

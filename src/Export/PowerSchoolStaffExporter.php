@@ -24,9 +24,6 @@ use RuntimeException;
  *
  *   NEW — no active person_source_id row with system='powerschool', i.e.
  *   PowerSchool has never reported them back through the nightly import.
- *   New users MUST have an ALSDE ID on the golden record to be created in
- *   PowerSchool; without one they are held back and logged. The ID travels
- *   in S_USR_X.State_StaffNumber.
  *
  *   CHANGED — already in PowerSchool, but the golden-record first/last name
  *   OR district email differs from the latest PowerSchool import snapshot
@@ -36,6 +33,10 @@ use RuntimeException;
  *   only fires when the golden email is set AND the snapshot recorded a
  *   PowerSchool email (raw_json fields.hr_email); people never snapshotted
  *   are skipped (nothing to compare against).
+ *
+ * Everyone exported — new or changed — MUST have an ALSDE ID on the golden
+ * record; without one the person is held back and logged. The ID travels in
+ * S_USR_X.State_StaffNumber.
  *
  * One row per exported person PER school assignment (multi-school staff
  * repeat, with identical Users fields), sorted by SchoolID — the Teachers
@@ -198,28 +199,28 @@ final class PowerSchoolStaffExporter
             unset($p['ps_raw']);
 
             if (!(bool) $p['in_ps']) {
-                if (trim((string) ($p['alsde_id'] ?? '')) === '') {
-                    $exceptions[] = 'selection: ' . $this->label($p)
-                        . ' — new user without an ALSDE ID; held back'
-                        . ' (an ALSDE ID is required to create a user in PowerSchool)';
-                    continue;
-                }
                 $p['_reason'] = 'new';
-                $people[] = $p;
-                continue;
+            } else {
+                $psFirst = trim((string) ($p['ps_first'] ?? ''));
+                $psLast = trim((string) ($p['ps_last'] ?? ''));
+                if ($psFirst === '' && $psLast === '') {
+                    continue; // never snapshotted — nothing to compare against
+                }
+                $nameChanged = !self::sameValue((string) $p['first_name'], $psFirst)
+                    || !self::sameValue((string) $p['last_name'], $psLast);
+                if (!$nameChanged && !self::emailChanged((string) ($p['email'] ?? ''), $p['ps_email'])) {
+                    continue; // unchanged — nothing to export
+                }
+                $p['_reason'] = 'changed';
             }
 
-            $psFirst = trim((string) ($p['ps_first'] ?? ''));
-            $psLast = trim((string) ($p['ps_last'] ?? ''));
-            if ($psFirst === '' && $psLast === '') {
-                continue; // never snapshotted — nothing to compare against
+            // The ALSDE ID gate applies to EVERY exported person, new or changed.
+            if (trim((string) ($p['alsde_id'] ?? '')) === '') {
+                $exceptions[] = 'selection: ' . $this->label($p)
+                    . " — {$p['_reason']} user without an ALSDE ID; held back"
+                    . ' (an ALSDE ID is required to export to PowerSchool)';
+                continue;
             }
-            $nameChanged = !self::sameValue((string) $p['first_name'], $psFirst)
-                || !self::sameValue((string) $p['last_name'], $psLast);
-            if (!$nameChanged && !self::emailChanged((string) ($p['email'] ?? ''), $p['ps_email'])) {
-                continue; // unchanged — nothing to export
-            }
-            $p['_reason'] = 'changed';
             $people[] = $p;
         }
         return $people;

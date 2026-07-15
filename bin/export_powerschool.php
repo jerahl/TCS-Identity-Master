@@ -6,10 +6,11 @@ declare(strict_types=1);
  * Export staff changes for PowerSchool as ONE tab-delimited file for the
  * AutoComm import into the Teachers view (the only import path exposed in
  * the district's PowerSchool build) and upload it to the district SFTP
- * server. Only NEW users (not in PowerSchool yet — an ALSDE ID is required
- * to create a user in PS) and CHANGED users (name or username/email moved
- * since the latest PowerSchool import snapshot) are exported, one row per
- * person per school assignment. Files are always written under the SAME
+ * server. Only NEW users (not in PowerSchool yet) and CHANGED users (name or
+ * username/email moved since the latest PowerSchool import snapshot) are
+ * exported, one row per person per school assignment — and only with an
+ * ALSDE ID on the golden record (anyone without one is held back and
+ * logged). Files are always written under the SAME
  * names (each run overwrites the last, so AutoComm can point at a constant
  * file name):
  *
