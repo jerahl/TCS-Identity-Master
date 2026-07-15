@@ -15,9 +15,10 @@ use PHPUnit\Framework\TestCase;
  * PS build). Exports ONLY new users (no active powerschool source id, ALSDE
  * ID required) and changed users (name or district email differs from the
  * latest import snapshot), one row per exported person per school, sorted by
- * SCHOOLID with prefix-free Teachers-view column names. Every held-back or
- * rejected row, truncation, and unmapped person type lands in the exceptions
- * list.
+ * SchoolID, using the exact column names the district's AutoComm template
+ * accepts (incl. the UsersCoreFields/S_USR_X extension fields). Every
+ * held-back or rejected row, truncation, and unmapped person type lands in
+ * the exceptions list.
  */
 final class PowerSchoolStaffExporterTest extends TestCase
 {
@@ -32,7 +33,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
             person_id INTEGER PRIMARY KEY, person_type TEXT, status TEXT,
             first_name TEXT, middle_name TEXT, last_name TEXT,
             alsde_id TEXT, employee_id TEXT, primary_school_id INTEGER,
-            email TEXT, username TEXT)');
+            email TEXT, username TEXT, gender TEXT, dob TEXT, hire_date TEXT)');
         $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, ps_school_id TEXT)');
         $db->exec('CREATE TABLE assignment (
             id INTEGER PRIMARY KEY, person_id INTEGER, school_id INTEGER,
@@ -49,12 +50,12 @@ final class PowerSchoolStaffExporterTest extends TestCase
 
         // 1: NEW — ALSDE ID set, no powerschool source id -> exported.
         $db->exec("INSERT INTO person VALUES (1, 'faculty', 'pending', 'Avery', 'Q', 'Baker',
-            'AL-100001', 'E1001', 1, 'abaker@example.org', 'abaker')");
+            'AL-100001', 'E1001', 1, 'abaker@example.org', 'abaker', 'Female', '1990-04-07', '2026-08-01')");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (1, 1, 'Teacher', 1)");
 
         // 2: in PowerSchool, snapshot matches golden record -> NOT exported.
         $db->exec("INSERT INTO person VALUES (2, 'staff', 'active', 'Casey', NULL, 'Adams',
-            'AL-100002', 'E1002', 2, 'cadams@example.org', 'cadams')");
+            'AL-100002', 'E1002', 2, 'cadams@example.org', 'cadams', 'M', '1985-01-02', '2020-08-01')");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (2, 2, 'Bookkeeper', 1)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (2, 'powerschool', '5555')");
         $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
@@ -63,17 +64,17 @@ final class PowerSchoolStaffExporterTest extends TestCase
 
         // 3: terminated -> excluded entirely.
         $db->exec("INSERT INTO person VALUES (3, 'staff', 'terminated', 'Drew', NULL, 'Cole',
-            'AL-100003', 'E1003', 1, NULL, NULL)");
+            'AL-100003', 'E1003', 1, NULL, NULL, NULL, NULL, NULL)");
 
         // 4: NEW but no ALSDE ID -> held back (exception), not exported.
         $db->exec("INSERT INTO person VALUES (4, 'staff', 'active', 'Em', NULL, 'Dane',
-            '', 'E1004', 1, NULL, NULL)");
+            '', 'E1004', 1, NULL, NULL, NULL, NULL, NULL)");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (4, 1, 'Aide', 1)");
 
         // 5: in PowerSchool once but the crosswalk row was deactivated -> NEW
         //    again. Home school has no ps_school_id -> rejected (exception).
         $db->exec("INSERT INTO person VALUES (5, 'staff', 'active', 'Blair', NULL, 'Ellis',
-            'AL-100005', 'E1005', 3, 'bellis@example.org', 'bellis')");
+            'AL-100005', 'E1005', 3, 'bellis@example.org', 'bellis', NULL, NULL, NULL)");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (5, 3, 'Clerk', 1)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key, is_active)
                    VALUES (5, 'powerschool', '6666', 0)");
@@ -82,7 +83,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
         //    of two snapshots still has the old values. Current at school 2,
         //    ended assignment at school 1 (transfer).
         $db->exec("INSERT INTO person VALUES (6, 'faculty', 'active', 'Morgan', 'L', 'Foster-Hill',
-            'AL-100006', 'E1006', 2, 'mfosterhill@example.org', 'mfosterhill')");
+            'AL-100006', 'E1006', 2, 'mfosterhill@example.org', 'mfosterhill', 'F', NULL, '2018-08-01')");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (6, 2, 'Teacher', 1)");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary, end_date)
                    VALUES (6, 1, 'Teacher', 0, '2026-05-31')");
@@ -95,9 +96,9 @@ final class PowerSchoolStaffExporterTest extends TestCase
 
         // 7: CHANGED — name unchanged but the district email/username moved on
         //    (rename detected via the email comparison). Sub with no assignment
-        //    rows -> falls back to primary school, STAFFSTATUS 4.
+        //    rows -> falls back to primary school, StaffStatus 4.
         $db->exec("INSERT INTO person VALUES (7, 'sub', 'active', 'Jesse', NULL, 'Irwin',
-            NULL, 'E1007', 2, 'jirwin2@example.org', 'jirwin2')");
+            NULL, 'E1007', 2, 'jirwin2@example.org', 'jirwin2', NULL, NULL, NULL)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (7, 'powerschool', '8888')");
         $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
                    VALUES ('powerschool', 7, 'Jesse', 'Irwin',
@@ -106,14 +107,14 @@ final class PowerSchoolStaffExporterTest extends TestCase
         // 8: in PowerSchool, email differs but the snapshot predates email
         //    capture (no fields.hr_email) -> unknown, NOT exported.
         $db->exec("INSERT INTO person VALUES (8, 'staff', 'active', 'Kai', NULL, 'Jones',
-            NULL, 'E1008', 1, 'kjones@example.org', 'kjones')");
+            NULL, 'E1008', 1, 'kjones@example.org', 'kjones', NULL, NULL, NULL)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (8, 'powerschool', '9999')");
         $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last)
                    VALUES ('powerschool', 8, 'Kai', 'Jones')");
 
         // 9: in PowerSchool, never snapshotted -> skipped (nothing to compare).
         $db->exec("INSERT INTO person VALUES (9, 'staff', 'active', 'Sam', NULL, 'Hale',
-            NULL, 'E1009', 1, NULL, NULL)");
+            NULL, 'E1009', 1, NULL, NULL, NULL, NULL, NULL)");
         $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (9, 'powerschool', '1010')");
 
         return $db;
@@ -128,7 +129,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $res = $this->export();
 
-        $exported = array_values(array_unique(array_column($res['rows'], 'TEACHERNUMBER')));
+        $exported = array_values(array_unique(array_column($res['rows'], 'TeacherNumber')));
         sort($exported);
         self::assertSame(['E1001', 'E1006', 'E1007'], $exported,
             'new user Baker + changed Foster-Hill (name) + changed Irwin (email/username); '
@@ -141,7 +142,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $res = $this->export();
 
-        self::assertNotContains('E1004', array_column($res['rows'], 'TEACHERNUMBER'));
+        self::assertNotContains('E1004', array_column($res['rows'], 'TeacherNumber'));
         self::assertStringContainsString(
             'Dane, Em (person 4) — new user without an ALSDE ID; held back',
             implode("\n", $res['exceptions']));
@@ -171,27 +172,45 @@ final class PowerSchoolStaffExporterTest extends TestCase
                 ['E1006', '0310', '2', '1'], // Foster-Hill's ended assignment -> No longer here
             ],
             array_map(static fn(array $r): array => [
-                $r['TEACHERNUMBER'], $r['SCHOOLID'], $r['STATUS'], $r['STAFFSTATUS'],
+                $r['TeacherNumber'], $r['SchoolID'], $r['Status'], $r['StaffStatus'],
             ], $rows),
-            'sorted by SCHOOLID; ended assignment -> STATUS 2; sub -> STAFFSTATUS 4');
+            'sorted by SCHOOLID; ended assignment -> STATUS 2; sub -> StaffStatus 4');
+    }
+
+    public function testExtensionFieldsCarryDemographics(): void
+    {
+        $rows = $this->export()['rows'];
+        $baker = array_values(array_filter($rows,
+            static fn(array $r): bool => $r['TeacherNumber'] === 'E1001'))[0];
+
+        self::assertSame('F', $baker['UsersCoreFields.gender'], 'Female -> F');
+        self::assertSame('04/07/1990', $baker['UsersCoreFields.dob'], 'Y-m-d -> MM/DD/YYYY');
+        self::assertSame('AL-100001', $baker['S_USR_X.State_StaffNumber'], 'the ALSDE ID');
+        self::assertSame('08/01/2026', $baker['S_USR_X.HireDate']);
+
+        $irwin = array_values(array_filter($rows,
+            static fn(array $r): bool => $r['TeacherNumber'] === 'E1007'))[0];
+        self::assertSame('', $irwin['UsersCoreFields.gender'], 'unknown values stay empty');
+        self::assertSame('', $irwin['S_USR_X.State_StaffNumber'],
+            'changed user without an ALSDE ID still exports (gate applies to creation only)');
     }
 
     public function testUsersFieldsRepeatOnEveryRowOfAPerson(): void
     {
         $rows = $this->export()['rows'];
         $foster = array_values(array_filter($rows,
-            static fn(array $r): bool => $r['TEACHERNUMBER'] === 'E1006'));
+            static fn(array $r): bool => $r['TeacherNumber'] === 'E1006'));
 
         self::assertCount(2, $foster, 'one row per school');
         foreach ($foster as $row) {
-            self::assertSame('Foster-Hill', $row['LAST_NAME']);
-            self::assertSame('Morgan', $row['FIRST_NAME']);
-            self::assertSame('L', $row['MIDDLE_NAME']);
-            self::assertSame('mfosterhill@example.org', $row['EMAIL_ADDR'], 'renamed email exported');
-            self::assertSame('mfosterhill', $row['TEACHERLOGINID'], 'renamed username exported');
-            self::assertSame('E1006', $row['SIF_STATEPRID'], 'district practice: StatePrid = employee id');
-            self::assertSame('Teacher', $row['TITLE'], 'primary assignment title');
-            self::assertSame('0220', $row['HOMESCHOOLID'], 'home school on both rows');
+            self::assertSame('Foster-Hill', $row['Last_Name']);
+            self::assertSame('Morgan', $row['First_Name']);
+            self::assertSame('L', $row['Middle_Name']);
+            self::assertSame('mfosterhill@example.org', $row['Email_Addr'], 'renamed email exported');
+            self::assertSame('mfosterhill', $row['TeacherLoginID'], 'renamed username exported');
+            self::assertSame('E1006', $row['SIF_StatePrid'], 'district practice: StatePrid = employee id');
+            self::assertSame('Teacher', $row['Title'], 'primary assignment title');
+            self::assertSame('0220', $row['HomeSchoolId'], 'home school on both rows');
         }
     }
 
@@ -199,10 +218,10 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $rows = $this->export()['rows'];
         $baker = array_values(array_filter($rows,
-            static fn(array $r): bool => $r['TEACHERNUMBER'] === 'E1001'))[0];
+            static fn(array $r): bool => $r['TeacherNumber'] === 'E1001'))[0];
 
-        self::assertSame('0310', $baker['HOMESCHOOLID'], '3-digit IDM code padded for PS');
-        self::assertSame('0310', $baker['SCHOOLID']);
+        self::assertSame('0310', $baker['HomeSchoolId'], '3-digit IDM code padded for PS');
+        self::assertSame('0310', $baker['SchoolID']);
     }
 
     public function testNoRaceEthnicityPasswordOrAddressColumns(): void
@@ -220,7 +239,7 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $res = $this->export();
 
-        self::assertNotContains('E1005', array_column($res['rows'], 'TEACHERNUMBER'));
+        self::assertNotContains('E1005', array_column($res['rows'], 'TeacherNumber'));
         self::assertStringContainsString(
             'Ellis, Blair (person 5) — home school cannot be resolved',
             implode("\n", $res['exceptions']));
@@ -232,8 +251,8 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec("UPDATE person SET employee_id = '' WHERE person_id = 1");
 
         $res = $this->export($db);
-        self::assertNotContains('Baker', array_column($res['rows'], 'LAST_NAME'));
-        self::assertStringContainsString('Baker, Avery (person 1) — missing TEACHERNUMBER',
+        self::assertNotContains('Baker', array_column($res['rows'], 'Last_Name'));
+        self::assertStringContainsString('Baker, Avery (person 1) — missing TeacherNumber',
             implode("\n", $res['exceptions']));
     }
 
@@ -241,12 +260,12 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $db = $this->db();
         $db->exec("INSERT INTO person VALUES (10, 'staff', 'active', 'Twin', NULL, 'Zed',
-            'AL-100010', 'E1001', 2, NULL, NULL)"); // new user, same employee id as Baker
+            'AL-100010', 'E1001', 2, NULL, NULL, NULL, NULL, NULL)"); // new user, same employee id as Baker
 
         $res = $this->export($db);
-        $e1001 = array_filter($res['rows'], static fn(array $r): bool => $r['TEACHERNUMBER'] === 'E1001');
-        self::assertSame(['0310'], array_column($e1001, 'SCHOOLID'), "only Baker's rows survive");
-        self::assertStringContainsString("duplicate TEACHERNUMBER 'E1001'",
+        $e1001 = array_filter($res['rows'], static fn(array $r): bool => $r['TeacherNumber'] === 'E1001');
+        self::assertSame(['0310'], array_column($e1001, 'SchoolID'), "only Baker's rows survive");
+        self::assertStringContainsString("duplicate TeacherNumber 'E1001'",
             implode("\n", $res['exceptions']));
     }
 
@@ -254,14 +273,14 @@ final class PowerSchoolStaffExporterTest extends TestCase
     {
         $db = $this->db();
         $db->exec("INSERT INTO person VALUES (10, 'contractor', 'active', 'Rene', NULL, 'Gray',
-            'AL-100010', 'E1010', 1, NULL, NULL)");
+            'AL-100010', 'E1010', 1, NULL, NULL, NULL, NULL, NULL)");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (10, 1, 'Contractor', 1)");
         $db->exec("INSERT INTO person VALUES (11, 'contractor', 'active', 'Sam', NULL, 'Ives',
-            'AL-100011', 'E1011', 1, NULL, NULL)");
+            'AL-100011', 'E1011', 1, NULL, NULL, NULL, NULL, NULL)");
         $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (11, 1, 'Contractor', 1)");
 
         $res = $this->export($db);
-        $byKey = array_column($res['rows'], 'STAFFSTATUS', 'TEACHERNUMBER');
+        $byKey = array_column($res['rows'], 'StaffStatus', 'TeacherNumber');
         self::assertSame('2', $byKey['E1010'], 'unmapped type defaults to 2 = Staff');
 
         $mentions = array_filter($res['exceptions'],
@@ -275,17 +294,17 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec("UPDATE assignment SET title = '" . trim(str_repeat('Coordinator ', 5)) . "'
                    WHERE person_id = 1"); // > 40 chars
         $db->exec("INSERT INTO person VALUES (10, 'staff', 'active', 'Key', NULL, 'Long',
-            'AL-100010', '" . str_repeat('9', 21) . "', 1, NULL, NULL)");
+            'AL-100010', '" . str_repeat('9', 21) . "', 1, NULL, NULL, NULL, NULL, NULL)");
 
         $res = $this->export($db);
         $text = implode("\n", $res['exceptions']);
 
         $baker = array_values(array_filter($res['rows'],
-            static fn(array $r): bool => $r['TEACHERNUMBER'] === 'E1001'))[0];
-        self::assertSame(40, mb_strlen($baker['TITLE']), 'TITLE truncated to 40');
-        self::assertStringContainsString('TITLE truncated to 40 chars', $text);
+            static fn(array $r): bool => $r['TeacherNumber'] === 'E1001'))[0];
+        self::assertSame(40, mb_strlen($baker['Title']), 'TITLE truncated to 40');
+        self::assertStringContainsString('Title truncated to 40 chars', $text);
 
-        self::assertNotContains(str_repeat('9', 20), array_column($res['rows'], 'TEACHERNUMBER'),
+        self::assertNotContains(str_repeat('9', 20), array_column($res['rows'], 'TeacherNumber'),
             'over-long match key is rejected, never truncated');
         self::assertStringContainsString('match key is never truncated', $text);
     }
@@ -296,8 +315,8 @@ final class PowerSchoolStaffExporterTest extends TestCase
         $db->exec("UPDATE person SET last_name = 'O''Neal' || char(9) || 'Jr' WHERE person_id = 1");
 
         $row = array_values(array_filter($this->export($db)['rows'],
-            static fn(array $r): bool => $r['TEACHERNUMBER'] === 'E1001'))[0];
-        self::assertSame("O'Neal Jr", $row['LAST_NAME'], 'tab replaced with a space');
+            static fn(array $r): bool => $r['TeacherNumber'] === 'E1001'))[0];
+        self::assertSame("O'Neal Jr", $row['Last_Name'], 'tab replaced with a space');
     }
 
     public function testRenderIsTabDelimitedWithHeaderAndTrailingNewline(): void
