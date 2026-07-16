@@ -54,6 +54,11 @@ final class AdaxesService
         // sn + employeeID let the reconciler cross-check a returning-employee match
         // (employee number + surname) before re-enabling an existing account.
         'sn', 'employeeID',
+        // givenName + cn feed the edit phase's name-change handling: givenName for
+        // the immediate attribute push (comparing against an unfetched attribute
+        // would read as always-drifted), cn for the object rename that keeps AD's
+        // "Full Name" / DN aligned with a changed legal name.
+        'givenName', 'cn',
     ];
 
     /**

@@ -302,11 +302,13 @@ final class AdaxesReconciler
      * objectGUID: UPN + mail (from the identity comparison), the person's NAME
      * (givenName / sn / displayName — pushed immediately when the golden name
      * changes, e.g. a marriage-related last-name change, so AD reflects it as
-     * fast as Google and PowerSchool do), and the operational mappings. The
-     * username/email/UPN *rename* deliberately does NOT happen here — that is
-     * the RenameService scheduled cutover (RENAME_NOTICE_DAYS): the golden
-     * username/email/upn only move at cutover, so until then this phase sees no
-     * mail/UPN drift and only the name attributes change. Never touches
+     * fast as Google and PowerSchool do, along with cn — AD's "Full Name" and
+     * the RDN, so the distinguishedName moves too; see cnRenameTarget), and the
+     * operational mappings. The username/email/UPN *rename* deliberately does
+     * NOT happen here — that is the RenameService scheduled cutover
+     * (RENAME_NOTICE_DAYS): the golden username/email/upn only move at cutover,
+     * so until then this phase sees no mail/UPN drift, and the login identity +
+     * email are the ONLY things left to change with the delay. Never touches
      * sAMAccountName (immutable) and never blanks an AD value from an empty
      * golden field.
      *
@@ -344,6 +346,16 @@ final class AdaxesReconciler
             // Name drift: a legal name change pushes givenName/sn/displayName right
             // away; the username/email/UPN rename stays on the scheduled cutover.
             $attrs += self::nameDrift($p, $adAttrs);
+            // …and renames the OBJECT itself: cn (AD's "Full Name") is the RDN, so
+            // pushing the new cn moves the distinguishedName with it. Riding the
+            // same modify keeps the rename atomic with the attribute push and
+            // leaves the delayed RenameService cutover with ONLY username + email.
+            if (isset($attrs['givenName']) || isset($attrs['sn'])) {
+                $newCn = $this->cnRenameTarget($p, $adAttrs);
+                if ($newCn !== null) {
+                    $attrs['cn'] = $newCn;
+                }
+            }
             // Operational drift beyond the identity comparison: title/department and
             // their mirrors (department drives the per-school Everyone groups, so a
             // school move MUST propagate or downstream group logic breaks).
@@ -1166,6 +1178,51 @@ final class AdaxesReconciler
             }
         }
         return $out;
+    }
+
+    /**
+     * The new cn — AD's "Full Name" and the RDN, so pushing it also changes the
+     * distinguishedName — when a person's legal name changed, or null when the
+     * object needs no rename. Same naming rule as create ("First Last",
+     * collision-suffixed with the username) so a rename and a create can never
+     * disagree about what an account should be called.
+     *
+     * Only consulted when givenName/sn actually drifted (a real name change), so
+     * accounts whose cn merely follows an older convention are never mass-renamed
+     * by a routine run. A case-only correction skips the collision search — the
+     * only possible hit is the person themselves. On a genuine collision the
+     * username suffix guarantees uniqueness; when the collision search fails, or
+     * there is no username to suffix with, the rename is skipped this run (the
+     * name attributes still push) and retried on the next.
+     *
+     * @param array<string,mixed>  $p
+     * @param array<string,string> $envAttrs normalized (lowercase-keyed) AD attributes
+     */
+    private function cnRenameTarget(array $p, array $envAttrs): ?string
+    {
+        $desired = trim(trim((string) ($p['first_name'] ?? '')) . ' ' . trim((string) ($p['last_name'] ?? '')));
+        if ($desired === '') {
+            return null; // never rename to an empty name
+        }
+        $current = trim((string) ($envAttrs['cn'] ?? ''));
+        if ($current === '') {
+            $current = self::cnOf(trim((string) ($envAttrs['distinguishedname'] ?? '')));
+        }
+        if ($current === $desired) {
+            return null; // already right (exact, so casing corrections propagate)
+        }
+        if (strcasecmp($current, $desired) === 0) {
+            return $desired; // case-only fix — a cn search would only find ourselves
+        }
+        $res = $this->read->searchByCriteria([['attr' => 'cn', 'value' => $desired]]);
+        if (!$res['ok']) {
+            return null; // couldn't verify uniqueness — don't risk it; retry next run
+        }
+        if (!$res['found']) {
+            return $desired;
+        }
+        $username = trim((string) ($p['username'] ?? ''));
+        return $username !== '' ? $desired . ' (' . $username . ')' : null;
     }
 
     /**

@@ -175,11 +175,18 @@ Push the diffs the verification panel already computes.
   marriage-related last-name change from NextGen) pushes `givenName`, `sn`, and
   `displayName` (preferred-or-legal first + last, same rule as create)
   **immediately** — so AD reflects the new name as fast as Google and
-  PowerSchool do. The username/email/UPN **rename** deliberately does *not*
-  happen here: that is the RenameService scheduled cutover
-  (`RENAME_NOTICE_DAYS`, default 7, with notice emails and a delivering alias
-  afterward). Until the cutover fires, the golden username/email/upn still hold
-  the old identity, so this phase sees no mail/UPN drift — only the name moves.
+  PowerSchool do. The same edit also **renames the object itself**: `cn` (AD's
+  *Full Name*, and the RDN) is pushed to the new "First Last" — collision-checked
+  and username-suffixed exactly like create — so the `distinguishedName` moves
+  with the name in the same run. The cn rename fires **only** when
+  `givenName`/`sn` actually drifted (a real name change); accounts whose cn
+  merely follows an older convention are never mass-renamed by a routine run.
+  The username/email/UPN **rename** deliberately does *not* happen here: that is
+  the RenameService scheduled cutover (`RENAME_NOTICE_DAYS`, default 7, with
+  notice emails and a delivering alias afterward). Until the cutover fires, the
+  golden username/email/upn still hold the old identity, so this phase sees no
+  mail/UPN drift — the login identity and email address are the **only** parts
+  of a name change that wait for the delay.
 - **Also kept in sync: the operational mappings.** OneSync writes these on every
   account; IDM keeps them in sync (each is pushed only when non-empty and it
   differs from AD):

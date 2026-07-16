@@ -368,6 +368,8 @@ final class AdaxesReconcilerTest extends TestCase
             'givenName'         => 'Morgan',
             'sn'                => 'Foster',
             'displayName'       => 'Morgan Foster',
+            'cn'                => 'Morgan Foster',
+            'distinguishedName' => 'CN=Morgan Foster,OU=CO,OU=Faculty,' . self::BASE_DN,
             'accountDisabled'   => 'false',
         ]]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
@@ -378,11 +380,72 @@ final class AdaxesReconcilerTest extends TestCase
         $props = self::props(json_decode((string) $calls[0]['body'], true));
         self::assertSame('Foster-Hill', $props['sn'], 'last name pushed immediately');
         self::assertSame('Morgan Foster-Hill', $props['displayName']);
+        self::assertSame('Morgan Foster-Hill', $props['cn'],
+            'cn (Full Name / RDN) renamed with the name change, so the DN moves too');
         self::assertArrayNotHasKey('givenName', $props, 'first name unchanged — not pushed');
         foreach (['sAMAccountName', 'userPrincipalName', 'mail'] as $delayed) {
             self::assertArrayNotHasKey($delayed, $props,
                 "{$delayed} must wait for the scheduled rename cutover, never the edit phase");
         }
+    }
+
+    public function testEditCnRenameSuffixesUsernameOnCollision(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Morgan', 'last_name' => 'Foster-Hill',
+            'username' => 'mfoster', 'email' => 'mfoster@tusc.k12.al.us', 'upn' => 'mfoster@tusc.k12.al.us',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // searchHit=true: another object already holds cn "Morgan Foster-Hill".
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'mfoster',
+            'userPrincipalName' => 'mfoster@tusc.k12.al.us',
+            'mail'              => 'mfoster@tusc.k12.al.us',
+            'givenName'         => 'Morgan',
+            'sn'                => 'Foster',
+            'displayName'       => 'Morgan Foster',
+            'cn'                => 'Morgan Foster',
+            'accountDisabled'   => 'false',
+        ]], searchHit: true);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['applied']);
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
+        self::assertSame('Morgan Foster-Hill (mfoster)', $props['cn'],
+            'a cn collision falls back to the username-suffixed form, same rule as create');
+    }
+
+    public function testEditWithoutNameDriftNeverRenamesAnUnconventionalCn(): void
+    {
+        $db = $this->db();
+        // Name matches AD exactly — but the cn follows an old "Last, First"
+        // convention. No name change → no rename: legacy cns are left alone.
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'In', 'last_name' => 'Sync',
+            'username' => 'insync', 'email' => 'insync@tusc.k12.al.us', 'upn' => 'insync@tusc.k12.al.us',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'insync',
+            'userPrincipalName' => 'insync@tusc.k12.al.us',
+            'mail'              => 'insync@tusc.k12.al.us',
+            'givenName'         => 'In',
+            'sn'                => 'Sync',
+            'displayName'       => 'In Sync',
+            'cn'                => 'Sync, In',
+            'accountDisabled'   => 'false',
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['noop']);
+        self::assertSame([], $calls, 'no writes at all — cn convention drift alone is not a rename trigger');
     }
 
     public function testEditNameDriftHonorsPreferredNameInDisplayName(): void
