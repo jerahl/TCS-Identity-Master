@@ -44,6 +44,7 @@ declare(strict_types=1);
 
 use App\Service\AdaxesService;
 use App\Service\AdaxesWriter;
+use App\Service\RunLogRecorder;
 use App\Service\ServiceRunLog;
 use App\Sync\AdaxesReconciler;
 
@@ -68,7 +69,7 @@ $limit   = isset($opts['limit']) ? max(1, (int) $opts['limit']) : null;
 // decided. verify()/search() are live remote lookups, so a large run is slow —
 // this shows progress rather than sitting silent. Each line is flushed
 // immediately so it appears live even when stdout is piped/redirected.
-$log = $verbose ? static function (string $event, array $d): void {
+$console = $verbose ? static function (string $event, array $d): void {
     if ($event === 'phase') {
         $n = (int) $d['total'];
         fwrite(STDOUT, sprintf("\n== %s == (%d %s to examine)\n", strtoupper((string) $d['phase']), $n, $n === 1 ? 'person' : 'people'));
@@ -123,6 +124,17 @@ try {
     // its outcome. Dry runs change nothing, so they aren't recorded.
     $runLog = $dryRun ? null : new ServiceRunLog();
     $runId  = $runLog?->start('adaxes', 'cron', 'system:adaxes_sync');
+
+    // Persist each person's decided outcome (errors, review, changes) as the
+    // run's detailed log — what the web console's Outputs log view shows —
+    // alongside the optional --verbose console stream. No-op on a dry run.
+    $recorder = new RunLogRecorder($runLog, $runId);
+    $log = static function (string $event, array $d) use ($recorder, $console): void {
+        $recorder->adaxes($event, $d);
+        if ($console !== null) {
+            $console($event, $d);
+        }
+    };
 
     $reconciler = new AdaxesReconciler($db, new AdaxesService(), new AdaxesWriter());
     $result = $reconciler->run($dryRun, $phases, $limit, $log, $onlyIds);

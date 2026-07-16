@@ -3,6 +3,7 @@
  * @var array $outputs @var string $csrf
  * @var ?array $adaxesSummary @var bool $canRunAdaxes @var bool $adaxesRunning
  * @var ?array $googleSummary @var bool $googleReady @var bool $googleRunEnabled @var bool $googleRunning
+ * @var ?array $psSummary
  * @var bool $canEdit @var bool $canAdmin
  */
 
@@ -10,6 +11,20 @@
 $badgeFor = ['ok' => 'active', 'warn' => 'pending', 'down' => 'terminated', 'disabled' => 'disabled'];
 $borderFor = ['ok' => '#34D399', 'warn' => '#F5B301', 'down' => '#E5484D', 'disabled' => '#CBD5E1'];
 $tone = static fn(string $s): string => $badgeFor[$s] ?? 'disabled';
+
+// A highlight tile that deep-links into the sync's detailed log view
+// (?level=attention for the "requires attention" tile, ?level=change for the
+// changes tile, unfiltered otherwise). $inner is pre-escaped HTML.
+$logTile = static function (string $job, ?string $level, string $accent, string $inner): string {
+    $href = url('/outputs/logs', ['job' => $job] + ($level !== null ? ['level' => $level] : []));
+    return '<a class="card card--pad" href="' . e($href) . '" title="Open the ' . e($level === 'attention' ? 'requires-attention log' : 'run log') . '"'
+        . ' style="border-left:4px solid ' . e($accent) . '; display:block; text-decoration:none; color:inherit;">'
+        . $inner . '</a>';
+};
+
+// A small "View log" link for the panel headers.
+$logLink = static fn(string $job): string =>
+    '<a class="btn btn--ghost" style="font-size:12px;" href="' . e(url('/outputs/logs', ['job' => $job])) . '">View log</a>';
 
 // A "Run now" button (gated by capability) or a muted "why it's unavailable" note.
 $runForm = static function (string $action, string $label, bool $show, bool $enabled, string $confirm, string $disabledNote) use ($csrf): string {
@@ -58,6 +73,7 @@ $runForm = static function (string $action, string $label, bool $show, bool $ena
 <div class="panel" style="margin-bottom:16px;">
   <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
     <h2 class="panel__title" style="margin:0; flex:1;">Active Directory sync (Adaxes)</h2>
+    <?= $logLink('adaxes') ?>
     <?= $runForm('/outputs/run/adaxes', 'Run AD sync now',
         !empty($canAdmin),
         !empty($canRunAdaxes) && empty($adaxesRunning),
@@ -76,21 +92,18 @@ $runForm = static function (string $action, string $label, bool $show, bool $ena
       $st = (string) $adaxesSummary['status'];
       $stTone = $st === 'complete' ? 'active' : ($st === 'failed' ? 'terminated' : 'pending');
   ?>
-    <!-- Highlights -->
+    <!-- Highlights (each tile opens the run's detailed log, filtered to match) -->
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
-      <div class="card card--pad" style="border-left:4px solid <?= $adaxesSummary['attention'] > 0 ? '#E5484D' : '#34D399' ?>;">
-        <div style="font-size:22px; font-weight:700;"><?= e((int) $adaxesSummary['attention']) ?></div>
-        <div class="muted" style="font-size:12px;">require attention (<?= e((int) $adaxesSummary['errors']) ?> errors + review)</div>
-      </div>
-      <div class="card card--pad" style="border-left:4px solid #3D6478;">
-        <div style="font-size:22px; font-weight:700;"><?= e((int) $adaxesSummary['actions']) ?></div>
-        <div class="muted" style="font-size:12px;">changes applied this run</div>
-      </div>
-      <div class="card card--pad" style="border-left:4px solid <?= !empty($adaxesSummary['writeEnabled']) ? '#34D399' : '#CBD5E1' ?>;">
-        <div style="font-size:13px; font-weight:600;">Writes <?= !empty($adaxesSummary['writeEnabled']) ? 'ON' : 'OFF (report only)' ?></div>
-        <div class="muted" style="font-size:12px;">last run <?= e((string) $adaxesSummary['when']) ?> · <?= e((string) $adaxesSummary['origin']) ?></div>
-        <div style="margin-top:6px;"><span class="badge badge--<?= e($stTone) ?>"><?= e($st) ?></span></div>
-      </div>
+      <?= $logTile('adaxes', 'attention', $adaxesSummary['attention'] > 0 ? '#E5484D' : '#34D399',
+          '<div style="font-size:22px; font-weight:700;">' . e((int) $adaxesSummary['attention']) . '</div>'
+          . '<div class="muted" style="font-size:12px;">require attention (' . e((int) $adaxesSummary['errors']) . ' errors + review)</div>') ?>
+      <?= $logTile('adaxes', 'change', '#3D6478',
+          '<div style="font-size:22px; font-weight:700;">' . e((int) $adaxesSummary['actions']) . '</div>'
+          . '<div class="muted" style="font-size:12px;">changes applied this run</div>') ?>
+      <?= $logTile('adaxes', null, !empty($adaxesSummary['writeEnabled']) ? '#34D399' : '#CBD5E1',
+          '<div style="font-size:13px; font-weight:600;">Writes ' . (!empty($adaxesSummary['writeEnabled']) ? 'ON' : 'OFF (report only)') . '</div>'
+          . '<div class="muted" style="font-size:12px;">last run ' . e((string) $adaxesSummary['when']) . ' · ' . e((string) $adaxesSummary['origin']) . '</div>'
+          . '<div style="margin-top:6px;"><span class="badge badge--' . e($stTone) . '">' . e($st) . '</span></div>') ?>
     </div>
 
     <?php if ($adaxesSummary['phases'] === []): ?>
@@ -126,6 +139,7 @@ $runForm = static function (string $action, string $label, bool $show, bool $ena
 <div class="panel">
   <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
     <h2 class="panel__title" style="margin:0; flex:1;">Google Workspace sync <span class="muted" style="font-weight:500; font-size:12.5px;">(direct · bypasses OneSync)</span></h2>
+    <?= $logLink('google') ?>
     <?= $runForm('/outputs/run/google', 'Run Google sync now',
         !empty($canEdit) && !empty($googleReady),
         !empty($googleRunEnabled) && empty($googleRunning),
@@ -146,21 +160,18 @@ $runForm = static function (string $action, string $label, bool $show, bool $ena
       $st = (string) $googleSummary['status'];
       $stTone = $st === 'complete' ? 'active' : ($st === 'failed' ? 'terminated' : 'pending');
   ?>
-    <!-- Highlights -->
+    <!-- Highlights (each tile opens the run's detailed log, filtered to match) -->
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
-      <div class="card card--pad" style="border-left:4px solid <?= $googleSummary['attention'] > 0 ? '#E5484D' : '#34D399' ?>;">
-        <div style="font-size:22px; font-weight:700;"><?= e((int) $googleSummary['attention']) ?></div>
-        <div class="muted" style="font-size:12px;">require attention (<?= e((int) $googleSummary['errors']) ?> errors + license-blocked)</div>
-      </div>
-      <div class="card card--pad" style="border-left:4px solid #3D6478;">
-        <div style="font-size:22px; font-weight:700;"><?= e((int) $googleSummary['actions']) ?></div>
-        <div class="muted" style="font-size:12px;">changes applied this run</div>
-      </div>
-      <div class="card card--pad" style="border-left:4px solid #94A3B8;">
-        <div style="font-size:22px; font-weight:700;"><?= e((int) $googleSummary['eligible']) ?></div>
-        <div class="muted" style="font-size:12px;">people scanned · <span class="badge badge--<?= e($stTone) ?>"><?= e($st) ?></span></div>
-        <div class="muted" style="font-size:12px; margin-top:4px;">last run <?= e((string) $googleSummary['when']) ?> · <?= e((string) $googleSummary['origin']) ?></div>
-      </div>
+      <?= $logTile('google', 'attention', $googleSummary['attention'] > 0 ? '#E5484D' : '#34D399',
+          '<div style="font-size:22px; font-weight:700;">' . e((int) $googleSummary['attention']) . '</div>'
+          . '<div class="muted" style="font-size:12px;">require attention (' . e((int) $googleSummary['errors']) . ' errors + license-blocked)</div>') ?>
+      <?= $logTile('google', 'change', '#3D6478',
+          '<div style="font-size:22px; font-weight:700;">' . e((int) $googleSummary['actions']) . '</div>'
+          . '<div class="muted" style="font-size:12px;">changes applied this run</div>') ?>
+      <?= $logTile('google', null, '#94A3B8',
+          '<div style="font-size:22px; font-weight:700;">' . e((int) $googleSummary['eligible']) . '</div>'
+          . '<div class="muted" style="font-size:12px;">people scanned · <span class="badge badge--' . e($stTone) . '">' . e($st) . '</span></div>'
+          . '<div class="muted" style="font-size:12px; margin-top:4px;">last run ' . e((string) $googleSummary['when']) . ' · ' . e((string) $googleSummary['origin']) . '</div>') ?>
     </div>
 
     <?php if ($googleSummary['cells'] === []): ?>
@@ -178,6 +189,55 @@ $runForm = static function (string $action, string $label, bool $show, bool $ena
       </dl>
       <?php if ($googleSummary['message'] !== '' && $st === 'failed'): ?>
         <div style="color:#94413A; font-size:12px; margin-top:10px;"><?= e((string) $googleSummary['message']) ?></div>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
+  <?php endif; ?>
+</div>
+
+<!-- PowerSchool staff export (CSV for AutoComm) summary -->
+<div class="panel" style="margin-top:16px;">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+    <h2 class="panel__title" style="margin:0; flex:1;">PowerSchool staff export <span class="muted" style="font-weight:500; font-size:12.5px;">(CSV · AutoComm)</span></h2>
+    <?= $logLink('ps_export') ?>
+  </div>
+  <p class="panel__note" style="margin-bottom:14px;">Exports new and changed staff (name or username/email moved) as one tab-delimited file for the PowerSchool AutoComm Teachers import, uploaded to the district SFTP drop. People without an ALSDE ID are held back as exceptions. Runs via <span class="mono">bin/export_powerschool.php</span>.</p>
+
+  <?php if ($psSummary === null): ?>
+    <p class="muted" style="font-size:12.5px;">No PowerSchool staff export has been recorded yet.</p>
+  <?php else:
+      $st = (string) $psSummary['status'];
+      $stTone = $st === 'complete' ? 'active' : ($st === 'failed' ? 'terminated' : 'pending');
+  ?>
+    <!-- Highlights (each tile opens the run's detailed log, filtered to match) -->
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
+      <?= $logTile('ps_export', 'attention', $psSummary['attention'] > 0 ? '#E5484D' : '#34D399',
+          '<div style="font-size:22px; font-weight:700;">' . e((int) $psSummary['attention']) . '</div>'
+          . '<div class="muted" style="font-size:12px;">require attention (held back / rejected / truncated)</div>') ?>
+      <?= $logTile('ps_export', 'change', '#3D6478',
+          '<div style="font-size:22px; font-weight:700;">' . e((int) $psSummary['exported']) . '</div>'
+          . '<div class="muted" style="font-size:12px;">people exported (new + changed)</div>') ?>
+      <?= $logTile('ps_export', null, '#94A3B8',
+          '<div style="font-size:13px; font-weight:600;">' . e((int) $psSummary['rows']) . ' row(s) · ' . ($psSummary['uploaded'] ? 'uploaded' : 'NOT uploaded') . '</div>'
+          . '<div class="muted" style="font-size:12px;">last run ' . e((string) $psSummary['when']) . ' · ' . e((string) $psSummary['origin']) . '</div>'
+          . '<div style="margin-top:6px;"><span class="badge badge--' . e($stTone) . '">' . e($st) . '</span></div>') ?>
+    </div>
+
+    <?php if ($psSummary['cells'] === []): ?>
+      <p class="muted" style="font-size:12.5px;">The run recorded no counts<?= $psSummary['message'] !== '' ? ' — ' . e((string) $psSummary['message']) : '' ?>.</p>
+    <?php else: ?>
+    <!-- Count breakdown -->
+    <div class="card card--pad" style="border-left:4px solid <?= $psSummary['exceptions'] > 0 ? '#E5484D' : '#E2E8F0' ?>;">
+      <dl style="margin:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:8px 16px; font-size:12.5px;">
+        <?php foreach ($psSummary['cells'] as $cell): ?>
+        <div style="display:flex; justify-content:space-between; gap:12px;">
+          <dt class="muted"<?= $cell['key'] === 'exceptions' ? ' style="color:#94413A;"' : '' ?>><?= e((string) $cell['label']) ?></dt>
+          <dd class="mono" style="margin:0; font-weight:600;"><?= e((int) $cell['value']) ?></dd>
+        </div>
+        <?php endforeach; ?>
+      </dl>
+      <?php if ($psSummary['message'] !== '' && $st === 'failed'): ?>
+        <div style="color:#94413A; font-size:12px; margin-top:10px;"><?= e((string) $psSummary['message']) ?></div>
       <?php endif; ?>
     </div>
     <?php endif; ?>

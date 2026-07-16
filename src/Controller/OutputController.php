@@ -10,6 +10,7 @@ use App\Service\AuditService;
 use App\Service\GoogleRunService;
 use App\Service\GoogleSyncSummary;
 use App\Service\GoogleWorkspaceService;
+use App\Service\PowerSchoolExportSummary;
 use App\Service\ServiceRunLog;
 use App\Service\ServiceStatusService;
 use App\Support\Csrf;
@@ -62,8 +63,49 @@ final class OutputController extends Controller
             'googleReady'      => (new GoogleWorkspaceService())->configured(),
             'googleRunEnabled' => $this->googleRun->enabled(),
             'googleRunning'    => ($this->runs->last('google')['status'] ?? '') === 'running',
+            'psSummary'        => PowerSchoolExportSummary::fromRun($this->runs->last('ps_export')),
             'csrf'             => Csrf::token(),
         ], 'outputs', 'Configuration  /  Outputs', 'Outputs — TCS Identity Master');
+    }
+
+    /**
+     * Detailed log view for a sync run: every persisted service_run_log entry
+     * (who was created / pushed / expired, what errored and why), filterable by
+     * severity so the Outputs tiles can deep-link ("requires attention" →
+     * ?level=attention, "changes applied" → ?level=change). ?job picks the sync,
+     * ?run a specific run (default: the latest recorded one).
+     */
+    public function logs(): string
+    {
+        $job = (string) ($_GET['job'] ?? 'google');
+        if (!isset(ServiceRunLog::JOBS[$job])) {
+            $job = 'google';
+        }
+        $level = (string) ($_GET['level'] ?? 'all');
+        if (!in_array($level, ServiceRunLog::LEVELS, true)) {
+            $level = 'all';
+        }
+
+        $runs = $this->runs->recentForJob($job, 20);
+        $run = null;
+        $runId = (int) ($_GET['run'] ?? 0);
+        if ($runId > 0) {
+            $run = $this->runs->run($runId);
+            if ($run !== null && (string) $run['job'] !== $job) {
+                $run = null; // a run id pasted from another job's log — fall back
+            }
+        }
+        $run ??= $runs[0] ?? null;
+
+        return $this->render('outputs/logs', [
+            'job'     => $job,
+            'jobs'    => ServiceRunLog::JOBS,
+            'level'   => $level,
+            'runs'    => $runs,
+            'run'     => $run,
+            'entries' => $run !== null ? $this->runs->entries((int) $run['run_id'], $level) : [],
+            'counts'  => $run !== null ? $this->runs->entryCounts((int) $run['run_id']) : ['total' => 0, 'attention' => 0, 'change' => 0, 'info' => 0],
+        ], 'outputs', 'Configuration  /  Outputs  /  Logs', 'Sync logs — TCS Identity Master');
     }
 
     /**

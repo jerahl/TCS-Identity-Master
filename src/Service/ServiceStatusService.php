@@ -70,6 +70,7 @@ final class ServiceStatusService
         return [
             $this->adaxesSync(),
             $this->googleSync(),
+            $this->psExport(),
         ];
     }
 
@@ -166,6 +167,29 @@ final class ServiceStatusService
                 'Not configured — set GOOGLE_DIRECT_ENABLED=true plus the GOOGLE_SA_* credentials + GOOGLE_ADMIN_SUBJECT.', $facts);
         }
         return $this->fromRun('google_sync', 'Google Workspace sync', 'google', 'bin/sync_google.php', 'ok', $facts, '');
+    }
+
+    /**
+     * The PowerSchool staff export status (bin/export_powerschool.php — the
+     * AutoComm file of new/changed staff, uploaded to the district SFTP drop).
+     * 'disabled' until EXPORT_POWERSCHOOL_DIR is set; otherwise the last
+     * recorded run, with a caveat when the SFTP upload leg isn't configured.
+     */
+    private function psExport(): array
+    {
+        $outDir = trim((string) Config::get('EXPORT_POWERSCHOOL_DIR', ''));
+        $remoteDir = trim((string) Config::get('SFTP_PS_EXPORT_DIR', ''));
+        $facts = [
+            ['Export dir', $outDir !== '' ? $outDir : '(not set)'],
+            ['SFTP drop', $remoteDir !== '' ? $remoteDir : '(not set — upload off)'],
+        ];
+        if ($outDir === '') {
+            return $this->entry('ps_export', 'PowerSchool staff export', 'disabled',
+                'Not configured — set EXPORT_POWERSCHOOL_DIR (and SFTP_PS_EXPORT_DIR) to export staff changes for AutoComm.', $facts);
+        }
+        return $this->fromRun('ps_export', 'PowerSchool staff export',
+            'ps_export', 'bin/export_powerschool.php', 'ok', $facts,
+            $remoteDir === '' ? 'SFTP_PS_EXPORT_DIR not set — files are written locally but not uploaded.' : '');
     }
 
     /**

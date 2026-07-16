@@ -104,6 +104,7 @@ try {
     $router->get('/reference/data-flow', $guard('view', static fn() => $reference->dataflow()));
     $router->get('/import', $guard('view', static fn() => $import->index()));
     $router->get('/outputs', $guard('view', static fn() => $output->index()));
+    $router->get('/outputs/logs', $guard('view', static fn() => $output->logs()));
     $router->get('/vpn', $guard('view', static fn() => (new \App\Controller\VpnController())->index()));
 
     $logins = new \App\Controller\LoginsController();

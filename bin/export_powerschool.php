@@ -31,6 +31,8 @@ declare(strict_types=1);
 
 use App\Config;
 use App\Export\PowerSchoolStaffExporter;
+use App\Service\RunLogRecorder;
+use App\Service\ServiceRunLog;
 use App\Sync\FeedSync;
 
 require __DIR__ . '/../src/bootstrap.php';
@@ -48,9 +50,40 @@ $outDir = isset($opts['out']) && $opts['out'] !== '1'
     ? $opts['out']
     : trim((string) Config::get('EXPORT_POWERSCHOOL_DIR', ''));
 
+// Record the run (job 'ps_export') so the Outputs page shows when the staff
+// export last ran, with each new/changed/held-back person as a detailed log
+// entry. Dry runs change nothing, so they aren't recorded.
+$runLog = $dryRun ? null : new ServiceRunLog();
+$runId  = $runLog?->start('ps_export', 'cron', 'system:export_powerschool');
+$recorder = new RunLogRecorder($runLog, $runId);
+
 $exporter = new PowerSchoolStaffExporter();
-$result = $exporter->export();
+try {
+    $result = $exporter->export();
+} catch (\Throwable $e) {
+    $runLog?->finish($runId, 'failed', [], $e->getMessage());
+    fwrite(STDERR, 'PowerSchool staff export failed: ' . $e->getMessage() . "\n");
+    exit(1);
+}
 $summary = $result['summary'];
+$counts = $summary + ['uploaded' => 0];
+
+foreach ($result['new'] as $line) {
+    $recorder->add(['phase' => 'export', 'person_id' => null, 'subject' => '',
+        'outcome' => 'new', 'level' => 'change', 'detail' => $line]);
+}
+foreach ($result['changed'] as $line) {
+    $recorder->add(['phase' => 'export', 'person_id' => null, 'subject' => '',
+        'outcome' => 'changed', 'level' => 'change', 'detail' => $line]);
+}
+foreach ($result['exceptions'] as $line) {
+    $recorder->add(['phase' => 'export', 'person_id' => null, 'subject' => '',
+        'outcome' => 'exception', 'level' => 'attention', 'detail' => $line]);
+}
+
+// One-line rollup for the run row (finished at each exit path below).
+$rollup = sprintf('new %d · changed %d · rows %d · exceptions %d',
+    $summary['new'], $summary['changed'], $summary['rows'], $summary['exceptions']);
 
 printf("PowerSchool staff export%s\n", $dryRun ? '  (DRY RUN)' : '');
 printf("  new users:  %d (not in PowerSchool yet, ALSDE ID set)\n", $summary['new']);
@@ -72,6 +105,7 @@ if ($dryRun) {
     exit(0);
 }
 if ($outDir === '') {
+    $runLog?->finish($runId, 'failed', $counts, 'EXPORT_POWERSCHOOL_DIR is not set (or pass --out=DIR)');
     fwrite(STDERR, "EXPORT_POWERSCHOOL_DIR is not set (or pass --out=DIR).\n");
     exit(1);
 }
@@ -81,25 +115,33 @@ if ($summary['rows'] === 0) {
     echo "  nothing to export — writing an empty file to clear the drop\n";
 }
 
-$file = PowerSchoolStaffExporter::writeFile(
-    PowerSchoolStaffExporter::render($result['rows']),
-    $outDir, PowerSchoolStaffExporter::EXPORT_FILE);
-printf("  wrote %s (%d bytes, %d row(s))\n", $file['path'], $file['bytes'], $summary['rows']);
-PowerSchoolStaffExporter::writeFile(
-    PowerSchoolStaffExporter::sample($result['rows']),
-    $outDir, PowerSchoolStaffExporter::SAMPLE_FILE);
-$exceptions = PowerSchoolStaffExporter::writeFile(
-    PowerSchoolStaffExporter::exceptionsFile($result['exceptions']),
-    $outDir, PowerSchoolStaffExporter::EXCEPTIONS_FILE);
-printf("  wrote %s (%d exception(s))\n", $exceptions['path'], $summary['exceptions']);
+try {
+    $file = PowerSchoolStaffExporter::writeFile(
+        PowerSchoolStaffExporter::render($result['rows']),
+        $outDir, PowerSchoolStaffExporter::EXPORT_FILE);
+    printf("  wrote %s (%d bytes, %d row(s))\n", $file['path'], $file['bytes'], $summary['rows']);
+    PowerSchoolStaffExporter::writeFile(
+        PowerSchoolStaffExporter::sample($result['rows']),
+        $outDir, PowerSchoolStaffExporter::SAMPLE_FILE);
+    $exceptions = PowerSchoolStaffExporter::writeFile(
+        PowerSchoolStaffExporter::exceptionsFile($result['exceptions']),
+        $outDir, PowerSchoolStaffExporter::EXCEPTIONS_FILE);
+    printf("  wrote %s (%d exception(s))\n", $exceptions['path'], $summary['exceptions']);
+} catch (\Throwable $e) {
+    $runLog?->finish($runId, 'failed', $counts, 'could not write export files: ' . $e->getMessage());
+    fwrite(STDERR, '  could not write export files: ' . $e->getMessage() . "\n");
+    exit(1);
+}
 
 if (!$doUpload) {
     echo "  upload skipped (--no-upload)\n";
+    $runLog?->finish($runId, 'complete', $counts, $rollup . ' · upload skipped (--no-upload)');
     exit(0);
 }
 
 $remoteDir = trim((string) Config::get('SFTP_PS_EXPORT_DIR', ''));
 if ($remoteDir === '') {
+    $runLog?->finish($runId, 'failed', $counts, $rollup . ' · SFTP_PS_EXPORT_DIR not set — file written but NOT uploaded');
     fwrite(STDERR, "  SFTP_PS_EXPORT_DIR is not set — file written but NOT uploaded.\n");
     exit(1);
 }
@@ -108,8 +150,11 @@ try {
     $remotePath = PowerSchoolStaffExporter::uploadFile($client, $file['path'], $remoteDir);
     printf("  uploaded to sftp://%s%s\n", (string) Config::get('SFTP_HOST', ''), $remotePath);
 } catch (\Throwable $e) {
+    $runLog?->finish($runId, 'failed', $counts, $rollup . ' · SFTP upload failed: ' . $e->getMessage());
     fwrite(STDERR, '  SFTP upload failed: ' . $e->getMessage() . "\n");
     exit(1);
 }
 
+$counts['uploaded'] = 1;
+$runLog?->finish($runId, 'complete', $counts, $rollup . ' · uploaded');
 exit(0);
