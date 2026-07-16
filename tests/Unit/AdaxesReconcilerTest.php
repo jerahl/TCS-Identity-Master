@@ -347,6 +347,73 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertNotContains('sAMAccountName', $names); // immutable
     }
 
+    public function testEditPushesNameChangeImmediatelyButNeverTheUsernameOrEmail(): void
+    {
+        $db = $this->db();
+        // Golden already carries the married name; username/email/upn are still the
+        // OLD identity (they only move at the RenameService cutover).
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Morgan', 'last_name' => 'Foster-Hill',
+            'username' => 'mfoster', 'email' => 'mfoster@tusc.k12.al.us', 'upn' => 'mfoster@tusc.k12.al.us',
+            'username_locked' => 1,
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Live AD still holds the maiden name; the login identity matches golden.
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'mfoster',
+            'userPrincipalName' => 'mfoster@tusc.k12.al.us',
+            'mail'              => 'mfoster@tusc.k12.al.us',
+            'givenName'         => 'Morgan',
+            'sn'                => 'Foster',
+            'displayName'       => 'Morgan Foster',
+            'accountDisabled'   => 'false',
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['applied']);
+        self::assertNotEmpty($calls);
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
+        self::assertSame('Foster-Hill', $props['sn'], 'last name pushed immediately');
+        self::assertSame('Morgan Foster-Hill', $props['displayName']);
+        self::assertArrayNotHasKey('givenName', $props, 'first name unchanged — not pushed');
+        foreach (['sAMAccountName', 'userPrincipalName', 'mail'] as $delayed) {
+            self::assertArrayNotHasKey($delayed, $props,
+                "{$delayed} must wait for the scheduled rename cutover, never the edit phase");
+        }
+    }
+
+    public function testEditNameDriftHonorsPreferredNameInDisplayName(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Robert', 'last_name' => 'Hill',
+            'preferred_name' => 'Bob',
+            'username' => 'rhill', 'email' => 'rhill@tusc.k12.al.us', 'upn' => 'rhill@tusc.k12.al.us',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'rhill',
+            'userPrincipalName' => 'rhill@tusc.k12.al.us',
+            'mail'              => 'rhill@tusc.k12.al.us',
+            'givenName'         => 'Robert',
+            'sn'                => 'Hill',
+            'displayName'       => 'Robert Hill',
+            'accountDisabled'   => 'false',
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['applied']);
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
+        self::assertSame('Bob Hill', $props['displayName'], 'display name is preferred-name aware, like create');
+        self::assertArrayNotHasKey('givenName', $props, 'givenName stays the legal first name');
+    }
+
     public function testEditIsANoOpWhenAdAlreadyMatches(): void
     {
         $db = $this->db();
@@ -361,6 +428,9 @@ final class AdaxesReconcilerTest extends TestCase
             'sAMAccountName'    => 'insync',
             'userPrincipalName' => 'insync@tusc.k12.al.us',
             'mail'              => 'insync@tusc.k12.al.us',
+            'givenName'         => 'In',
+            'sn'                => 'Sync',
+            'displayName'       => 'In Sync',
             'accountDisabled'   => 'false',
         ]]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
@@ -388,6 +458,9 @@ final class AdaxesReconcilerTest extends TestCase
             'sAMAccountName'    => 'jsmith',
             'userPrincipalName' => 'jsmith@tusc.k12.al.us',
             'mail'              => 'jsmith@tusc.k12.al.us',
+            'givenName'         => 'Jo',
+            'sn'                => 'Smith',
+            'displayName'       => 'Jo Smith',
             'accountDisabled'   => 'false',
             'department'        => 'Central Office',
             'physicalDeliveryOfficeName' => 'Central Office',
@@ -431,6 +504,9 @@ final class AdaxesReconcilerTest extends TestCase
             'sAMAccountName'    => 'jsmith',
             'userPrincipalName' => 'jsmith@tusc.k12.al.us',
             'mail'              => 'jsmith@tusc.k12.al.us',
+            'givenName'         => 'Jo',
+            'sn'                => 'Smith',
+            'displayName'       => 'Jo Smith',
             'accountDisabled'   => 'false',
             'department'        => 'Central Office',
             'physicalDeliveryOfficeName' => 'Central Office',
