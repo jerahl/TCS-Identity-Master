@@ -298,9 +298,17 @@ final class AdaxesReconciler
     // ---- Phase 2: edit ------------------------------------------------------
 
     /**
-     * Push golden→AD attribute drift (UPN, mail) for active/pending people with a
-     * linked objectGUID. Never touches sAMAccountName (immutable) and never blanks
-     * an AD value from an empty golden field.
+     * Push golden→AD attribute drift for active/pending people with a linked
+     * objectGUID: UPN + mail (from the identity comparison), the person's NAME
+     * (givenName / sn / displayName — pushed immediately when the golden name
+     * changes, e.g. a marriage-related last-name change, so AD reflects it as
+     * fast as Google and PowerSchool do), and the operational mappings. The
+     * username/email/UPN *rename* deliberately does NOT happen here — that is
+     * the RenameService scheduled cutover (RENAME_NOTICE_DAYS): the golden
+     * username/email/upn only move at cutover, so until then this phase sees no
+     * mail/UPN drift and only the name attributes change. Never touches
+     * sAMAccountName (immutable) and never blanks an AD value from an empty
+     * golden field.
      *
      * @return array{applied:int,noop:int,skipped:int,errors:int,items:list<Item>}
      */
@@ -333,6 +341,9 @@ final class AdaxesReconciler
 
             $adAttrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
             $attrs = self::editDelta($env['comparison'] ?? []);
+            // Name drift: a legal name change pushes givenName/sn/displayName right
+            // away; the username/email/UPN rename stays on the scheduled cutover.
+            $attrs += self::nameDrift($p, $adAttrs);
             // Operational drift beyond the identity comparison: title/department and
             // their mirrors (department drives the per-school Everyone groups, so a
             // school move MUST propagate or downstream group logic breaks).
@@ -1124,6 +1135,37 @@ final class AdaxesReconciler
             $person['email'] = $email;
         }
         return GoogleWorkspaceService::googleEmailFor($person);
+    }
+
+    /**
+     * Name-attribute drift for the edit phase: golden first/last (and the derived
+     * display name, preferred-name aware like createAttrs) vs live AD
+     * givenName/sn/displayName. Pushed IMMEDIATELY on a name change — unlike the
+     * username/email/UPN rename, which stays on the RenameService scheduled
+     * cutover — so AD reflects a legal name change as soon as the golden record
+     * does, matching Google and PowerSchool. Compared exactly (post-trim) so
+     * casing corrections propagate; empty golden parts never blank an AD value.
+     *
+     * @param array<string,mixed>  $p
+     * @param array<string,string> $envAttrs normalized (lowercase-keyed) AD attributes
+     * @return array<string,string>
+     */
+    private static function nameDrift(array $p, array $envAttrs): array
+    {
+        $first = trim((string) ($p['first_name'] ?? ''));
+        $last  = trim((string) ($p['last_name'] ?? ''));
+        $display = trim((trim((string) ($p['preferred_name'] ?? '')) ?: $first) . ' ' . $last);
+
+        $out = [];
+        foreach (['givenName' => $first, 'sn' => $last, 'displayName' => $display] as $attr => $want) {
+            if ($want === '') {
+                continue; // never blank out AD from an empty golden field
+            }
+            if ($want !== trim((string) ($envAttrs[strtolower($attr)] ?? ''))) {
+                $out[$attr] = $want;
+            }
+        }
+        return $out;
     }
 
     /**

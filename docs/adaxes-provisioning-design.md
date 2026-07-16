@@ -171,6 +171,15 @@ Push the diffs the verification panel already computes.
 - Reconciler extends to compute the delta from `compareToGolden()` and apply only
   fields that `differ`/`missing` on the AD side (never touch `sAMAccountName` —
   immutable).
+- **Also kept in sync: the person's name.** A golden-record name change (e.g. a
+  marriage-related last-name change from NextGen) pushes `givenName`, `sn`, and
+  `displayName` (preferred-or-legal first + last, same rule as create)
+  **immediately** — so AD reflects the new name as fast as Google and
+  PowerSchool do. The username/email/UPN **rename** deliberately does *not*
+  happen here: that is the RenameService scheduled cutover
+  (`RENAME_NOTICE_DAYS`, default 7, with notice emails and a delivering alias
+  afterward). Until the cutover fires, the golden username/email/upn still hold
+  the old identity, so this phase sees no mail/UPN drift — only the name moves.
 - **Also kept in sync: the operational mappings.** OneSync writes these on every
   account; IDM keeps them in sync (each is pushed only when non-empty and it
   differs from AD):
