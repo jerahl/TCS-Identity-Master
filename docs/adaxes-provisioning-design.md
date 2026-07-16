@@ -162,6 +162,21 @@ the object itself.
   not enough — could be the wrong account). Threshold valve
   (`ADAXES_WRITE_MAX_DISABLES_RATIO`, mirrors `NEXTGEN_DROPOUT_MAX_RATIO`) blocks a
   mass-expire from a truncated feed.
+- **Archiving — the scan does not grow forever.** Every run re-verifies every
+  golden-disabled person against live AD (one remote lookup each), so leavers
+  accumulating over years would make the nightly run ever slower. But a leaver's
+  AD lifecycle has a terminal state: IDM expires the account, then **Adaxes' own
+  scheduled task moves expired users into the disabled OU** after its holding
+  period. When the reconciler sees an account that is *both* already expired
+  *and* in (or under) `AD_DISABLED_OU`, it stamps `person.ad_archived_at`
+  (migration `0024`) and excludes the person from all future disable scans —
+  outcome `archived` in the run log. Re-hires re-enter coverage automatically:
+  the phase first clears the stamp for anyone whose golden status is
+  active/pending again (outcome `unarchived`), so the returning-employee
+  correlate/re-enable path — and any *later* departure — work exactly as before.
+  `AD_DISABLED_OU` unset = archiving off (scan everyone, as before); archive
+  bookkeeping is gated with the writes, so dry-run / report-only runs change
+  nothing (`would-archive`).
 
 ### Phase 2 — Edit / attribute drift
 

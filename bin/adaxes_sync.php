@@ -169,7 +169,7 @@ foreach (['disable', 'edit', 'create', 'groups'] as $phase) {
         }
     }
     $summary = [];
-    foreach (['candidates', 'applied', 'added', 'removed', 'edited', 'created', 'correlated', 'rehired', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
+    foreach (['candidates', 'applied', 'added', 'removed', 'edited', 'created', 'correlated', 'rehired', 'archived', 'unarchived', 'noop', 'review', 'capped', 'skipped', 'errors'] as $k) {
         if (isset($r[$k])) {
             $summary[] = "{$k} {$r[$k]}";
         }
