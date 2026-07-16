@@ -242,6 +242,113 @@ final class PersonService
     }
 
     /**
+     * What IDM's OWN syncs last did for this person — one card per destination
+     * IDM provisions directly (AD via Adaxes, Google Workspace), for the person
+     * page's Provisioning status panel. Unlike syncStatus() above (which returns
+     * everything in account_sync_status, including OneSync-reported rows), this
+     * only reads IDM-written records:
+     *
+     *   - AD: the person's latest service_run_log entry from an Adaxes run
+     *     (bin/adaxes_sync.php) — expired / edited / created / error / review.
+     *   - Google: the IDM-written 'Google Workspace' account_sync_status row
+     *     (GoogleProvisioner reflects every direct action there, button and
+     *     batch alike) or the person's latest Google run-log entry (which also
+     *     captures batch scan errors that never reach a write) — whichever is
+     *     newer.
+     *
+     * @return list<array{key:string,label:string,reported:bool,badge:string,tone:string,when:string,message:string,href:?string}>
+     */
+    public function idmSyncStatus(int $personId): array
+    {
+        $ad = $this->cardFromRunLog('ad', 'Active Directory (Adaxes)', 'adaxes',
+            $this->lastRunLogEntry($personId, 'adaxes'));
+
+        // Google: two IDM-written sources — pick whichever reported most recently.
+        $entry = $this->lastRunLogEntry($personId, 'google');
+        $row = $this->googleDirectStatus($personId);
+        if ($row !== null && ($entry === null || (string) ($row['last_sync_at'] ?? '') >= (string) ($entry['logged_at'] ?? ''))) {
+            $google = [
+                'key'      => 'google',
+                'label'    => 'Google Workspace',
+                'reported' => true,
+                'badge'    => (string) ($row['last_action'] ?? '') !== '' ? (string) $row['last_action'] : 'synced',
+                'tone'     => ($row['last_status'] ?? '') === 'Fail' ? 'fail' : 'ok',
+                'when'     => (string) ($row['last_sync_at'] ?? ''),
+                'message'  => (string) ($row['message'] ?? ''),
+                'href'     => url('/outputs/logs', ['job' => 'google']),
+            ];
+        } else {
+            $google = $this->cardFromRunLog('google', 'Google Workspace', 'google', $entry);
+        }
+
+        return [$ad, $google];
+    }
+
+    /** Build a Provisioning-status card from a service_run_log entry (or its absence). */
+    private function cardFromRunLog(string $key, string $label, string $job, ?array $entry): array
+    {
+        if ($entry === null) {
+            return ['key' => $key, 'label' => $label, 'reported' => false,
+                'badge' => '', 'tone' => 'muted', 'when' => '', 'message' => '', 'href' => null];
+        }
+        return [
+            'key'      => $key,
+            'label'    => $label,
+            'reported' => true,
+            'badge'    => (string) $entry['outcome'],
+            'tone'     => match ((string) $entry['level']) {
+                'attention' => 'fail',
+                'change'    => 'ok',
+                default     => 'muted',
+            },
+            'when'     => (string) ($entry['logged_at'] ?? ''),
+            'message'  => (string) ($entry['detail'] ?? ''),
+            'href'     => url('/outputs/logs', ['job' => $job, 'run' => (int) $entry['run_id']]),
+        ];
+    }
+
+    /**
+     * The person's most recent detailed log entry from one job's runs, or null.
+     * Never throws — the table only exists once migration 0023 has run, and the
+     * person page must not 500 before then.
+     */
+    private function lastRunLogEntry(int $personId, string $job): ?array
+    {
+        try {
+            $stmt = $this->db()->prepare(
+                'SELECT l.outcome, l.level, l.detail, l.logged_at, l.run_id
+                   FROM service_run_log l
+                   JOIN service_run r ON r.run_id = l.run_id
+                  WHERE l.person_id = :id AND r.job = :job
+                  ORDER BY l.log_id DESC LIMIT 1'
+            );
+            $stmt->execute([':id' => $personId, ':job' => $job]);
+            $row = $stmt->fetch();
+            return $row === false ? null : $row;
+        } catch (\Throwable $e) {
+            error_log('[idm] person run-log status: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * The IDM-written Google status row — GoogleProvisioner reflects every
+     * direct action (person-page buttons and the batch sync) under exactly this
+     * destination label, so filtering on it excludes OneSync-reported rows.
+     */
+    private function googleDirectStatus(int $personId): ?array
+    {
+        $stmt = $this->db()->prepare(
+            'SELECT last_action, last_status, last_sync_at, message
+               FROM account_sync_status
+              WHERE person_id = :id AND destination = :dest'
+        );
+        $stmt->execute([':id' => $personId, ':dest' => \App\Sync\GoogleProvisioner::DESTINATION]);
+        $row = $stmt->fetch();
+        return $row === false ? null : $row;
+    }
+
+    /**
      * The most recent NextGen and PowerSchool values staged for this person, for
      * the field-by-field verification panel. NextGen comes back as the raw feed
      * row (keyed by CSV header); PowerSchool as the `fields` snapshot the importer

@@ -211,28 +211,25 @@ $eventTitle = [
         </div>
       </div>
 
-      <!-- Provisioning status (one per destination) -->
+      <!-- Provisioning status: what IDM's own syncs last did for this person -->
       <div class="panel">
         <h2 class="panel__title">Provisioning status</h2>
-        <p class="panel__note" style="margin:4px 0 14px;">Per-destination state from OneSync (AD · Google · Raptor · PowerSchool).</p>
+        <p class="panel__note" style="margin:4px 0 14px;">The last action IDM's own syncs took for this person — Active Directory via Adaxes and Google Workspace direct. Full run logs are on the <a href="<?= e(url('/outputs/logs')) ?>">Outputs page</a>.</p>
         <div class="sync-grid">
-          <?php foreach ($syncStatus as $sy):
-              $reported = !empty($sy['reported']);
-              $mod = $reported ? Present::syncMod($sy['last_status']) : 'muted';
-          ?>
-          <div class="sync-card<?= $mod === 'fail' ? ' sync-card--fail' : '' ?>">
+          <?php foreach ($syncStatus as $sy): $reported = !empty($sy['reported']); ?>
+          <div class="sync-card<?= $sy['tone'] === 'fail' ? ' sync-card--fail' : '' ?>">
             <div class="sync-card__head">
-              <span class="sync-card__dest"><?= e($sy['label'] ?? $sy['destination']) ?></span>
-              <span class="sync-badge sync-badge--<?= e($mod) ?>"><?= e($reported ? $dash($sy['last_status']) : 'Not synced') ?></span>
+              <span class="sync-card__dest"><?= e($sy['label']) ?></span>
+              <span class="sync-badge sync-badge--<?= e($reported ? $sy['tone'] : 'muted') ?>"><?= e($reported ? $sy['badge'] : 'No sync activity') ?></span>
             </div>
-            <?php if ($reported): $stale = ($sy['fresh_state'] ?? '') === 'stale'; ?>
+            <?php if ($reported): ?>
               <div class="sync-card__meta">
-                <?= e($dash($sy['last_action'])) ?> · <?= e($sy['fresh_label'] ?? $dash($sy['last_sync_at'])) ?>
-                <?php if ($stale): ?><span class="sync-badge sync-badge--fail" style="margin-left:6px;">stale</span><?php endif; ?>
+                <?= e($dash($sy['when'])) ?>
+                <?php if (!empty($sy['href'])): ?> · <a href="<?= e($sy['href']) ?>">run log →</a><?php endif; ?>
               </div>
-              <?php if ($mod === 'fail' && $sy['message']): ?><div class="sync-card__msg"><?= e($sy['message']) ?></div><?php endif; ?>
+              <?php if ($sy['message'] !== ''): ?><div class="sync-card__msg"<?= $sy['tone'] !== 'fail' ? ' style="color:inherit;"' : '' ?>><?= e($sy['message']) ?></div><?php endif; ?>
             <?php else: ?>
-              <div class="sync-card__meta">awaiting OneSync</div>
+              <div class="sync-card__meta">no IDM sync has acted on this person yet</div>
             <?php endif; ?>
           </div>
           <?php endforeach; ?>
