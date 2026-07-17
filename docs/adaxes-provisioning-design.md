@@ -413,6 +413,12 @@ Rules (from the OneSync destination):
   - `Raptor_EntryAdmin` — *Secretary* or *bookkeeper*
   - `Raptor_GlobalAdmin` — *Network Administrator* or *Security Specialist*
   - `Raptor_EmergencyManagementUser` — everyone else
+- **Raptor StudentSafeUser** (additive — *in addition to* the role above, not
+  instead of it): `Raptor_StudentSafeUser` for titles containing *Principal*,
+  *Assistant Principal*, *Social Worker*, or *Counselor*. A Principal keeps
+  `Raptor_BuildingAdmin` and also joins `Raptor_StudentSafeUser`. It is title-driven
+  (not an override choice) and is suppressed only by a `none` Raptor exception
+  (`GroupPolicy::studentSafeGroup`).
 
   **Per-person exceptions.** The title rule is the default; an admin can override
   the Raptor role for an individual on the person page (the *Raptor role

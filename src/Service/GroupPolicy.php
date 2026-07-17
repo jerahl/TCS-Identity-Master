@@ -27,6 +27,9 @@ use App\Config;
  *    Computer Tech), ClientAdmin (IT Technician Supervisor, Safety Contractor,
  *    Director of Technology), EntryAdmin (Secretary, bookkeeper), GlobalAdmin
  *    (Network Administrator, Security Specialist), else EmergencyManagementUser.
+ *  - Raptor StudentSafeUser — granted IN ADDITION to the role above (not
+ *    mutually exclusive) when the title is Principal, Assistant Principal,
+ *    Social Worker, or Counselor. Suppressed only by a 'none' Raptor override.
  *
  * Group *names* are configurable (the exact AD names must be confirmed before
  * enabling); the matching *conditions* are the load-bearing policy encoded here.
@@ -74,6 +77,17 @@ final class GroupPolicy
     private const RAPTOR_DEFAULT_ENV = 'AD_GROUP_RAPTOR_DEFAULT';
     private const RAPTOR_DEFAULT_NAME = 'Raptor_EmergencyManagementUser';
 
+    /**
+     * Additive Raptor group (env key, default name, title keywords). Unlike the
+     * mutually-exclusive role above, StudentSafeUser is granted ON TOP OF a
+     * person's Raptor role whenever the title matches — a Principal keeps
+     * BuildingAdmin AND joins StudentSafeUser. ('Principal' also matches
+     * 'Assistant Principal' as a substring; both are listed for clarity.)
+     */
+    private const RAPTOR_STUDENT_SAFE_ENV = 'AD_GROUP_RAPTOR_STUDENT_SAFE';
+    private const RAPTOR_STUDENT_SAFE_NAME = 'Raptor_StudentSafeUser';
+    private const RAPTOR_STUDENT_SAFE_KEYWORDS = ['Principal', 'Assistant Principal', 'Social Worker', 'Counselor'];
+
     private string $allFaculty;
     private string $transportation;
     private string $everyoneSuffix;
@@ -82,6 +96,8 @@ final class GroupPolicy
     /** @var array<string,string> Raptor role key → configured group cn (priority order). */
     private array $raptorGroups;
     private string $raptorDefault;
+    /** Additive Raptor group cn (StudentSafeUser), granted alongside the role. */
+    private string $raptorStudentSafe;
 
     public function __construct(
         ?string $allFaculty = null,
@@ -101,6 +117,7 @@ final class GroupPolicy
             $this->raptorGroups[$key] = (string) Config::get($rule['env'], $rule['default']);
         }
         $this->raptorDefault = (string) Config::get(self::RAPTOR_DEFAULT_ENV, self::RAPTOR_DEFAULT_NAME);
+        $this->raptorStudentSafe = (string) Config::get(self::RAPTOR_STUDENT_SAFE_ENV, self::RAPTOR_STUDENT_SAFE_NAME);
     }
 
     /**
@@ -125,6 +142,11 @@ final class GroupPolicy
         }
         $groups[] = self::isA1($title, $personType) ? $this->a1 : $this->a3;
         $groups[] = $this->resolveRaptor($title, $raptorOverride);
+        // StudentSafeUser is additive (on top of the role), by title — but a
+        // 'none' override opts the person out of every Raptor group, this one too.
+        if (strtolower(trim($raptorOverride)) !== 'none') {
+            $groups[] = $this->studentSafeGroup($title);
+        }
 
         // Dedupe, preserve order, drop any empties.
         $out = [];
@@ -161,6 +183,18 @@ final class GroupPolicy
     }
 
     /**
+     * The additive Raptor StudentSafeUser group cn for a person, or '' when the
+     * title doesn't qualify. Granted alongside (not instead of) the Raptor role;
+     * see desiredGroups() for how a 'none' override suppresses it.
+     */
+    public function studentSafeGroup(string $title): string
+    {
+        return self::titleContainsAny($title, self::RAPTOR_STUDENT_SAFE_KEYWORDS)
+            ? $this->raptorStudentSafe
+            : '';
+    }
+
+    /**
      * The per-person Raptor override choices for the admin control: stable role key
      * → the label shown. '' = automatic; each role key maps to its (configured) AD
      * group name; 'none' excludes the person from every Raptor group.
@@ -194,7 +228,8 @@ final class GroupPolicy
 
     /**
      * The groups the policy can ever assign that are NOT per-school — All-Faculty,
-     * Transportation, both M365 licenses, and every Raptor role. Combined with the
+     * Transportation, both M365 licenses, every Raptor role, and the additive
+     * Raptor StudentSafeUser group. Combined with the
      * per-school Everyone groups (via managedGroups()) this is the *exact* set the
      * reconciler is allowed to remove someone from.
      *
@@ -202,7 +237,7 @@ final class GroupPolicy
      */
     public function fixedManagedGroups(): array
     {
-        $fixed = [$this->allFaculty, $this->transportation, $this->a1, $this->a3, $this->raptorDefault];
+        $fixed = [$this->allFaculty, $this->transportation, $this->a1, $this->a3, $this->raptorDefault, $this->raptorStudentSafe];
         foreach ($this->raptorGroups as $cn) {
             $fixed[] = $cn;
         }
