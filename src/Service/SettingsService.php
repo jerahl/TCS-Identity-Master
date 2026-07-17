@@ -95,6 +95,7 @@ final class SettingsService
                 ['key' => 'AD_GROUP_RAPTOR_ENTRY_ADMIN', 'label' => 'Raptor EntryAdmin group', 'type' => 'string', 'help' => 'Titles: Secretary, bookkeeper (default Raptor_EntryAdmin).'],
                 ['key' => 'AD_GROUP_RAPTOR_GLOBAL_ADMIN', 'label' => 'Raptor GlobalAdmin group', 'type' => 'string', 'help' => 'Titles: Network Administrator, Security Specialist (default Raptor_GlobalAdmin).'],
                 ['key' => 'AD_GROUP_RAPTOR_DEFAULT', 'label' => 'Raptor default group', 'type' => 'string', 'help' => 'Everyone with no title match (default Raptor_EmergencyManagementUser).'],
+                ['key' => 'AD_GROUP_RAPTOR_STUDENT_SAFE', 'label' => 'Raptor StudentSafeUser group', 'type' => 'string', 'help' => 'Additive — granted on top of the Raptor role for titles Principal, Assistant Principal, Social Worker, Counselor (default Raptor_StudentSafeUser).'],
                 ['key' => 'ADAXES_GROUP_ADD_PATH', 'label' => 'Group add path', 'type' => 'string', 'help' => 'REST path to add a member; blank = groups phase is report-only.'],
                 ['key' => 'ADAXES_GROUP_REMOVE_PATH', 'label' => 'Group remove path', 'type' => 'string', 'help' => 'REST path to remove a member; blank = groups phase is report-only.'],
                 ['key' => 'ADAXES_GROUP_PARAM', 'label' => 'Group param name', 'type' => 'string', 'help' => 'Query/body param naming the group (default "group").'],

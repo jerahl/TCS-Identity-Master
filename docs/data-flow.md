@@ -271,7 +271,9 @@ rather than duplicating it. The run is four ordered phases:
    M365 license group (A1 by title keywords + contractor/sub/intern, else A3),
    and one Raptor role group by title (BuildingAdmin / ClientAdmin / EntryAdmin
    / GlobalAdmin, else EmergencyManagement) — with a **per-person Raptor
-   exception** an admin can set on the person page.
+   exception** an admin can set on the person page — plus the additive
+   Raptor_StudentSafeUser group for Principals, Assistant Principals, Social
+   Workers, and Counselors (granted on top of their Raptor role).
 
 **OU placement:** `{type-leaf,] {school.ad_ou}, {AD_PARENT_OU}, {AD_BASE_DN}`;
 transportation staff go to a transportation OU with no building segment, SROs

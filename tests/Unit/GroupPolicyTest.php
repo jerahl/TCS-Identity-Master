@@ -173,13 +173,75 @@ final class GroupPolicyTest extends TestCase
         self::assertFalse($this->policy()->isValidRaptorOverride('bogus-role'));
     }
 
-    public function testExactlyOneRaptorAndOneLicenseGroup(): void
+    public function testExactlyOneRaptorRoleAndOneLicenseGroup(): void
     {
+        // The Raptor ROLE is exactly one (StudentSafeUser is additive, see below).
         $groups = $this->desired('Principal', 'faculty', 'CO', false);
-        $raptor = array_filter($groups, static fn($g) => str_starts_with($g, 'Raptor_'));
-        self::assertCount(1, $raptor);
+        $roles = array_filter(
+            $groups,
+            static fn($g) => str_starts_with($g, 'Raptor_') && $g !== 'Raptor_StudentSafeUser',
+        );
+        self::assertCount(1, $roles);
         $license = array_filter($groups, static fn($g) => in_array($g, ['A1', 'A3'], true));
         self::assertCount(1, $license);
+    }
+
+    #[DataProvider('studentSafeCases')]
+    public function testStudentSafeUserIsAdditiveByTitle(string $title): void
+    {
+        // Granted ON TOP OF the person's Raptor role, not instead of it.
+        $groups = $this->desired($title, 'faculty', 'CO', false);
+        self::assertContains('Raptor_StudentSafeUser', $groups);
+    }
+
+    /** @return array<string,array{0:string}> */
+    public static function studentSafeCases(): array
+    {
+        return [
+            'principal'           => ['Principal - High'],
+            'assistant principal' => ['Assistant Principal'],
+            'social worker'       => ['School Social Worker'],
+            'counselor'           => ['Guidance Counselor'],
+            'plural counselors'   => ['Counselors'],
+        ];
+    }
+
+    public function testPrincipalKeepsRoleAndAlsoGetsStudentSafeUser(): void
+    {
+        // A Principal earns BuildingAdmin by title AND StudentSafeUser additively.
+        $groups = $this->desired('Principal', 'faculty', 'CO', false);
+        self::assertContains('Raptor_BuildingAdmin', $groups);
+        self::assertContains('Raptor_StudentSafeUser', $groups);
+    }
+
+    public function testNonQualifyingTitleGetsNoStudentSafeUser(): void
+    {
+        $groups = $this->desired('Teacher - Math', 'faculty', 'CO', false);
+        self::assertNotContains('Raptor_StudentSafeUser', $groups);
+    }
+
+    public function testStudentSafeUserSuppressedByNoneOverride(): void
+    {
+        // 'none' opts out of EVERY Raptor group, including the additive one.
+        $groups = $this->policy()->desiredGroups('Principal', 'faculty', 'CO', false, 'none');
+        self::assertNotContains('Raptor_StudentSafeUser', $groups);
+        self::assertSame([], array_filter($groups, static fn($g) => str_starts_with($g, 'Raptor_')));
+    }
+
+    public function testStudentSafeUserStillGrantedWhenRoleOverridden(): void
+    {
+        // A forced role override changes only the exclusive role; StudentSafeUser
+        // stays title-driven, so a Principal forced to ClientAdmin keeps it.
+        $groups = $this->policy()->desiredGroups('Principal', 'faculty', 'CO', false, 'clientadmin');
+        self::assertContains('Raptor_ClientAdmin', $groups);
+        self::assertContains('Raptor_StudentSafeUser', $groups);
+        self::assertNotContains('Raptor_BuildingAdmin', $groups);
+    }
+
+    public function testStudentSafeUserIsInManagedAndFixedSets(): void
+    {
+        self::assertContains('Raptor_StudentSafeUser', $this->policy()->fixedManagedGroups());
+        self::assertArrayHasKey('raptor_studentsafeuser', $this->policy()->managedGroups(['CO']));
     }
 
     public function testFullFacultyMembershipSet(): void
