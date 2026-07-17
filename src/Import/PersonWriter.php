@@ -518,7 +518,7 @@ final class PersonWriter
             return false;
         }
 
-        $changes = self::diffHrFields($before, $row, $this->fieldOverrides($personId));
+        $changes = self::diffHrFields($before, $row, $this->hrOverridesFor($personId, $row));
         if ($changes === []) {
             return false;
         }
@@ -619,7 +619,26 @@ final class PersonWriter
     public function previewHrChanges(int $personId, NormalizedRow $row): array
     {
         $before = $this->snapshot($personId);
-        return $before === null ? [] : self::diffHrFields($before, $row, $this->fieldOverrides($personId));
+        return $before === null ? [] : self::diffHrFields($before, $row, $this->hrOverridesFor($personId, $row));
+    }
+
+    /**
+     * The effective override list for an incoming row: the operator-pinned
+     * fields, plus primary_school_id when this row's source must yield placement
+     * to NextGen (see placementYieldsToNextgen) — so the person-level school
+     * write obeys the same precedence as the assignment primary flag, and
+     * previews show exactly what updateHrFields() would do.
+     *
+     * @return list<string>
+     */
+    private function hrOverridesFor(int $personId, NormalizedRow $row): array
+    {
+        $overridden = $this->fieldOverrides($personId);
+        if (!in_array('primary_school_id', $overridden, true)
+            && $this->placementYieldsToNextgen(self::assignmentSource($row->system), $personId)) {
+            $overridden[] = 'primary_school_id';
+        }
+        return $overridden;
     }
 
     /** True if a (system, source_key) crosswalk row already exists (so no new link would be made). */
@@ -915,23 +934,38 @@ final class PersonWriter
         }
         $source = self::assignmentSource($row->system);
 
+        // Who may move the primary school: an operator pin freezes placement
+        // against every feed, and NextGen (the HR source of record) outranks the
+        // other feeds — a powerschool/intern/sub/contractor row claims the
+        // primary only when neither applies. This is what keeps a lagging
+        // PowerSchool building from flipping primary_school_id back after every
+        // import (the feeds run in a fixed order, so last-writer-wins made the
+        // final feed of the night the placement authority by accident).
+        $overridden = $this->fieldOverrides($personId);
+        $primaryPinned = in_array('primary_school_id', $overridden, true);
+        $claimsPrimary = $row->isPrimary && !$primaryPinned
+            && !$this->placementYieldsToNextgen($source, $personId);
+
         $find = $this->db->prepare(
-            'SELECT id, title FROM assignment WHERE person_id = :pid AND school_id = :sid AND source = :src LIMIT 1'
+            'SELECT id, title, is_primary FROM assignment WHERE person_id = :pid AND school_id = :sid AND source = :src LIMIT 1'
         );
         $find->execute([':pid' => $personId, ':sid' => $row->schoolId, ':src' => $source]);
         $existing = $find->fetch();
 
         if ($existing !== false) {
             // A manually overridden title is preserved; other columns still sync.
-            $title = in_array('title', $this->fieldOverrides($personId), true)
+            $title = in_array('title', $overridden, true)
                 ? ($existing['title'] ?? null)
                 : $row->title;
+            // Pinned placement → the operator owns the primary flags; leave the
+            // row's flag exactly as it is.
+            $pri = $primaryPinned ? (int) $existing['is_primary'] : ($claimsPrimary ? 1 : 0);
             $this->db->prepare(
                 'UPDATE assignment SET title = :title, job_code = :jc, fte = :fte, is_primary = :pri,
                         effective_date = :eff, end_date = :end WHERE id = :id'
             )->execute([
                 ':title' => $title, ':jc' => $row->jobCode, ':fte' => $row->fte,
-                ':pri' => $row->isPrimary ? 1 : 0, ':eff' => $row->hireDate, ':end' => $row->endDate,
+                ':pri' => $pri, ':eff' => $row->hireDate, ':end' => $row->endDate,
                 ':id' => (int) $existing['id'],
             ]);
             $assignmentId = (int) $existing['id'];
@@ -941,7 +975,7 @@ final class PersonWriter
                  VALUES (:pid, :sid, :title, :jc, :fte, :pri, :eff, :end, :src)'
             )->execute([
                 ':pid' => $personId, ':sid' => $row->schoolId, ':title' => $row->title, ':jc' => $row->jobCode,
-                ':fte' => $row->fte, ':pri' => $row->isPrimary ? 1 : 0, ':eff' => $row->hireDate,
+                ':fte' => $row->fte, ':pri' => $claimsPrimary ? 1 : 0, ':eff' => $row->hireDate,
                 ':end' => $row->endDate, ':src' => $source,
             ]);
             $assignmentId = (int) $this->db->lastInsertId();
@@ -950,12 +984,32 @@ final class PersonWriter
         }
 
         // Maintain a single primary + the person's primary_school_id.
-        if ($row->isPrimary) {
+        if ($claimsPrimary) {
             $this->db->prepare('UPDATE assignment SET is_primary = 0 WHERE person_id = :pid AND id <> :id')
                 ->execute([':pid' => $personId, ':id' => $assignmentId]);
             $this->db->prepare('UPDATE person SET primary_school_id = :sid WHERE person_id = :pid')
                 ->execute([':sid' => $row->schoolId, ':pid' => $personId]);
         }
+    }
+
+    /**
+     * Whether a row from $source must yield placement (the primary school) to
+     * NextGen: true when the source is one of the OTHER feeds and the person has
+     * any NextGen assignment. NextGen is the HR source of record for where a
+     * person works — the PowerSchool CSV map has documented (and honored) that
+     * rule by not importing school at all; this enforces the same precedence on
+     * every path that does carry a school. NextGen rows and manual operator
+     * writes are never blocked here (the operator's stronger tool is the
+     * primary_school_id pin, which freezes placement against every source).
+     */
+    private function placementYieldsToNextgen(string $source, int $personId): bool
+    {
+        if ($source === 'nextgen' || $source === 'manual') {
+            return false;
+        }
+        $stmt = $this->db->prepare("SELECT 1 FROM assignment WHERE person_id = :pid AND source = 'nextgen' LIMIT 1");
+        $stmt->execute([':pid' => $personId]);
+        return $stmt->fetchColumn() !== false;
     }
 
     /** Queue a candidate for human review (no person change). */

@@ -61,6 +61,7 @@ final class AdaxesReconciler
     private string $upnSuffix;
     private string $baseDn;
     private string $parentOu;
+    private string $disabledOu;
     private bool $setPasswordOnCreate;
 
     /** Optional live-progress callback: fn(string $event, array $data): void. */
@@ -96,6 +97,11 @@ final class AdaxesReconciler
         // container DN, and the shared parent OU every account nests under.
         $this->baseDn          = trim((string) Config::get('AD_BASE_DN', ''), " ,");
         $this->parentOu        = trim((string) Config::get('AD_PARENT_OU', 'OU=Faculty'), " ,");
+        // The OU Adaxes' own scheduled task moves expired users into after its
+        // holding period. Once a leaver's account is expired AND in this OU, the
+        // person is ARCHIVED (person.ad_archived_at) and the disable phase stops
+        // re-verifying them every night — see runDisable. Empty = archiving off.
+        $this->disabledOu      = trim((string) Config::get('AD_DISABLED_OU', ''), " ,");
         // IDM sets the initial password itself on create because Adaxes Business
         // Rules don't fire on REST events. On by default; turn off only if a create
         // Business Rule is (re-)authored to own the password.
@@ -175,13 +181,34 @@ final class AdaxesReconciler
      * the desired date, or — when there is no end date to honor — already expired
      * on any past-or-today date.
      *
-     * @return array{blocked:bool,candidates:int,applied:int,noop:int,skipped:int,errors:int,items:list<Item>}
+     * ARCHIVING keeps this phase from growing without bound: Adaxes' own
+     * scheduled task moves expired users into AD_DISABLED_OU after its holding
+     * period, and once an account is BOTH expired and in that OU the leaver is
+     * fully processed — nothing left to write or watch. Such people are stamped
+     * person.ad_archived_at and excluded from every future scan (no more
+     * per-person live lookups). A re-hire re-enters coverage automatically: the
+     * sweep at the top of the phase clears the stamp for anyone active/pending
+     * again. AD_DISABLED_OU empty = archiving off, scan everyone as before.
+     *
+     * @return array{blocked:bool,candidates:int,applied:int,archived:int,unarchived:int,noop:int,skipped:int,errors:int,items:list<Item>}
      */
     private function runDisable(bool $apply, ?int $limit): array
     {
-        $out = ['blocked' => false, 'candidates' => 0, 'applied' => 0, 'noop' => 0, 'skipped' => 0, 'errors' => 0, 'items' => []];
+        $out = ['blocked' => false, 'candidates' => 0, 'applied' => 0, 'archived' => 0, 'unarchived' => 0, 'noop' => 0, 'skipped' => 0, 'errors' => 0, 'items' => []];
 
-        $people = $this->fetchPeople("status = 'disabled'", $limit);
+        // Returning employees first: an archived person whose golden status is
+        // active/pending again gets the stamp cleared so they re-enter normal
+        // sync coverage (and, should they leave again later, this phase sees
+        // them). Bookkeeping only — no AD write — but still gated like one so a
+        // report-only run changes nothing.
+        if ($apply) {
+            foreach ($this->unarchiveReturned() as $pid => $rname) {
+                $out['unarchived']++;
+                $this->item($out, $pid, $rname, 'disable', 'unarchived', 'returned to active — AD sync coverage resumed');
+            }
+        }
+
+        $people = $this->fetchPeople("status = 'disabled' AND p.ad_archived_at IS NULL", $limit);
         $this->emit('phase', ['phase' => 'disable', 'total' => count($people)]);
         $today = gmdate('Y-m-d');
         $candidates = [];   // [personId => [person, guid, name, expiry, description]]
@@ -227,12 +254,28 @@ final class AdaxesReconciler
             // on any past-or-today date.
             $expiry = AdaxesService::accountExpiryFromEnvelope($env);
             $realExpiry = $expiry !== null && $expiry !== 'Never';
+            $adAttrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
             if ($realExpiry && ($expiry === $desiredDate || ($endDate === '' && $expiry <= $today))) {
+                // Expired AND parked in the disabled OU by Adaxes' scheduled task
+                // → the leaver is fully processed. Archive them so future runs
+                // skip the (slow, per-person) live check entirely.
+                $dn = trim((string) ($adAttrs['distinguishedname'] ?? ''));
+                if ($this->dnInDisabledOu($dn)) {
+                    if (!$apply) {
+                        $this->item($out, $pid, $name, 'disable', 'would-archive',
+                            'expired (' . $expiry . ') and in the disabled OU — would archive (skip future sync checks until re-hire)');
+                    } else {
+                        $this->archive($pid, $dn);
+                        $out['archived']++;
+                        $this->item($out, $pid, $name, 'disable', 'archived',
+                            'expired (' . $expiry . ') and in the disabled OU — archived; skipped by future runs until re-hire');
+                    }
+                    continue;
+                }
                 $out['noop']++;
                 $this->item($out, $pid, $name, 'disable', 'noop', 'AD account already expired (' . $expiry . ')');
                 continue;
             }
-            $adAttrs = is_array($env['attributes'] ?? null) ? $env['attributes'] : [];
             $candidates[$pid] = [
                 'guid'        => $guid,
                 'name'        => $name,
@@ -295,6 +338,66 @@ final class AdaxesReconciler
         return $out;
     }
 
+    /**
+     * Whether a DN sits in (or under) the configured disabled OU — the OU
+     * Adaxes' scheduled task parks expired users in. Case-insensitive and
+     * whitespace-tolerant; AD_DISABLED_OU may be the full OU DN (matched as a
+     * suffix) or a fragment like "OU=Disabled" (matched as a path segment, so
+     * sub-OUs of the disabled OU count too). Empty config or DN = never.
+     */
+    private function dnInDisabledOu(string $dn): bool
+    {
+        if ($this->disabledOu === '' || $dn === '') {
+            return false;
+        }
+        $norm = static fn(string $s): string => strtolower((string) preg_replace('/\s*,\s*/', ',', trim($s, ' ,')));
+        $d = $norm($dn);
+        $ou = $norm($this->disabledOu);
+        return str_ends_with($d, $ou) || str_contains($d, ',' . $ou . ',');
+    }
+
+    /** Stamp a fully-processed leaver as archived (see runDisable) + audit it. */
+    private function archive(int $pid, string $dn): void
+    {
+        $this->db->prepare('UPDATE person SET ad_archived_at = CURRENT_TIMESTAMP WHERE person_id = :id')
+            ->execute([':id' => $pid]);
+        $this->audit->log('person', $pid, 'update',
+            ['ad_archived_at' => null],
+            ['ad_archived_at' => gmdate('Y-m-d H:i:s'), 'dn' => $dn], self::ACTOR);
+        $this->audit->lifecycle($pid, 'update',
+            ['summary' => 'AD leaver archived — account expired and moved to the disabled OU; excluded from sync checks until re-hire.'], self::ACTOR);
+    }
+
+    /**
+     * Clear the archive stamp for everyone whose golden status is active/pending
+     * again (a re-hire), so they re-enter normal sync coverage — in particular,
+     * a LATER departure must be seen by the disable phase again. Honors the
+     * test-cohort restriction like every phase. Returns person_id => name of
+     * everyone unarchived.
+     *
+     * @return array<int,string>
+     */
+    private function unarchiveReturned(): array
+    {
+        $sql = "SELECT person_id, first_name, last_name FROM person
+                WHERE status IN ('active','pending') AND ad_archived_at IS NOT NULL";
+        if ($this->restrictPersonIds !== []) {
+            $sql .= ' AND person_id IN (' . implode(',', array_map('intval', $this->restrictPersonIds)) . ')';
+        }
+        $out = [];
+        foreach ($this->db->query($sql)->fetchAll() as $r) {
+            $pid = (int) $r['person_id'];
+            $this->db->prepare('UPDATE person SET ad_archived_at = NULL WHERE person_id = :id')
+                ->execute([':id' => $pid]);
+            $this->audit->log('person', $pid, 'update',
+                ['ad_archived_at' => 'set'], ['ad_archived_at' => null], self::ACTOR);
+            $this->audit->lifecycle($pid, 'update',
+                ['summary' => 'Returning employee — AD archive flag cleared; sync coverage resumed.'], self::ACTOR);
+            $out[$pid] = self::displayName($r);
+        }
+        return $out;
+    }
+
     // ---- Phase 2: edit ------------------------------------------------------
 
     /**
@@ -302,11 +405,13 @@ final class AdaxesReconciler
      * objectGUID: UPN + mail (from the identity comparison), the person's NAME
      * (givenName / sn / displayName — pushed immediately when the golden name
      * changes, e.g. a marriage-related last-name change, so AD reflects it as
-     * fast as Google and PowerSchool do), and the operational mappings. The
-     * username/email/UPN *rename* deliberately does NOT happen here — that is
-     * the RenameService scheduled cutover (RENAME_NOTICE_DAYS): the golden
-     * username/email/upn only move at cutover, so until then this phase sees no
-     * mail/UPN drift and only the name attributes change. Never touches
+     * fast as Google and PowerSchool do, along with cn — AD's "Full Name" and
+     * the RDN, so the distinguishedName moves too; see cnRenameTarget), and the
+     * operational mappings. The username/email/UPN *rename* deliberately does
+     * NOT happen here — that is the RenameService scheduled cutover
+     * (RENAME_NOTICE_DAYS): the golden username/email/upn only move at cutover,
+     * so until then this phase sees no mail/UPN drift, and the login identity +
+     * email are the ONLY things left to change with the delay. Never touches
      * sAMAccountName (immutable) and never blanks an AD value from an empty
      * golden field.
      *
@@ -344,6 +449,16 @@ final class AdaxesReconciler
             // Name drift: a legal name change pushes givenName/sn/displayName right
             // away; the username/email/UPN rename stays on the scheduled cutover.
             $attrs += self::nameDrift($p, $adAttrs);
+            // …and renames the OBJECT itself: cn (AD's "Full Name") is the RDN, so
+            // pushing the new cn moves the distinguishedName with it. Riding the
+            // same modify keeps the rename atomic with the attribute push and
+            // leaves the delayed RenameService cutover with ONLY username + email.
+            if (isset($attrs['givenName']) || isset($attrs['sn'])) {
+                $newCn = $this->cnRenameTarget($p, $adAttrs);
+                if ($newCn !== null) {
+                    $attrs['cn'] = $newCn;
+                }
+            }
             // Operational drift beyond the identity comparison: title/department and
             // their mirrors (department drives the per-school Everyone groups, so a
             // school move MUST propagate or downstream group logic breaks).
@@ -1166,6 +1281,51 @@ final class AdaxesReconciler
             }
         }
         return $out;
+    }
+
+    /**
+     * The new cn — AD's "Full Name" and the RDN, so pushing it also changes the
+     * distinguishedName — when a person's legal name changed, or null when the
+     * object needs no rename. Same naming rule as create ("First Last",
+     * collision-suffixed with the username) so a rename and a create can never
+     * disagree about what an account should be called.
+     *
+     * Only consulted when givenName/sn actually drifted (a real name change), so
+     * accounts whose cn merely follows an older convention are never mass-renamed
+     * by a routine run. A case-only correction skips the collision search — the
+     * only possible hit is the person themselves. On a genuine collision the
+     * username suffix guarantees uniqueness; when the collision search fails, or
+     * there is no username to suffix with, the rename is skipped this run (the
+     * name attributes still push) and retried on the next.
+     *
+     * @param array<string,mixed>  $p
+     * @param array<string,string> $envAttrs normalized (lowercase-keyed) AD attributes
+     */
+    private function cnRenameTarget(array $p, array $envAttrs): ?string
+    {
+        $desired = trim(trim((string) ($p['first_name'] ?? '')) . ' ' . trim((string) ($p['last_name'] ?? '')));
+        if ($desired === '') {
+            return null; // never rename to an empty name
+        }
+        $current = trim((string) ($envAttrs['cn'] ?? ''));
+        if ($current === '') {
+            $current = self::cnOf(trim((string) ($envAttrs['distinguishedname'] ?? '')));
+        }
+        if ($current === $desired) {
+            return null; // already right (exact, so casing corrections propagate)
+        }
+        if (strcasecmp($current, $desired) === 0) {
+            return $desired; // case-only fix — a cn search would only find ourselves
+        }
+        $res = $this->read->searchByCriteria([['attr' => 'cn', 'value' => $desired]]);
+        if (!$res['ok']) {
+            return null; // couldn't verify uniqueness — don't risk it; retry next run
+        }
+        if (!$res['found']) {
+            return $desired;
+        }
+        $username = trim((string) ($p['username'] ?? ''));
+        return $username !== '' ? $desired . ' (' . $username . ')' : null;
     }
 
     /**

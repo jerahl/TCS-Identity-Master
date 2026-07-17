@@ -173,12 +173,61 @@ final class PowerSchoolStaffExporterTest extends TestCase
     public function testChangedSelectionReportsOldValues(): void
     {
         $res = $this->export();
-        $text = implode("\n", $res['changed']);
+        $changed = $res['changed'];
+        $line = static fn(string $needle): string => implode("\n",
+            array_filter($changed, static fn(string $l): bool => str_contains($l, $needle)));
 
-        self::assertStringContainsString('Foster-Hill, Morgan (person 6) — was Foster, Morgan', $text);
-        self::assertStringContainsString('email was mfoster@example.org', $text);
-        self::assertStringContainsString('Irwin, Jesse (person 7)', $text);
-        self::assertStringContainsString('email was jirwin@example.org', $text);
+        // Person 6: name AND email moved — both reported, name first.
+        self::assertStringContainsString(
+            'Foster-Hill, Morgan (person 6) — name was Foster, Morgan, email was mfoster@example.org',
+            $line('person 6'));
+
+        // Person 7: only the email moved — the line must NOT claim a name change.
+        $irwin = $line('person 7');
+        self::assertStringContainsString('Irwin, Jesse (person 7) — email was jirwin@example.org', $irwin);
+        self::assertStringNotContainsString('name was', $irwin);
+    }
+
+    public function testChangedEmailFromBlankSnapshotReadsBlankNotEmpty(): void
+    {
+        // Isolated fixture (kept out of the shared db() so the count/positional
+        // tests aren't perturbed): one person whose name matches PowerSchool but
+        // whose snapshot email is blank while golden has one — the exact
+        // malformed-log case reported (Bell, Samantha).
+        $db = new PDO('sqlite::memory:');
+        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $db->exec('CREATE TABLE person (
+            person_id INTEGER PRIMARY KEY, person_type TEXT, status TEXT,
+            first_name TEXT, middle_name TEXT, last_name TEXT,
+            alsde_id TEXT, employee_id TEXT, primary_school_id INTEGER,
+            email TEXT, username TEXT, gender TEXT, dob TEXT, hire_date TEXT)');
+        $db->exec('CREATE TABLE school (school_id INTEGER PRIMARY KEY, name TEXT, ps_school_id TEXT)');
+        $db->exec('CREATE TABLE assignment (
+            id INTEGER PRIMARY KEY, person_id INTEGER, school_id INTEGER,
+            title TEXT, is_primary INTEGER DEFAULT 0, end_date TEXT)');
+        $db->exec('CREATE TABLE person_source_id (
+            id INTEGER PRIMARY KEY, person_id INTEGER, system TEXT, source_key TEXT, is_active INTEGER DEFAULT 1)');
+        $db->exec('CREATE TABLE staging_record (
+            id INTEGER PRIMARY KEY, system TEXT, matched_person_id INTEGER,
+            n_first TEXT, n_last TEXT, raw_json TEXT)');
+        $db->exec("INSERT INTO school VALUES (1, 'Central High', '310')");
+        $db->exec("INSERT INTO person VALUES (77, 'faculty', 'active', 'Samantha', NULL, 'Bell',
+            'AL-100077', 'E1077', 1, 'sbell@example.org', 'sbell', 'F', NULL, NULL)");
+        $db->exec("INSERT INTO assignment (person_id, school_id, title, is_primary) VALUES (77, 1, 'Teacher', 1)");
+        $db->exec("INSERT INTO person_source_id (person_id, system, source_key) VALUES (77, 'powerschool', '7777')");
+        $db->exec("INSERT INTO staging_record (system, matched_person_id, n_first, n_last, raw_json)
+                   VALUES ('powerschool', 77, 'Samantha', 'Bell',
+                           '{\"fields\":{\"hr_email\":\"\"}}')");
+
+        $res = $this->export($db);
+        $bell = implode("\n", $res['changed']);
+
+        self::assertSame(1, $res['summary']['changed'], 'a blank PS email with a golden email is a real change');
+        self::assertStringContainsString('Bell, Samantha (person 77) — email was (blank)', $bell);
+        self::assertStringNotContainsString('name was', $bell, 'name is unchanged — not reported');
+        self::assertDoesNotMatchRegularExpression('/email was\s*$/', $bell,
+            'must not trail off into an empty "email was "');
     }
 
     public function testRowsMapTeachersViewColumnsSortedBySchoolId(): void

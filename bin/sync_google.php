@@ -24,6 +24,7 @@ declare(strict_types=1);
  */
 
 use App\Db;
+use App\Service\RunLogRecorder;
 use App\Service\ServiceRunLog;
 use App\Sync\GoogleSync;
 
@@ -73,7 +74,7 @@ if ($onlyIds !== []) {
 // live remote lookup each — so we show progress rather than sit silent), plus
 // each action's result on a real run. Each line is flushed immediately so it
 // appears live even when stdout is piped/redirected (block-buffered).
-$log = $verbose ? static function (string $event, array $d) use ($dryRun): void {
+$console = $verbose ? static function (string $event, array $d) use ($dryRun): void {
     if ($event === 'start') {
         $n = (int) $d['total'];
         fwrite(STDOUT, "Scanning {$n} eligible " . ($n === 1 ? 'person' : 'people') . "…\n");
@@ -106,6 +107,17 @@ $log = $verbose ? static function (string $event, array $d) use ($dryRun): void 
 // Dry runs change nothing, so they aren't recorded.
 $runLog = $dryRun ? null : new ServiceRunLog();
 $runId  = $runLog?->start('google', 'cron', 'system:google_sync');
+
+// Persist the noteworthy events (errors, license blocks, applied actions) as
+// the run's detailed log — what the web console's Outputs log view shows —
+// alongside the optional --verbose console stream. No-op on a dry run.
+$recorder = new RunLogRecorder($runLog, $runId);
+$log = static function (string $event, array $d) use ($recorder, $console): void {
+    $recorder->google($event, $d);
+    if ($console !== null) {
+        $console($event, $d);
+    }
+};
 
 try {
     $result = (new GoogleSync())->run($dryRun, 'system:google_sync', $log, $onlyIds);

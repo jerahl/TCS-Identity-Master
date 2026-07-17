@@ -1,5 +1,5 @@
 <?php
-/** @var array $kpis @var array $activity @var array $feeds @var array $failedSyncs @var array $adSync @var array $googleSync @var array $studentSync @var array $alerts */
+/** @var array $kpis @var array $activity @var array $feeds @var array $adSync @var array $googleSync @var array $studentSync @var array $alerts */
 use App\View\Present;
 
 $k = $kpis;
@@ -47,10 +47,9 @@ $cards = [
     ['label' => 'Pending activation', 'value' => $k['pendingActivation'], 'sub' => 'not yet provisioned', 'tone' => 'amber', 'href' => url('/people', ['status' => 'pending'])],
     ['label' => 'Missing username', 'value' => $k['missingUsername'], 'sub' => 'no account yet', 'tone' => $k['missingUsername'] > 0 ? 'warn' : 'ok', 'href' => url('/people', ['missing' => 1])],
     ['label' => 'Unmapped values', 'value' => $k['unmapped'], 'sub' => 'school + ethnicity', 'tone' => $k['unmapped'] > 0 ? 'warn' : 'ok', 'href' => url('/reference')],
-    ['label' => 'Failed syncs', 'value' => $k['failedSync'], 'sub' => 'last sync failed', 'tone' => $k['failedSync'] > 0 ? 'alert' : 'ok', 'href' => url('/dashboard') . '#failed'],
     ['label' => 'To disable', 'value' => $k['disableFlagged'], 'sub' => 'left, still enabled', 'tone' => $k['disableFlagged'] > 0 ? 'warn' : 'ok', 'href' => url('/review') . '#disable'],
-    ['label' => 'Active Directory sync', 'value' => $adTile['value'], 'sub' => $adTile['sub'], 'tone' => $adTile['tone'], 'href' => url('/admin')],
-    ['label' => 'Google Workspace sync', 'value' => $gTile['value'], 'sub' => $gTile['sub'], 'tone' => $gTile['tone'], 'href' => url('/admin')],
+    ['label' => 'Active Directory sync', 'value' => $adTile['value'], 'sub' => $adTile['sub'], 'tone' => $adTile['tone'], 'href' => url('/outputs')],
+    ['label' => 'Google Workspace sync', 'value' => $gTile['value'], 'sub' => $gTile['sub'], 'tone' => $gTile['tone'], 'href' => url('/outputs')],
     ['label' => 'Students → OneSync', 'value' => $ss['active'], 'sub' => $studentSub, 'tone' => $studentTone, 'href' => url('/dashboard') . '#students'],
     ['label' => 'Last feed run', 'value' => $k['lastFeed'] ? ucfirst($k['lastFeed']['system']) : '—', 'sub' => $k['lastFeed'] ? ($k['lastFeed']['status'] . ' · ' . $k['lastFeed']['started_at']) : 'no imports yet', 'tone' => 'ok', 'href' => url('/import')],
 ];
@@ -154,30 +153,6 @@ $cards = [
     <?php if (!empty($lr['message']) && $lr['status'] === 'failed'): ?>
       <div class="feed__meta" style="color:#94413A;"><?= e($lr['message']) ?></div>
     <?php endif; ?>
-  </div>
-  <?php endif; ?>
-</div>
-
-<div class="panel" id="failed" style="margin-top:18px;">
-  <h2 class="panel__title" style="margin-bottom:4px;">Accounts whose last sync failed</h2>
-  <p class="panel__note" style="margin-bottom:14px;">From per-destination provisioning status (OneSync export log).</p>
-  <?php if ($failedSyncs === []): ?>
-    <p class="muted" style="font-size:12.5px;">No failed syncs 🎉</p>
-  <?php else: ?>
-  <div class="table-wrap">
-    <table class="table">
-      <thead><tr><th>Person</th><th>Destination</th><th>When</th><th>Last error</th></tr></thead>
-      <tbody>
-        <?php foreach ($failedSyncs as $s): ?>
-        <tr<?= $s['person_id'] ? ' class="is-clickable" data-href="' . e(url('/people/' . $s['person_id'])) . '"' : '' ?>>
-          <td class="cell-name"><?= e($s['person_id'] ? trim($s['first_name'] . ' ' . $s['last_name']) : '(unresolved)') ?></td>
-          <td><?= e($s['destination']) ?></td>
-          <td class="mono" style="font-size:12px;"><?= e($s['last_sync_at'] ?? '—') ?></td>
-          <td style="color:#94413A;"><?= e($s['message'] ?? '') ?></td>
-        </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
   </div>
   <?php endif; ?>
 </div>

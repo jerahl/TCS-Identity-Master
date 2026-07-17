@@ -39,6 +39,7 @@ final class AdaxesReconcilerTest extends TestCase
         putenv('AD_BASE_DN');
         putenv(Crypto::KEY_ENV);
         putenv('ADAXES_SET_PASSWORD_ON_CREATE');
+        putenv('AD_DISABLED_OU');
     }
 
     private function db(): PDO
@@ -50,7 +51,7 @@ final class AdaxesReconcilerTest extends TestCase
             person_id INTEGER PRIMARY KEY, person_type TEXT DEFAULT \'faculty\', status TEXT,
             first_name TEXT, last_name TEXT,
             preferred_name TEXT, username TEXT UNIQUE, email TEXT UNIQUE, upn TEXT,
-            username_locked INTEGER DEFAULT 0, username_assigned_at TEXT,
+            username_locked INTEGER DEFAULT 0, username_assigned_at TEXT, ad_archived_at TEXT,
             initial_password_enc BLOB, initial_password_set_at TEXT,
             employee_id TEXT, primary_school_id INTEGER, end_date TEXT,
             raptor_group_override TEXT)');
@@ -246,6 +247,113 @@ final class AdaxesReconcilerTest extends TestCase
         self::assertSame([], $calls); // never hit the writer
     }
 
+    // ---- archiving (fully-processed leavers leave the scan) ------------------
+
+    public function testExpiredLeaverInDisabledOuIsArchivedAndSkippedNextRun(): void
+    {
+        putenv('AD_DISABLED_OU=OU=Disabled Users');
+        $db = $this->db();
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Gone', 'last_name' => 'Forgood']);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // Expired in the past AND parked in the disabled OU by Adaxes' task.
+        $account = [self::GUID1 => [
+            'sAMAccountName'        => 'gforgood',
+            'accountExpirationDate' => '2020-01-01',
+            'distinguishedName'     => 'CN=Gone Forgood,OU=Disabled Users,' . self::BASE_DN,
+        ]];
+        $rec = new AdaxesReconciler($db, $this->read($account), $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(1, $res['disable']['archived']);
+        self::assertSame(0, $res['disable']['noop']);
+        self::assertSame([], $calls, 'archiving is golden-record bookkeeping — no AD write');
+        $stamp = $db->query('SELECT ad_archived_at FROM person WHERE person_id = 1')->fetchColumn();
+        self::assertNotEmpty($stamp, 'ad_archived_at stamped');
+
+        // The next run must not even fetch them — no verify, no items.
+        $res2 = (new AdaxesReconciler($db, $this->read($account), $this->writer($calls)))
+            ->run(dryRun: false, phases: ['disable']);
+        self::assertSame([], $res2['disable']['items'], 'archived people leave the disable scan entirely');
+    }
+
+    public function testExpiredLeaverOutsideDisabledOuStaysANoOpAndUnconfiguredOuNeverArchives(): void
+    {
+        putenv('AD_DISABLED_OU=OU=Disabled Users');
+        $db = $this->db();
+        // Expired, but still in the building OU — Adaxes' task hasn't moved them yet.
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Not', 'last_name' => 'Movedyet']);
+        $this->link($db, 1, self::GUID1);
+        $calls = [];
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'        => 'nmovedyet',
+            'accountExpirationDate' => '2020-01-01',
+            'distinguishedName'     => 'CN=Not Movedyet,OU=CO,OU=Faculty,' . self::BASE_DN,
+        ]]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['disable']);
+        self::assertSame(1, $res['disable']['noop']);
+        self::assertSame(0, $res['disable']['archived']);
+
+        // Same account IN the disabled OU, but AD_DISABLED_OU unset → archiving off.
+        putenv('AD_DISABLED_OU');
+        $db2 = $this->db();
+        $this->seedPerson($db2, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'No', 'last_name' => 'Config']);
+        $this->link($db2, 1, self::GUID1);
+        $read2 = $this->read([self::GUID1 => [
+            'sAMAccountName'        => 'nconfig',
+            'accountExpirationDate' => '2020-01-01',
+            'distinguishedName'     => 'CN=No Config,OU=Disabled Users,' . self::BASE_DN,
+        ]]);
+        $res2 = (new AdaxesReconciler($db2, $read2, $this->writer($calls)))->run(dryRun: false, phases: ['disable']);
+        self::assertSame(1, $res2['disable']['noop']);
+        self::assertSame(0, $res2['disable']['archived']);
+    }
+
+    public function testDryRunReportsWouldArchiveWithoutStamping(): void
+    {
+        putenv('AD_DISABLED_OU=OU=Disabled Users');
+        $db = $this->db();
+        $this->seedPerson($db, ['person_id' => 1, 'status' => 'disabled', 'first_name' => 'Dry', 'last_name' => 'Run']);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'        => 'dryrun',
+            'accountExpirationDate' => '2020-01-01',
+            'distinguishedName'     => 'CN=Dry Run,OU=Archive2025,OU=Disabled Users,' . self::BASE_DN, // sub-OU counts too
+        ]]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: true, phases: ['disable']);
+
+        self::assertSame(0, $res['disable']['archived']);
+        $outcomes = array_column($res['disable']['items'], 'outcome');
+        self::assertContains('would-archive', $outcomes);
+        $stamp = $db->query('SELECT ad_archived_at FROM person WHERE person_id = 1')->fetchColumn();
+        self::assertEmpty($stamp, 'dry run never stamps');
+    }
+
+    public function testRehireIsUnarchivedAndReentersCoverage(): void
+    {
+        putenv('AD_DISABLED_OU=OU=Disabled Users');
+        $db = $this->db();
+        // Archived leaver whose golden status flipped back to active (re-hire).
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Back', 'last_name' => 'Again',
+            'ad_archived_at' => '2026-01-01 00:00:00',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => ['sAMAccountName' => 'bagain']]);
+        $res = (new AdaxesReconciler($db, $read, $this->writer($calls)))->run(dryRun: false, phases: ['disable']);
+
+        self::assertSame(1, $res['disable']['unarchived']);
+        $stamp = $db->query('SELECT ad_archived_at FROM person WHERE person_id = 1')->fetchColumn();
+        self::assertEmpty($stamp, 'archive flag cleared on return to active');
+        $outcomes = array_column($res['disable']['items'], 'outcome');
+        self::assertContains('unarchived', $outcomes);
+    }
+
     public function testUnlinkedLeaverIsRoutedToReviewNotWritten(): void
     {
         $db = $this->db();
@@ -368,6 +476,8 @@ final class AdaxesReconcilerTest extends TestCase
             'givenName'         => 'Morgan',
             'sn'                => 'Foster',
             'displayName'       => 'Morgan Foster',
+            'cn'                => 'Morgan Foster',
+            'distinguishedName' => 'CN=Morgan Foster,OU=CO,OU=Faculty,' . self::BASE_DN,
             'accountDisabled'   => 'false',
         ]]);
         $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
@@ -378,11 +488,72 @@ final class AdaxesReconcilerTest extends TestCase
         $props = self::props(json_decode((string) $calls[0]['body'], true));
         self::assertSame('Foster-Hill', $props['sn'], 'last name pushed immediately');
         self::assertSame('Morgan Foster-Hill', $props['displayName']);
+        self::assertSame('Morgan Foster-Hill', $props['cn'],
+            'cn (Full Name / RDN) renamed with the name change, so the DN moves too');
         self::assertArrayNotHasKey('givenName', $props, 'first name unchanged — not pushed');
         foreach (['sAMAccountName', 'userPrincipalName', 'mail'] as $delayed) {
             self::assertArrayNotHasKey($delayed, $props,
                 "{$delayed} must wait for the scheduled rename cutover, never the edit phase");
         }
+    }
+
+    public function testEditCnRenameSuffixesUsernameOnCollision(): void
+    {
+        $db = $this->db();
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'Morgan', 'last_name' => 'Foster-Hill',
+            'username' => 'mfoster', 'email' => 'mfoster@tusc.k12.al.us', 'upn' => 'mfoster@tusc.k12.al.us',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        // searchHit=true: another object already holds cn "Morgan Foster-Hill".
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'mfoster',
+            'userPrincipalName' => 'mfoster@tusc.k12.al.us',
+            'mail'              => 'mfoster@tusc.k12.al.us',
+            'givenName'         => 'Morgan',
+            'sn'                => 'Foster',
+            'displayName'       => 'Morgan Foster',
+            'cn'                => 'Morgan Foster',
+            'accountDisabled'   => 'false',
+        ]], searchHit: true);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['applied']);
+        $props = self::props(json_decode((string) $calls[0]['body'], true));
+        self::assertSame('Morgan Foster-Hill (mfoster)', $props['cn'],
+            'a cn collision falls back to the username-suffixed form, same rule as create');
+    }
+
+    public function testEditWithoutNameDriftNeverRenamesAnUnconventionalCn(): void
+    {
+        $db = $this->db();
+        // Name matches AD exactly — but the cn follows an old "Last, First"
+        // convention. No name change → no rename: legacy cns are left alone.
+        $this->seedPerson($db, [
+            'person_id' => 1, 'status' => 'active', 'first_name' => 'In', 'last_name' => 'Sync',
+            'username' => 'insync', 'email' => 'insync@tusc.k12.al.us', 'upn' => 'insync@tusc.k12.al.us',
+        ]);
+        $this->link($db, 1, self::GUID1);
+
+        $calls = [];
+        $read = $this->read([self::GUID1 => [
+            'sAMAccountName'    => 'insync',
+            'userPrincipalName' => 'insync@tusc.k12.al.us',
+            'mail'              => 'insync@tusc.k12.al.us',
+            'givenName'         => 'In',
+            'sn'                => 'Sync',
+            'displayName'       => 'In Sync',
+            'cn'                => 'Sync, In',
+            'accountDisabled'   => 'false',
+        ]]);
+        $rec = new AdaxesReconciler($db, $read, $this->writer($calls));
+        $res = $rec->run(dryRun: false, phases: ['edit']);
+
+        self::assertSame(1, $res['edit']['noop']);
+        self::assertSame([], $calls, 'no writes at all — cn convention drift alone is not a rename trigger');
     }
 
     public function testEditNameDriftHonorsPreferredNameInDisplayName(): void

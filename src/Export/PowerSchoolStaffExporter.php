@@ -140,12 +140,7 @@ final class PowerSchoolStaffExporter
         return [
             'rows' => $rows,
             'new' => array_map($this->label(...), $new),
-            'changed' => array_map(
-                fn(array $p): string => $this->label($p)
-                    . ' — was ' . trim((string) $p['ps_last'] . ', ' . (string) $p['ps_first'], ', ')
-                    . (self::emailChanged((string) ($p['email'] ?? ''), $p['ps_email'])
-                        ? ', email was ' . $p['ps_email'] : ''),
-                $changed),
+            'changed' => array_map($this->changedLabel(...), $changed),
             'exceptions' => $exceptions,
             'summary' => [
                 'new' => count($new),
@@ -502,5 +497,32 @@ final class PowerSchoolStaffExporter
     {
         $name = trim((string) ($p['last_name'] ?? '') . ', ' . (string) ($p['first_name'] ?? ''), ', ');
         return ($name !== '' ? $name : '(unnamed)') . ' (person ' . (string) ($p['person_id'] ?? '?') . ')';
+    }
+
+    /**
+     * The log line for a CHANGED person: the label plus ONLY the fields that
+     * actually moved since the PowerSchool snapshot (name and/or email), each as
+     * "<field> was <old>". A blank prior value renders as "(blank)" — the person
+     * had none in PowerSchool and this run fills it — rather than trailing off
+     * into an empty "email was ". A person is only ever in this list because
+     * something changed, so `$parts` is never empty.
+     */
+    private function changedLabel(array $p): string
+    {
+        $parts = [];
+
+        $psFirst = trim((string) ($p['ps_first'] ?? ''));
+        $psLast = trim((string) ($p['ps_last'] ?? ''));
+        if (!self::sameValue((string) $p['first_name'], $psFirst) || !self::sameValue((string) $p['last_name'], $psLast)) {
+            $wasName = trim($psLast . ', ' . $psFirst, ', ');
+            $parts[] = 'name was ' . ($wasName !== '' ? $wasName : '(blank)');
+        }
+
+        if (self::emailChanged((string) ($p['email'] ?? ''), $p['ps_email'])) {
+            $wasEmail = trim((string) $p['ps_email']);
+            $parts[] = 'email was ' . ($wasEmail !== '' ? $wasEmail : '(blank)');
+        }
+
+        return $this->label($p) . ($parts !== [] ? ' — ' . implode(', ', $parts) : '');
     }
 }

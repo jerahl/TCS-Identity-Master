@@ -10,8 +10,8 @@ use App\Service\DashboardService;
 use App\Service\GoogleWorkspaceService;
 
 /**
- * Home / health dashboard: KPIs, recent activity, last feed per source, and the
- * failed-sync rollup.
+ * Home / health dashboard: KPIs, recent activity, and the last feed per source.
+ * Sync failure detail lives on the Outputs page (per-run logs), not here.
  */
 final class DashboardController extends Controller
 {
@@ -35,7 +35,6 @@ final class DashboardController extends Controller
             'kpis'        => $this->dash->kpis(),
             'activity'    => $this->dash->recentActivity(),
             'feeds'       => $feeds,
-            'failedSyncs' => $this->dash->failedSyncs(),
             'adSync'      => $adSync,
             'googleSync'  => $googleSync,
             'studentSync' => $studentSync,

@@ -162,6 +162,21 @@ the object itself.
   not enough — could be the wrong account). Threshold valve
   (`ADAXES_WRITE_MAX_DISABLES_RATIO`, mirrors `NEXTGEN_DROPOUT_MAX_RATIO`) blocks a
   mass-expire from a truncated feed.
+- **Archiving — the scan does not grow forever.** Every run re-verifies every
+  golden-disabled person against live AD (one remote lookup each), so leavers
+  accumulating over years would make the nightly run ever slower. But a leaver's
+  AD lifecycle has a terminal state: IDM expires the account, then **Adaxes' own
+  scheduled task moves expired users into the disabled OU** after its holding
+  period. When the reconciler sees an account that is *both* already expired
+  *and* in (or under) `AD_DISABLED_OU`, it stamps `person.ad_archived_at`
+  (migration `0024`) and excludes the person from all future disable scans —
+  outcome `archived` in the run log. Re-hires re-enter coverage automatically:
+  the phase first clears the stamp for anyone whose golden status is
+  active/pending again (outcome `unarchived`), so the returning-employee
+  correlate/re-enable path — and any *later* departure — work exactly as before.
+  `AD_DISABLED_OU` unset = archiving off (scan everyone, as before); archive
+  bookkeeping is gated with the writes, so dry-run / report-only runs change
+  nothing (`would-archive`).
 
 ### Phase 2 — Edit / attribute drift
 
@@ -175,11 +190,18 @@ Push the diffs the verification panel already computes.
   marriage-related last-name change from NextGen) pushes `givenName`, `sn`, and
   `displayName` (preferred-or-legal first + last, same rule as create)
   **immediately** — so AD reflects the new name as fast as Google and
-  PowerSchool do. The username/email/UPN **rename** deliberately does *not*
-  happen here: that is the RenameService scheduled cutover
-  (`RENAME_NOTICE_DAYS`, default 7, with notice emails and a delivering alias
-  afterward). Until the cutover fires, the golden username/email/upn still hold
-  the old identity, so this phase sees no mail/UPN drift — only the name moves.
+  PowerSchool do. The same edit also **renames the object itself**: `cn` (AD's
+  *Full Name*, and the RDN) is pushed to the new "First Last" — collision-checked
+  and username-suffixed exactly like create — so the `distinguishedName` moves
+  with the name in the same run. The cn rename fires **only** when
+  `givenName`/`sn` actually drifted (a real name change); accounts whose cn
+  merely follows an older convention are never mass-renamed by a routine run.
+  The username/email/UPN **rename** deliberately does *not* happen here: that is
+  the RenameService scheduled cutover (`RENAME_NOTICE_DAYS`, default 7, with
+  notice emails and a delivering alias afterward). Until the cutover fires, the
+  golden username/email/upn still hold the old identity, so this phase sees no
+  mail/UPN drift — the login identity and email address are the **only** parts
+  of a name change that wait for the delay.
 - **Also kept in sync: the operational mappings.** OneSync writes these on every
   account; IDM keeps them in sync (each is pushed only when non-empty and it
   differs from AD):
